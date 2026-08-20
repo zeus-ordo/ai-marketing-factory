@@ -1,5 +1,5 @@
 import psycopg
-from psycopg_pool import ThreadedConnectionPool as Pool
+from psycopg_pool import ConnectionPool as Pool
 import threading
 from contextlib import contextmanager
 from typing import Generator
