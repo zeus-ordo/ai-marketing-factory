@@ -61,6 +61,42 @@ async def ensure_optional_tables() -> None:
                     );
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS member_roles (
+                        member_id UUID NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
+                        role_id UUID NOT NULL REFERENCES roles(role_id) ON DELETE CASCADE,
+                        PRIMARY KEY (member_id, role_id)
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS refresh_tokens (
+                        token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        member_id UUID NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
+                        token_hash TEXT NOT NULL,
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        revoked_at TIMESTAMPTZ,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_logs (
+                        log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        member_id UUID REFERENCES members(member_id) ON DELETE SET NULL,
+                        company_id UUID REFERENCES companies(company_id) ON DELETE SET NULL,
+                        action TEXT NOT NULL,
+                        resource_type TEXT,
+                        resource_id TEXT,
+                        ip_address INET,
+                        metadata JSONB,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
                 # Dependent tables (after base tables exist)
                 cur.execute(
                     """
