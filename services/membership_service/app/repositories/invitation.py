@@ -28,7 +28,7 @@ class InvitationRepository:
                         (company_id, role_id, email, token, invited_by, expires_at),
                     )
                     row = cur.fetchone()
-                    return row[0], token
+                    return row["invitation_id"], token
         return await asyncio.to_thread(_do)
 
     async def get_by_token(self, token: str) -> dict | None:
@@ -48,7 +48,7 @@ class InvitationRepository:
                     row = cur.fetchone()
                     if not row:
                         return None
-                    return dict(row)
+                    return row
         return await asyncio.to_thread(_do)
 
     async def accept(self, token: str) -> bool:
@@ -90,5 +90,5 @@ class InvitationRepository:
                         (email,),
                     )
                     rows = cur.fetchall()
-                    return [dict(row) for row in rows]
+                    return list(rows)
         return await asyncio.to_thread(_do)

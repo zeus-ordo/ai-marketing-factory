@@ -20,7 +20,7 @@ class RefreshTokenRepository:
                         (member_id, token_hash, expires_at),
                     )
                     row = cur.fetchone()
-                    return row[0] if row else None
+                    return row["token_id"] if row else None
         return await asyncio.to_thread(_do)
 
     async def validate(self, token: str) -> bool:
@@ -35,7 +35,7 @@ class RefreshTokenRepository:
                         """,
                     )
                     rows = cur.fetchall()
-                    return any(verify_token(token, row[0]) for row in rows)
+                    return any(verify_token(token, row["token_hash"]) for row in rows)
         return await asyncio.to_thread(_do)
 
     async def revoke(self, token: str) -> None:
@@ -50,7 +50,7 @@ class RefreshTokenRepository:
                         """,
                     )
                     rows = cur.fetchall()
-                    matching_ids = [row[0] for row in rows if verify_token(token, row[1])]
+                    matching_ids = [row["token_id"] for row in rows if verify_token(token, row["token_hash"])]
                     if matching_ids:
                         cur.execute(
                             "UPDATE refresh_tokens SET revoked_at = now() WHERE token_id = ANY(%s::uuid[])",
@@ -84,7 +84,7 @@ class RefreshTokenRepository:
                     )
                     rows = cur.fetchall()
                     for row in rows:
-                        if verify_token(token, row[1]):
-                            return row[0]
+                        if verify_token(token, row["token_hash"]):
+                            return row["member_id"]
                     return None
         return await asyncio.to_thread(_do)

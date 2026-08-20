@@ -18,7 +18,7 @@ class MemberRepository:
                         (email, password_hash, company_id),
                     )
                     row = cur.fetchone()
-                    return row[0] if row else None
+                    return row["member_id"] if row else None
         return await asyncio.to_thread(_do)
 
     async def get_by_email(self, email: str) -> Member | None:
@@ -29,7 +29,7 @@ class MemberRepository:
                     row = cur.fetchone()
                     if not row:
                         return None
-                    return Member(**dict(row))
+                    return Member(**row)
         return await asyncio.to_thread(_do)
 
     async def get_by_id(self, member_id: UUID) -> Member | None:
@@ -40,7 +40,7 @@ class MemberRepository:
                     row = cur.fetchone()
                     if not row:
                         return None
-                    return Member(**dict(row))
+                    return Member(**row)
         return await asyncio.to_thread(_do)
 
     async def verify_email(self, member_id: UUID) -> None:
@@ -89,6 +89,6 @@ class MemberRepository:
                     rows = cur.fetchall()
             permissions: list[str] = []
             for row in rows:
-                permissions.extend(row[0] or [])
+                permissions.extend(row["permissions"] or [])
             return list(set(permissions))
         return await asyncio.to_thread(_do)
