@@ -23,6 +23,45 @@ async def ensure_optional_tables() -> None:
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+                # Base tables first (no FK dependencies)
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS companies (
+                        company_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        name TEXT NOT NULL,
+                        slug TEXT NOT NULL UNIQUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS members (
+                        member_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        company_id UUID REFERENCES companies(company_id) ON DELETE SET NULL,
+                        email TEXT NOT NULL UNIQUE,
+                        password_hash TEXT NOT NULL,
+                        email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS roles (
+                        role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+                        name TEXT NOT NULL,
+                        is_system BOOLEAN NOT NULL DEFAULT FALSE,
+                        permissions TEXT[] NOT NULL DEFAULT '{}',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                # Dependent tables (after base tables exist)
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS invitations (
