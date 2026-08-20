@@ -1,24 +1,38 @@
-import asyncpg
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+import psycopg2
+from psycopg2 import pool
+import threading
+from contextlib import contextmanager
+from typing import Generator
 
-_pool: asyncpg.Pool | None = None
+_pool: pool.ThreadedConnectionPool | None = None
+_pool_lock = threading.Lock()
 
 
-async def init_pool(dsn: str) -> None:
+def init_pool(dsn: str) -> None:
     global _pool
-    _pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10, ssl=False)
+    with _pool_lock:
+        if _pool is None:
+            _pool = pool.ThreadedConnectionPool(minconn=2, maxconn=10, dsn=dsn)
 
 
-async def close_pool() -> None:
+def close_pool() -> None:
     global _pool
-    if _pool:
-        await _pool.close()
+    with _pool_lock:
+        if _pool:
+            _pool.closeall()
+            _pool = None
 
 
-@asynccontextmanager
-async def get_connection() -> AsyncGenerator[asyncpg.Connection, None]:
+@contextmanager
+def get_connection() -> Generator:
     if _pool is None:
         raise RuntimeError("DB pool not initialized")
-    async with _pool.acquire() as conn:
+    conn = _pool.getconn()
+    try:
         yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _pool.putconn(conn)
