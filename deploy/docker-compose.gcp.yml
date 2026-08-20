@@ -1,8 +1,7 @@
 services:
   membership-service:
     build: ../services/membership_service
-    networks:
-      - deploy_default
+    network_mode: host
     env_file:
       - ../.env.local
     environment:
@@ -99,11 +98,6 @@ services:
     env_file:
       - ../.env.local
     restart: unless-stopped
-
-networks:
-  deploy_default:
-    name: deploy_default
-    external: true
 
 volumes:
   caddy_data:
