@@ -3,7 +3,7 @@ services:
     build: ../services/membership_service
     network_mode: host
     env_file:
-      - ../.env.local
+      - /opt/ai-marketing-factory/.env.local
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - MEMBERSHIP_DB_DSN=${MEMBERSHIP_DB_DSN}
