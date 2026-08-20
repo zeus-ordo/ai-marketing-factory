@@ -1,8 +1,10 @@
 services:
   membership-service:
     build: ../services/membership_service
+    networks:
+      - deploy_default
     env_file:
-      - ../.env.local
+      - .env.local
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - MEMBERSHIP_DB_DSN=${MEMBERSHIP_DB_DSN}
@@ -30,7 +32,7 @@ services:
         NEXT_PUBLIC_CAMPAIGN_API_BASE: /
         NEXT_PUBLIC_MEMBERSHIP_API_BASE: /
     env_file:
-      - ../.env.local
+      - .env.local
     environment:
       - CAMPAIGN_API_BASE=http://campaign-service:8080
       - MEMBERSHIP_API_BASE=http://membership-service:8095
@@ -39,7 +41,7 @@ services:
   campaign-service:
     build: ../services/campaign_service
     env_file:
-      - ../.env.local
+      - .env.local
     volumes:
       - campaign_references:/app/campaign_references
       - generated_assets:/app/generated_assets
@@ -63,25 +65,25 @@ services:
   decision-service:
     build: ../services/decision_service
     env_file:
-      - ../.env.local
+      - .env.local
     restart: unless-stopped
 
   orchestrator:
     build: ../services/orchestrator
     env_file:
-      - ../.env.local
+      - .env.local
     restart: unless-stopped
 
   worker-copy:
     build: ../services/worker_copy
     env_file:
-      - ../.env.local
+      - .env.local
     restart: unless-stopped
 
   worker-image:
     build: ../services/worker_image
     env_file:
-      - ../.env.local
+      - .env.local
     restart: unless-stopped
 
   worker-video:
@@ -89,13 +91,13 @@ services:
     volumes:
       - generated_assets:/app/generated_assets
     env_file:
-      - ../.env.local
+      - .env.local
     restart: unless-stopped
 
   worker-ads:
     build: ../services/worker_ads
     env_file:
-      - ../.env.local
+      - .env.local
     restart: unless-stopped
 
 volumes:
