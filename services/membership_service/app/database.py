@@ -1,10 +1,10 @@
 import psycopg
-from psycopg import pool
+from psycopg.pool import ThreadedConnectionPool as Pool
 import threading
 from contextlib import contextmanager
 from typing import Generator
 
-_pool: pool.Pool | None = None
+_pool: Pool | None = None
 _pool_lock = threading.Lock()
 
 
@@ -12,7 +12,7 @@ def init_pool(dsn: str) -> None:
     global _pool
     with _pool_lock:
         if _pool is None:
-            _pool = pool.Pool(dsn, min_size=2, max_size=10)
+            _pool = Pool(dsn, min_size=2, max_size=10)
 
 
 def close_pool() -> None:
