@@ -1,0 +1,52 @@
+{
+  "name": "ai-marketing-factory",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "demo:up": "powershell -ExecutionPolicy Bypass -File scripts/demo-up.ps1",
+    "demo:up:dry": "powershell -ExecutionPolicy Bypass -File scripts/demo-up.ps1 -DryRun",
+    "demo:down": "powershell -ExecutionPolicy Bypass -File scripts/demo-down.ps1",
+    "machine:preflight": "powershell -ExecutionPolicy Bypass -File scripts/new-machine.ps1 -Action preflight",
+    "machine:install": "powershell -ExecutionPolicy Bypass -File scripts/new-machine.ps1 -Action install",
+    "machine:start": "powershell -ExecutionPolicy Bypass -File scripts/new-machine.ps1 -Action start",
+    "machine:verify": "powershell -ExecutionPolicy Bypass -File scripts/new-machine.ps1 -Action verify",
+    "machine:all": "powershell -ExecutionPolicy Bypass -File scripts/new-machine.ps1 -Action all",
+    "providers:check": "powershell -ExecutionPolicy Bypass -File scripts/check-providers.ps1",
+    "lint": "eslint",
+    "dev:doctor": "node scripts/dev-doctor.mjs",
+    "dev:up": "node scripts/dev-up.mjs",
+    "dev:bootstrap:win": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap-dev.ps1",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "ci:frontend": "npm run check:i18n && npm run lint && npm run build",
+    "smoke:chatbot:phase-d": "node scripts/chatbot-phase-d-smoke.mjs",
+    "smoke:e2e:oneclick": "node scripts/e2e-oneclick.mjs",
+    "check:api:regression": "node scripts/api-regression-check.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "ops:trim-queues": "node scripts/ops-trim-queues.mjs",
+    "release:wave3": "node scripts/wave3-release-gate.mjs"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.10.2",
+    "lucide-react": "^1.8.0",
+    "next": "^16.2.9",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "recharts": "^3.8.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^16.2.9",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "postcss": "8.5.10"
+  }
+}

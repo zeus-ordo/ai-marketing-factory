@@ -1,0 +1,163 @@
+services:
+  membership-service:
+    build: ../services/membership_service
+    ports:
+      - "8095:8095"
+    env_file:
+      - ../.env.local
+    environment:
+      - JWT_SECRET=mf_jwt_2026_5a9f8c4d71b24f0ab1c9d2e3f4a6b8c1
+      - MEMBERSHIP_DB_DSN=postgresql://app:password@postgres:5432/membership
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - campaign-service
+      - membership-service
+      - frontend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_CAMPAIGN_API_BASE: /
+        NEXT_PUBLIC_MEMBERSHIP_API_BASE: /
+    expose:
+      - "3001"
+    env_file:
+      - ../.env.local
+    environment:
+      - CAMPAIGN_API_BASE=http://campaign-service:8080
+      - MEMBERSHIP_API_BASE=http://membership-service:8095
+    restart: unless-stopped
+
+  campaign-service:
+    build: ../services/campaign_service
+    ports:
+      - "8080:8080"
+    expose:
+      - "8080"
+    volumes:
+      - ../campaign_references:/app/campaign_references
+      - ../generated_assets:/app/generated_assets
+    env_file:
+      - ../.env.example
+      - ../.env.local
+    environment:
+      - JWT_SECRET=mf_jwt_2026_5a9f8c4d71b24f0ab1c9d2e3f4a6b8c1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      decision-service:
+        condition: service_started
+      orchestrator:
+        condition: service_started
+      worker-copy:
+        condition: service_started
+      worker-image:
+        condition: service_started
+      worker-video:
+        condition: service_started
+      worker-ads:
+        condition: service_started
+    restart: unless-stopped
+
+  decision-service:
+    build: ../services/decision_service
+    ports:
+      - "8082:8082"
+    expose:
+      - "8082"
+    env_file:
+      - ../.env.example
+
+  orchestrator:
+    build: ../services/orchestrator
+    ports:
+      - "8081:8081"
+    expose:
+      - "8081"
+    env_file:
+      - ../.env.example
+      - ../.env.local
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-copy:
+    build: ../services/worker_copy
+    ports:
+      - "8091:8091"
+    expose:
+      - "8091"
+    env_file:
+      - ../.env.example
+      - ../.env.local
+
+  worker-image:
+    build: ../services/worker_image
+    ports:
+      - "8092:8092"
+    env_file:
+      - ../.env.example
+      - ../.env.local
+
+  worker-video:
+    build: ../services/worker_video
+    ports:
+      - "8093:8093"
+    expose:
+      - "8093"
+    volumes:
+      - ../generated_assets:/app/generated_assets
+    env_file:
+      - ../.env.example
+      - ../.env.local
+
+  worker-ads:
+    build: ../services/worker_ads
+    expose:
+      - "8094"
+    env_file:
+      - ../.env.example
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: marketing_ai
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: password
+    expose:
+      - "5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d marketing_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

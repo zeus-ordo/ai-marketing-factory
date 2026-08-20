@@ -1,0 +1,15 @@
+.git
+.next
+node_modules
+npm-debug.log*
+*.log
+.env
+.env.*
+coverage
+dist
+build
+.sisyphus
+**/__pycache__
+**/*.pyc
+deploy/*.log
+tmp_*

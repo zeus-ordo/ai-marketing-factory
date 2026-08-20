@@ -1,0 +1,13 @@
+:3000 {
+  reverse_proxy /api/v1/auth/* membership-service:8095
+  reverse_proxy /api/v1/companies/* membership-service:8095
+  reverse_proxy /api/v1/platform/* membership-service:8095
+  reverse_proxy /api/v1/invitation/* membership-service:8095
+  reverse_proxy /api/chat/* frontend:3001
+  reverse_proxy /api/campaign-trace/* frontend:3001
+  reverse_proxy /api/campaign-work-orders/* frontend:3001
+  reverse_proxy /api/folders* frontend:3001
+  reverse_proxy /api/system/* frontend:3001
+  reverse_proxy /api/* campaign-service:8080
+  reverse_proxy /* frontend:3001
+}

@@ -1,0 +1,654 @@
+AI Marketing Factory - GCP Deployment Guide
+============================================
+
+Document purpose
+----------------
+This document describes the recommended first cloud deployment for this
+project:
+
+  GCP Compute Engine + Docker Compose
+  Cloud SQL PostgreSQL
+  Memorystore for Redis
+  Cloud Storage for backups and future asset storage
+  Cloud DNS + Caddy HTTPS
+  Secret Manager for production secrets
+
+This approach keeps the current Docker service topology and is easier to
+operate than moving directly to Kubernetes or Cloud Run.
+
+Important: this is a production deployment guide, not a local development
+guide. Do not copy the local hard-coded passwords or JWT keys into production.
+
+
+1. Current project services
+---------------------------
+
+The current Compose stack contains:
+
+  frontend             Next.js application
+  caddy                public reverse proxy
+  campaign-service     main FastAPI API
+  membership-service   authentication and membership API
+  decision-service     campaign planning API
+  orchestrator         task state machine and Redis stream consumer
+  worker-copy          copy generation worker
+  worker-image         image generation worker
+  worker-video         video generation worker
+  worker-ads           advertising strategy worker
+  postgres             local PostgreSQL (replace with Cloud SQL)
+  redis                local Redis (replace with Memorystore)
+
+The production VM should run the application containers. PostgreSQL and Redis
+should be managed GCP services instead of containers.
+
+
+2. Recommended production architecture
+---------------------------------------
+
+  Internet
+     |
+     v
+  Cloud DNS -> static external IP -> Caddy on Compute Engine
+                                      |
+                                      +-- frontend:3001
+                                      +-- campaign-service:8080
+                                      +-- membership-service:8095
+                                      |
+                                      +-- decision-service:8082
+                                      +-- orchestrator:8081
+                                      +-- workers:8091-8094
+
+  Private VPC connections:
+     Compute Engine -> Cloud SQL PostgreSQL
+     Compute Engine -> Memorystore Redis
+
+  Cloud Storage:
+     backups and future campaign_references/generated_assets migration
+
+Do not expose PostgreSQL, Redis, worker ports, or internal APIs to the public
+internet. Only ports 80 and 443 should be public. SSH should be restricted to
+an administrator IP or accessed through IAP.
+
+
+3. Required accounts and tools
+------------------------------
+
+Required:
+
+  - A GCP billing account
+  - A GCP project
+  - A registered domain name
+  - Access to the source repository
+  - Provider API keys used by the workers:
+      DEEPSEEK_R1_API_KEY
+      DEEPSEEK_V3_API_KEY
+      GEMINI_API_KEY  (Google AI Studio — Gemini for images, Veo for videos)
+      MINIMAX_API_KEY (optional fallback — only if MINIMAX still in use)
+      IMAGE_WORKER_API_KEY (optional — only if Stability AI still in use)
+  - A real email/password test account for smoke tests
+
+Install locally:
+
+  - gcloud CLI
+  - Git
+  - Docker (optional locally; required on the VM)
+
+Authenticate and select the project:
+
+  gcloud auth login
+  gcloud auth application-default login
+  gcloud projects list
+  gcloud config set project YOUR_GCP_PROJECT_ID
+
+Set deployment variables locally:
+
+  export PROJECT_ID="YOUR_GCP_PROJECT_ID"
+  export REGION="asia-east1"
+  export ZONE="asia-east1-a"
+  export NETWORK="default"
+  export VM_NAME="ai-marketing-factory-vm"
+  export DOMAIN="app.example.com"
+
+On Windows PowerShell, use:
+
+  $env:PROJECT_ID="YOUR_GCP_PROJECT_ID"
+  $env:REGION="asia-east1"
+  $env:ZONE="asia-east1-a"
+
+
+4. Enable required GCP APIs
+----------------------------
+
+  gcloud services enable compute.googleapis.com
+  gcloud services enable sqladmin.googleapis.com
+  gcloud services enable redis.googleapis.com
+  gcloud services enable storage.googleapis.com
+  gcloud services enable secretmanager.googleapis.com
+  gcloud services enable artifactregistry.googleapis.com
+  gcloud services enable monitoring.googleapis.com
+  gcloud services enable logging.googleapis.com
+
+
+5. Create the Compute Engine VM
+-------------------------------
+
+Recommended starting size:
+
+  Machine: e2-standard-4 (4 vCPU, 16 GB RAM)
+  Disk:    100 GB balanced persistent disk
+  OS:      Ubuntu 22.04 LTS
+
+Create the VM:
+
+  gcloud compute instances create "$VM_NAME" \
+    --zone="$ZONE" \
+    --machine-type="e2-standard-4" \
+    --image-family="ubuntu-2204-lts" \
+    --image-project="ubuntu-os-cloud" \
+    --boot-disk-size="100GB" \
+    --boot-disk-type="pd-balanced" \
+    --network="$NETWORK" \
+    --tags="ai-marketing-factory-web"
+
+Reserve a static IP:
+
+  gcloud compute addresses create ai-marketing-factory-ip --region="$REGION"
+  gcloud compute addresses list --filter="name=ai-marketing-factory-ip"
+
+Attach the reserved address using the Cloud Console or:
+
+  gcloud compute instances delete-access-config "$VM_NAME" --zone="$ZONE"
+  gcloud compute instances add-access-config "$VM_NAME" \
+    --zone="$ZONE" \
+    --address="STATIC_IP_ADDRESS"
+
+Create restricted firewall rules:
+
+  gcloud compute firewall-rules create allow-ai-factory-http \
+    --network="$NETWORK" \
+    --allow=tcp:80 \
+    --target-tags="ai-marketing-factory-web"
+
+  gcloud compute firewall-rules create allow-ai-factory-https \
+    --network="$NETWORK" \
+    --allow=tcp:443 \
+    --target-tags="ai-marketing-factory-web"
+
+Do not open ports 3000, 8080, 8091, 8092, 8093, 8094, 8095, 5432, or 6379
+to the internet.
+
+Connect to the VM:
+
+  gcloud compute ssh "$VM_NAME" --zone="$ZONE"
+
+
+6. Install Docker and base packages on the VM
+-----------------------------------------------
+
+Run on the VM:
+
+  sudo apt-get update
+  sudo apt-get install -y ca-certificates curl git jq unzip rsync
+  curl -fsSL https://get.docker.com | sudo sh
+  sudo usermod -aG docker "$USER"
+  exit
+
+Reconnect after logging out:
+
+  gcloud compute ssh "$VM_NAME" --zone="$ZONE"
+  docker version
+  docker compose version
+
+Create persistent application directories:
+
+  sudo mkdir -p /opt/ai-marketing-factory
+  sudo mkdir -p /var/lib/ai-marketing-factory/campaign_references
+  sudo mkdir -p /var/lib/ai-marketing-factory/generated_assets
+  sudo chown -R "$USER":"$USER" /opt/ai-marketing-factory
+  sudo chown -R "$USER":"$USER" /var/lib/ai-marketing-factory
+
+
+7. Create Cloud SQL PostgreSQL
+------------------------------
+
+Use Cloud SQL PostgreSQL 16. Choose the same region as the VM.
+
+Create the instance:
+
+  gcloud sql instances create ai-marketing-postgres \
+    --database-version=POSTGRES_16 \
+    --tier=db-custom-2-7680 \
+    --region="$REGION" \
+    --storage-type=SSD \
+    --storage-size=50 \
+    --storage-auto-increase \
+    --backup-start-time=03:00 \
+    --enable-point-in-time-recovery
+
+Create databases:
+
+  gcloud sql databases create marketing_ai --instance=ai-marketing-postgres
+  gcloud sql databases create membership --instance=ai-marketing-postgres
+
+Create a database user. Use a strong generated password and store it in
+Secret Manager; do not use the local password "password".
+
+  gcloud sql users create app \
+    --instance=ai-marketing-postgres \
+    --password="GENERATED_STRONG_DATABASE_PASSWORD"
+
+Recommended networking:
+
+  - Configure Cloud SQL private IP in the same VPC as the VM.
+  - Do not enable a public IP unless there is a documented temporary reason.
+  - If private IP setup is not yet available, use the Cloud SQL Auth Proxy
+    temporarily and migrate to private IP before production launch.
+
+Obtain the private IP:
+
+  gcloud sql instances describe ai-marketing-postgres \
+    --format="value(ipAddresses[0].ipAddress)"
+
+The final DSNs will look like:
+
+  POSTGRES_DSN=postgresql://app:PASSWORD@CLOUD_SQL_PRIVATE_IP:5432/marketing_ai
+  MEMBERSHIP_DB_DSN=postgresql://app:PASSWORD@CLOUD_SQL_PRIVATE_IP:5432/membership
+
+The application startup code performs schema initialization/migrations. Still
+take a Cloud SQL backup before the first production start.
+
+
+8. Create Memorystore Redis
+---------------------------
+
+Create a regional Redis instance in the same region and VPC:
+
+  gcloud redis instances create ai-marketing-redis \
+    --region="$REGION" \
+    --zone="$ZONE" \
+    --tier=basic \
+    --size=5 \
+    --redis-version=redis_7_2 \
+    --network="$NETWORK"
+
+Obtain the private IP:
+
+  gcloud redis instances describe ai-marketing-redis \
+    --region="$REGION" \
+    --format="value(host)"
+
+The final Redis URL will look like:
+
+  REDIS_URL=redis://REDIS_PRIVATE_IP:6379/0
+
+Important: Redis Streams are used for task processing. Monitor stream lag,
+pending entries, retries, and the dead-letter queue. For higher availability,
+upgrade from the Basic tier after the initial deployment is stable.
+
+
+9. Create Secret Manager secrets
+--------------------------------
+
+Create one secret per sensitive value:
+
+  printf '%s' 'GENERATED_JWT_SECRET' | \
+    gcloud secrets create jwt-secret --data-file=-
+  printf '%s' 'GENERATED_PLATFORM_ADMIN_KEY' | \
+    gcloud secrets create platform-admin-key --data-file=-
+  printf '%s' 'GENERATED_DATABASE_PASSWORD' | \
+    gcloud secrets create database-password --data-file=-
+  printf '%s' 'DEEPSEEK_KEY' | \
+    gcloud secrets create deepseek-api-key --data-file=-
+  printf '%s' 'MINIMAX_KEY' | \
+    gcloud secrets create minimax-api-key --data-file=-
+  printf '%s' 'IMAGE_PROVIDER_KEY' | \
+    gcloud secrets create image-worker-api-key --data-file=-
+
+Grant the VM service account access:
+
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:VM_SERVICE_ACCOUNT_EMAIL" \
+    --role="roles/secretmanager.secretAccessor"
+
+For the first Compose deployment, create /opt/ai-marketing-factory/.env.local
+from these values over SSH with permissions 600. Do not commit it.
+
+
+10. Prepare the production environment file
+---------------------------------------------
+
+On the VM:
+
+  cd /opt/ai-marketing-factory
+  touch .env.local
+  chmod 600 .env.local
+  nano .env.local
+
+Minimum production values:
+
+  APP_ENV=production
+  API_HOST=0.0.0.0
+  API_PORT=8080
+  CAMPAIGN_REQUIRE_POSTGRES=true
+
+  POSTGRES_DSN=postgresql://app:PASSWORD@CLOUD_SQL_PRIVATE_IP:5432/marketing_ai
+  MEMBERSHIP_DB_DSN=postgresql://app:PASSWORD@CLOUD_SQL_PRIVATE_IP:5432/membership
+  REDIS_URL=redis://REDIS_PRIVATE_IP:6379/0
+
+  JWT_SECRET=GENERATED_LONG_RANDOM_SECRET
+  PLATFORM_ADMIN_KEY=GENERATED_PLATFORM_ADMIN_KEY
+  CHAT_PENDING_ACTION_SECRET=GENERATED_SECRET
+  CHAT_ACTOR_TOKEN_SECRET=GENERATED_SECRET
+  CHATBOT_INTERNAL_API_KEY=GENERATED_SECRET
+  CHAT_AUDIT_API_KEY=GENERATED_SECRET
+
+  DEEPSEEK_R1_API_KEY=...
+  DEEPSEEK_V3_API_KEY=...
+  DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+  DEEPSEEK_MODEL=deepseek-v4-flash
+  MINIMAX_API_KEY=...
+  MINIMAX_API_BASE=https://api.minimax.io
+  MINIMAX_VIDEO_MODEL=MiniMax-Hailuo-2.3
+  MINIMAX_VIDEO_RESOLUTION=768P
+  GEMINI_API_KEY=...                         # Google AI Studio API key (Gemini/Veo)
+  IMAGE_WORKER_PROVIDER=gemini              # Use Gemini instead of MiniMax for images
+  VIDEO_WORKER_PROVIDER=veo                # Use Veo instead of MiniMax for videos
+  IMAGE_WORKER_API_KEY=...
+  MINIMAX_IMAGE_API_BASE=https://api.minimax.io
+  MINIMAX_IMAGE_MODEL=image-01
+  WORKER_STRICT_REAL_MODE=true
+  WORKER_REQUEST_TIMEOUT_SECONDS=180
+
+  PUBLISHING_ENABLED=false
+  SLA_SCAN_ENABLED=true
+  TRACE_RETENTION_DAYS=90
+
+The internal Docker service URLs must remain Docker service names:
+
+  OPENCLAW_CONTROLLER_URL=http://orchestrator:8081
+  DECISION_SERVICE_URL=http://decision-service:8082
+  WORKER_COPY_URL=http://worker-copy:8091
+  WORKER_IMAGE_URL=http://worker-image:8092
+  WORKER_VIDEO_URL=http://worker-video:8093
+  WORKER_ADS_URL=http://worker-ads:8094
+  MEMBERSHIP_SERVICE_URL=http://membership-service:8095
+
+
+11. Production Compose changes
+-------------------------------
+
+Create a separate deploy/docker-compose.gcp.yml instead of modifying the
+local development Compose file directly.
+
+Required changes:
+
+  1. Remove or disable the local postgres service.
+  2. Remove or disable the local redis service.
+  3. Change database and Redis environment variables to Cloud SQL and
+     Memorystore addresses.
+  4. Keep only caddy port 80 and port 443 public.
+  5. Mount persistent directories:
+
+       /var/lib/ai-marketing-factory/campaign_references:/app/campaign_references
+       /var/lib/ai-marketing-factory/generated_assets:/app/generated_assets
+
+  6. Add restart: unless-stopped to every long-running service.
+  7. Add healthchecks for campaign-service, membership-service, workers,
+     orchestrator, and frontend.
+  8. Do not publish internal service ports to the host.
+
+The application currently uses local filesystem paths for campaign references
+and generated assets. Keep these directories on the VM's persistent disk for
+the first deployment and back them up to Cloud Storage. A later code change
+can move these objects directly to Cloud Storage for multi-instance scaling.
+
+
+12. Configure Caddy and DNS
+----------------------------
+
+Replace the local Caddyfile address:
+
+  :3000 {
+
+with the real domain:
+
+  app.example.com {
+    reverse_proxy /api/v1/auth/* membership-service:8095
+    reverse_proxy /api/v1/companies/* membership-service:8095
+    reverse_proxy /api/v1/platform/* membership-service:8095
+    reverse_proxy /api/v1/invitation/* membership-service:8095
+    reverse_proxy /api/chat/* frontend:3001
+    reverse_proxy /api/campaign-trace/* frontend:3001
+    reverse_proxy /api/campaign-work-orders/* frontend:3001
+    reverse_proxy /api/folders* frontend:3001
+    reverse_proxy /api/system/* frontend:3001
+    reverse_proxy /api/* campaign-service:8080
+    reverse_proxy /* frontend:3001
+  }
+
+Caddy will request and renew Let's Encrypt certificates automatically when:
+
+  - The domain DNS A record points to the VM static IP.
+  - TCP 80 and 443 are reachable.
+  - The domain is not behind an invalid proxy configuration.
+
+Create the DNS record at the domain provider or Cloud DNS:
+
+  app.example.com.  A  STATIC_IP_ADDRESS
+
+Do not use ngrok in production.
+
+
+13. Upload and start the application
+-------------------------------------
+
+On the VM:
+
+  cd /opt/ai-marketing-factory
+  git clone YOUR_REPOSITORY_URL .
+  mkdir -p campaign_references generated_assets
+  cp deploy/docker-compose.gcp.yml deploy/docker-compose.gcp.local.yml
+
+Copy the production Compose file and Caddy configuration into place, then:
+
+  docker compose -f deploy/docker-compose.gcp.yml config
+  docker compose -f deploy/docker-compose.gcp.yml build
+  docker compose -f deploy/docker-compose.gcp.yml up -d
+
+Check containers:
+
+  docker compose -f deploy/docker-compose.gcp.yml ps
+  docker compose -f deploy/docker-compose.gcp.yml logs --tail=100 campaign-service
+  docker compose -f deploy/docker-compose.gcp.yml logs --tail=100 orchestrator
+
+Expected application startup order:
+
+  Cloud SQL and Memorystore
+    -> application API services
+    -> workers and orchestrator
+    -> frontend and Caddy
+
+
+14. Initial database and data migration
+----------------------------------------
+
+Export local PostgreSQL before migration:
+
+  docker exec deploy-postgres-1 pg_dump \
+    -U app -d marketing_ai -Fc > marketing_ai.dump
+
+Restore to Cloud SQL using the Cloud SQL import flow. For large databases,
+upload the dump to a private Cloud Storage bucket first:
+
+  gcloud storage buckets create gs://PROJECT_ID-ai-factory-backups \
+    --location="$REGION"
+  gcloud storage cp marketing_ai.dump \
+    gs://PROJECT_ID-ai-factory-backups/postgres/marketing_ai.dump
+
+Then use Cloud SQL import from the Cloud Console or gcloud CLI. Repeat for the
+membership database if it contains data.
+
+Copy current local assets to the VM initially:
+
+  rsync -av campaign_references/ VM:/var/lib/ai-marketing-factory/campaign_references/
+  rsync -av generated_assets/ VM:/var/lib/ai-marketing-factory/generated_assets/
+
+Back up VM assets to Cloud Storage:
+
+  gcloud storage rsync -r \
+    /var/lib/ai-marketing-factory/campaign_references \
+    gs://PROJECT_ID-ai-factory-backups/campaign_references
+  gcloud storage rsync -r \
+    /var/lib/ai-marketing-factory/generated_assets \
+    gs://PROJECT_ID-ai-factory-backups/generated_assets
+
+
+15. Smoke test from a user perspective
+---------------------------------------
+
+Run all checks from a machine outside the VM:
+
+  curl -I https://app.example.com
+  curl -I https://app.example.com/dashboard
+
+Application checks:
+
+  1. Open https://app.example.com.
+  2. Log in with a real test account.
+  3. Create or open a test campaign.
+  4. Generate one copy asset.
+  5. Generate one image asset (uses Gemini via Google AI Studio).
+  6. Generate one video asset (uses Veo via Google AI Studio).
+  7. Confirm the task appears in the dashboard.
+  8. Confirm the asset is saved and downloadable.
+  9. Confirm the asset name shows the campaign name prefix
+     (e.g., "活動名稱_manual_image_1_V1" not "manual_image_1_V1").
+  10. Generate a second single asset and confirm it becomes manual_*_2_V1,
+     not manual_*_1_V2.
+  11. Confirm failed jobs appear in the DLQ and are visible in operations.
+
+API regression test from the VM or CI runner:
+
+  npm ci
+  npm run check:api:regression
+
+Provider check:
+
+  npm run providers:check
+
+Do not mark deployment complete until both a text asset and an image asset
+have completed successfully.
+
+
+16. Backups and recovery
+------------------------
+
+Cloud SQL:
+
+  - Enable daily automated backups.
+  - Enable point-in-time recovery.
+  - Test a restore monthly.
+
+Redis:
+
+  - Treat Redis as a queue/cache, not the source of truth.
+  - PostgreSQL task state must remain authoritative.
+  - Monitor and recover pending Stream entries and task.dlq.
+
+VM disk:
+
+  - Schedule persistent disk snapshots.
+  - Back up campaign_references and generated_assets to Cloud Storage.
+  - Keep at least 7 daily and 4 weekly backups.
+
+Test recovery:
+
+  1. Restore a Cloud SQL backup to a temporary instance.
+  2. Restore assets to a temporary directory.
+  3. Start a staging Compose stack against the restored services.
+  4. Run API regression and a real test generation.
+
+
+17. Monitoring and alerts
+-------------------------
+
+Create Cloud Monitoring alerts for:
+
+  - VM CPU over 80 percent for 15 minutes
+  - VM disk usage over 75 percent
+  - VM memory pressure
+  - Cloud SQL storage over 75 percent
+  - Cloud SQL connection errors
+  - Memorystore unavailable
+  - HTTP 5xx responses
+  - Redis Stream lag and pending entries
+  - task.dlq size greater than zero
+  - worker container restart count
+
+Useful commands:
+
+  docker compose -f deploy/docker-compose.gcp.yml ps
+  docker compose -f deploy/docker-compose.gcp.yml logs --since=10m
+  docker stats
+  df -h
+  free -h
+
+
+18. Deployment and update procedure
+------------------------------------
+
+Use a staging VM or staging Compose project before production.
+
+Production update:
+
+  cd /opt/ai-marketing-factory
+  git fetch --all
+  git checkout PRODUCTION_COMMIT_OR_TAG
+  docker compose -f deploy/docker-compose.gcp.yml config
+  docker compose -f deploy/docker-compose.gcp.yml build
+  docker compose -f deploy/docker-compose.gcp.yml up -d
+  docker compose -f deploy/docker-compose.gcp.yml ps
+  npm run check:api:regression
+
+If a deployment fails:
+
+  docker compose -f deploy/docker-compose.gcp.yml logs --tail=200
+  docker compose -f deploy/docker-compose.gcp.yml ps
+  docker compose -f deploy/docker-compose.gcp.yml up -d PREVIOUS_IMAGE_OR_TAG
+
+Never run destructive database commands during an application deployment.
+Take a Cloud SQL backup before schema-changing releases.
+
+
+19. Security checklist
+----------------------
+
+  [ ] No production secrets are committed to Git.
+  [ ] JWT_SECRET is newly generated for production.
+  [ ] PLATFORM_ADMIN_KEY is newly generated for production.
+  [ ] Database password is not "password".
+  [ ] PostgreSQL and Redis have private networking.
+  [ ] Only ports 80 and 443 are public.
+  [ ] SSH is restricted or replaced by IAP.
+  [ ] Caddy HTTPS certificate is active.
+  [ ] Cloud SQL backups are enabled.
+  [ ] VM disk snapshots are enabled.
+  [ ] API provider keys have usage limits and rotation plans.
+  [ ] Production and staging use different databases, buckets, and secrets.
+  [ ] ngrok is not used as the production entry point.
+
+
+20. Recommended rollout order
+-----------------------------
+
+  Phase 1: Create GCP project, VM, Cloud SQL, Memorystore, and secrets.
+  Phase 2: Deploy the current Compose stack with persistent VM asset folders.
+  Phase 3: Configure DNS, Caddy HTTPS, backups, and monitoring.
+  Phase 4: Migrate PostgreSQL data and existing assets.
+  Phase 5: Run user-level smoke tests and API regression tests.
+  Phase 6: Add Cloud Storage adapter for direct asset storage.
+  Phase 7: Split workers into independently scalable services only when load
+           requires it.
+
+This staged rollout minimizes risk and keeps the first cloud deployment close
+to the currently verified local Docker environment.

@@ -1,0 +1,1 @@
+Campaign reference upload smoke test file.

@@ -1,0 +1,104 @@
+services:
+  membership-service:
+    build: ../services/membership_service
+    env_file:
+      - ../.env.local
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - MEMBERSHIP_DB_DSN=${MEMBERSHIP_DB_DSN}
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.gcp:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - campaign-service
+      - membership-service
+      - frontend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_CAMPAIGN_API_BASE: /
+        NEXT_PUBLIC_MEMBERSHIP_API_BASE: /
+    env_file:
+      - ../.env.local
+    environment:
+      - CAMPAIGN_API_BASE=http://campaign-service:8080
+      - MEMBERSHIP_API_BASE=http://membership-service:8095
+    restart: unless-stopped
+
+  campaign-service:
+    build: ../services/campaign_service
+    env_file:
+      - ../.env.local
+    volumes:
+      - campaign_references:/app/campaign_references
+      - generated_assets:/app/generated_assets
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+    restart: unless-stopped
+    depends_on:
+      decision-service:
+        condition: service_started
+      orchestrator:
+        condition: service_started
+      worker-copy:
+        condition: service_started
+      worker-image:
+        condition: service_started
+      worker-video:
+        condition: service_started
+      worker-ads:
+        condition: service_started
+
+  decision-service:
+    build: ../services/decision_service
+    env_file:
+      - ../.env.local
+    restart: unless-stopped
+
+  orchestrator:
+    build: ../services/orchestrator
+    env_file:
+      - ../.env.local
+    restart: unless-stopped
+
+  worker-copy:
+    build: ../services/worker_copy
+    env_file:
+      - ../.env.local
+    restart: unless-stopped
+
+  worker-image:
+    build: ../services/worker_image
+    env_file:
+      - ../.env.local
+    restart: unless-stopped
+
+  worker-video:
+    build: ../services/worker_video
+    volumes:
+      - generated_assets:/app/generated_assets
+    env_file:
+      - ../.env.local
+    restart: unless-stopped
+
+  worker-ads:
+    build: ../services/worker_ads
+    env_file:
+      - ../.env.local
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  campaign_references:
+  generated_assets:
