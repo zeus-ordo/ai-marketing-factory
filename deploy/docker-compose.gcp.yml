@@ -4,9 +4,6 @@ services:
     network_mode: host
     env_file:
       - /opt/ai-marketing-factory/.env.local
-    environment:
-      - JWT_SECRET=${JWT_SECRET}
-      - MEMBERSHIP_DB_DSN=${MEMBERSHIP_DB_DSN}
     restart: unless-stopped
 
   caddy:
