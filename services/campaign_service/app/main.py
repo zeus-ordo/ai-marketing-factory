@@ -26,6 +26,7 @@ from .auth import (
     require_jwt,
     require_platform_admin,
     is_platform_admin_request,
+    check_permission,
     PLATFORM_ADMIN_KEY,
 )
 from .persistence import PostgresPersistence, now_utc
@@ -3968,6 +3969,7 @@ def create_campaign(req: Request, brief: CampaignBrief) -> CampaignCreatedRespon
         actor_role = "system"
     else:
         payload = require_jwt(req)
+        check_permission(payload, "campaign.create")
         actor_company_id = payload.company_id or ""
         actor_id = payload.sub
         actor_role = "member"

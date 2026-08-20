@@ -76,6 +76,14 @@ def require_platform_admin(req: Request) -> bool:
     return True
 
 
+def check_permission(payload: JWTPayload, permission: str) -> None:
+    """Check if the JWT payload grants the required permission. Raises 403 if not."""
+    if payload.permissions == ["*"]:
+        return  # superuser
+    if permission not in payload.permissions:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {permission} required")
+
+
 # Type alias for use in route signatures
 JWTDep = Annotated[JWTPayload, Depends(require_jwt)]
 OptJWTDep = Annotated[JWTPayload | None, Depends(optional_jwt)]
