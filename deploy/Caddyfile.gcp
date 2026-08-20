@@ -1,10 +1,10 @@
 :80 {
-  reverse_proxy /api/v1/auth/* membership-service:8095
-  reverse_proxy /api/v1/companies/* membership-service:8095
-  reverse_proxy /api/v1/platform/* membership-service:8095
-  reverse_proxy /api/v1/invitation/* membership-service:8095
+  reverse_proxy /api/v1/auth/* 127.0.0.1:8095
+  reverse_proxy /api/v1/companies/* 127.0.0.1:8095
+  reverse_proxy /api/v1/platform/* 127.0.0.1:8095
+  reverse_proxy /api/v1/invitation/* 127.0.0.1:8095
   reverse_proxy /api/v1/campaigns/* campaign-service:8080
   reverse_proxy /api/v1/assets/* campaign-service:8080
-  reverse_proxy /api/* campaign-service:8080
+  reverse_proxy /api/v1/* campaign-service:8080
   reverse_proxy /* frontend:3001
 }
