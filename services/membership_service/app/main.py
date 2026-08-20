@@ -21,46 +21,46 @@ async def lifespan(app: FastAPI):
 async def ensure_optional_tables() -> None:
     def _create_tables():
         with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS invitations (
-                    invitation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    company_id UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
-                    role_id UUID NOT NULL REFERENCES roles(role_id),
-                    email TEXT NOT NULL,
-                    token TEXT NOT NULL UNIQUE,
-                    invited_by UUID REFERENCES members(member_id),
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    expires_at TIMESTAMPTZ NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS email_verifications (
-                    verification_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    member_id UUID NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
-                    token TEXT NOT NULL UNIQUE,
-                    expires_at TIMESTAMPTZ NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                );
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS password_resets (
-                    reset_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    member_id UUID NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
-                    token TEXT NOT NULL UNIQUE,
-                    expires_at TIMESTAMPTZ NOT NULL,
-                    used_at TIMESTAMPTZ,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                );
-                """
-            )
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS invitations (
+                        invitation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        company_id UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+                        role_id UUID NOT NULL REFERENCES roles(role_id),
+                        email TEXT NOT NULL,
+                        token TEXT NOT NULL UNIQUE,
+                        invited_by UUID REFERENCES members(member_id),
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS email_verifications (
+                        verification_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        member_id UUID NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
+                        token TEXT NOT NULL UNIQUE,
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS password_resets (
+                        reset_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        member_id UUID NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
+                        token TEXT NOT NULL UNIQUE,
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        used_at TIMESTAMPTZ,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
     await asyncio.to_thread(_create_tables)
 
 
