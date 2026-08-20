@@ -1,8 +1,8 @@
 :80 {
-  reverse_proxy /api/v1/auth/* 127.0.0.1:8095
-  reverse_proxy /api/v1/companies/* 127.0.0.1:8095
-  reverse_proxy /api/v1/platform/* 127.0.0.1:8095
-  reverse_proxy /api/v1/invitation/* 127.0.0.1:8095
+  reverse_proxy /api/v1/auth/* 172.17.0.1:8095
+  reverse_proxy /api/v1/companies/* 172.17.0.1:8095
+  reverse_proxy /api/v1/platform/* 172.17.0.1:8095
+  reverse_proxy /api/v1/invitation/* 172.17.0.1:8095
   reverse_proxy /api/v1/campaigns/* campaign-service:8080
   reverse_proxy /api/v1/assets/* campaign-service:8080
   reverse_proxy /api/v1/* campaign-service:8080
