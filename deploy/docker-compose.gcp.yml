@@ -41,8 +41,6 @@ services:
     volumes:
       - campaign_references:/app/campaign_references
       - generated_assets:/app/generated_assets
-    environment:
-      - JWT_SECRET=${JWT_SECRET}
     restart: unless-stopped
     depends_on:
       decision-service:
