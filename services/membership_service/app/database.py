@@ -1,4 +1,5 @@
 import psycopg
+import psycopg.rows
 from psycopg_pool import ConnectionPool as Pool
 import threading
 from contextlib import contextmanager
@@ -28,4 +29,5 @@ def get_connection() -> Generator:
     if _pool is None:
         raise RuntimeError("DB pool not initialized")
     with _pool.connection() as conn:
+        conn.row_factory = psycopg.rows.dict_row
         yield conn
