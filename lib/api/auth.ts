@@ -1,7 +1,7 @@
 const API_BASE =
   typeof window !== "undefined"
-    ? (process.env.NEXT_PUBLIC_MEMBERSHIP_API_BASE ?? "http://localhost:8095")
-    : "http://localhost:8095";
+    ? (process.env.NEXT_PUBLIC_MEMBERSHIP_API_BASE ?? "/")
+    : "/";
 
 function buildUrl(path: string): string {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
