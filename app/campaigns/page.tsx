@@ -97,6 +97,8 @@ type CreateCampaignDraft = {
   knowledgeItemIds: string[];
 };
 
+const IMMEDIATE_UPLOAD_FOLDER = "即時上傳";
+
 const fallbackCampaigns: UiCampaign[] = [
   {
     id: "fallback-1",
