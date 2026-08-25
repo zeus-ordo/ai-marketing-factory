@@ -345,7 +345,7 @@ export default function CampaignCenterPage() {
         const res = await fetch("/api/folders");
         if (res.ok) {
           const data = (await res.json()) as { items: { name: string }[] };
-          if (mounted) setFolders(data.items.map((f) => f.name));
+          if (mounted) setFolders(Array.from(new Set([...data.items.map((f) => f.name), IMMEDIATE_UPLOAD_FOLDER])));
         }
       } catch {
         // folders not critical
@@ -391,11 +391,15 @@ export default function CampaignCenterPage() {
   }, [realCampaigns, selectedReferenceCampaignId]);
 
   const knowledgeCategories = useMemo(() => {
-    const categories = knowledgeItems
-      .map((item) => getKnowledgeFolder(item))
-      .filter(Boolean);
-    return Array.from(new Set(categories)).sort((a, b) => a.localeCompare(b));
-  }, [knowledgeItems]);
+    const categories = knowledgeItems.map((item) => getKnowledgeFolder(item)).filter(Boolean);
+    return Array.from(new Set([...folders, ...categories, IMMEDIATE_UPLOAD_FOLDER])).sort((a, b) => a.localeCompare(b));
+  }, [folders, knowledgeItems]);
+
+  function getKnowledgeFolderLabel(folderName: string): string {
+    return folderName === IMMEDIATE_UPLOAD_FOLDER
+      ? t("campaigns.knowledge.immediateUploadFolder")
+      : folderName;
+  }
 
   const filteredKnowledgeItems = useMemo(() => {
     const query = knowledgeSearch.trim().toLowerCase();
@@ -409,12 +413,21 @@ export default function CampaignCenterPage() {
   }, [knowledgeCategoryFilter, knowledgeItems, knowledgeSearch]);
 
   const groupedKnowledgeItems = useMemo(() => {
+    const folderNames = new Set([
+      ...folders,
+      ...knowledgeCategories,
+      IMMEDIATE_UPLOAD_FOLDER,
+    ]);
+    const groups = Array.from(folderNames).reduce<Record<string, KnowledgeItemRecord[]>>((result, folderName) => {
+      result[folderName] = [];
+      return result;
+    }, {});
     return filteredKnowledgeItems.reduce<Record<string, KnowledgeItemRecord[]>>((groups, item) => {
       const category = getKnowledgeFolder(item);
       groups[category] = [...(groups[category] ?? []), item];
       return groups;
-    }, {});
-  }, [filteredKnowledgeItems]);
+    }, groups);
+  }, [filteredKnowledgeItems, folders, knowledgeCategories]);
 
   const selectedReferenceItemIds = useMemo(() => {
     const ids = new Set(selectedKnowledgeItemIds.filter((itemId) => {
@@ -1177,9 +1190,7 @@ export default function CampaignCenterPage() {
             </div>
             <p className="text-xs text-slate-500">先勾選資料夾可套用該資料夾內全部素材；展開資料夾可改選特定檔案。</p>
             <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-200 p-2 dark:border-slate-700">
-              {knowledgeItems.length === 0 ? (
-                <p className="px-2 py-3 text-xs text-slate-500">{t("campaigns.form.referenceLibraryEmpty")}</p>
-              ) : Object.entries(groupedKnowledgeItems).length === 0 ? (
+              {Object.entries(groupedKnowledgeItems).length === 0 ? (
                 <p className="px-2 py-3 text-xs text-slate-500">沒有符合篩選的內容資料庫素材。</p>
               ) : Object.entries(groupedKnowledgeItems).map(([folderName, items]) => {
                 const folderSelected = selectedKnowledgeFolderNames.includes(folderName);
@@ -1208,7 +1219,7 @@ export default function CampaignCenterPage() {
                           onClick={(event) => event.stopPropagation()}
                           onChange={() => toggleKnowledgeFolder(folderName)}
                         />
-                        <span className="truncate font-semibold text-slate-800 dark:text-slate-100">📁 {folderName}</span>
+                        <span className="truncate font-semibold text-slate-800 dark:text-slate-100">📁 {getKnowledgeFolderLabel(folderName)}</span>
                         <span className="shrink-0 text-slate-500">{items.length} 個檔案{attachableItems.length < items.length ? `，${t("campaigns.form.attachableCount", { count: attachableItems.length })}` : ""}{selectedFileCount > 0 && !folderSelected ? `，已選 ${selectedFileCount}` : ""}</span>
                       </label>
                       <span className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium dark:border-slate-700">
@@ -1451,7 +1462,7 @@ export default function CampaignCenterPage() {
           >
             <option value="">{t("campaigns.knowledge.allCategories")}</option>
             {knowledgeCategories.map((category) => (
-              <option key={category} value={category}>{category}</option>
+              <option key={category} value={category}>{getKnowledgeFolderLabel(category)}</option>
             ))}
           </select>
           <button
@@ -1475,7 +1486,7 @@ export default function CampaignCenterPage() {
               </tr>
             </thead>
             <tbody>
-              {filteredKnowledgeItems.length === 0 ? (
+              {Object.entries(groupedKnowledgeItems).length === 0 ? (
                 <tr>
                   <td className="px-3 py-3 text-slate-500" colSpan={5}>{t("campaigns.knowledge.empty")}</td>
                 </tr>
@@ -1491,7 +1502,7 @@ export default function CampaignCenterPage() {
                         aria-expanded={expanded}
                         className="flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-1 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
                       >
-                        <span>📁 {category}</span>
+                        <span>📁 {getKnowledgeFolderLabel(category)}</span>
                         <span className="text-xs font-normal text-slate-500">{itemsInCategory.length} 個檔案 · {expanded ? "收合" : "展開"}</span>
                       </button>
                     </td>
@@ -1502,7 +1513,7 @@ export default function CampaignCenterPage() {
                         <div className="font-medium">{item.title}</div>
                         {item.description ? <div className="text-slate-500">{item.description}</div> : null}
                       </td>
-                      <td className="px-3 py-2">{category}</td>
+                      <td className="px-3 py-2">{getKnowledgeFolderLabel(category)}</td>
                       <td className="px-3 py-2">{String(item.metadata.file_name ?? item.content_url ?? item.item_id)}</td>
                       <td className="px-3 py-2">{formatDateTime(locale, item.created_at)}</td>
                       <td className="px-3 py-2">
@@ -1512,23 +1523,25 @@ export default function CampaignCenterPage() {
                               {t("campaigns.knowledge.download")}
                             </a>
                           ) : null}
-                          <select
-                            value={category}
-                            onChange={(e) => {
-                              if (e.target.value && e.target.value !== category) {
-                                void handleMoveKnowledgeItem(item.item_id, e.target.value);
-                              }
-                            }}
-                            disabled={knowledgeBusy || folders.length === 0}
-                            className="rounded-md border border-slate-200 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
-                          >
-                            <option value="">{t("knowledge.moveTo")}</option>
-                            {folders
-                              .filter((f) => f !== category)
-                              .map((folder) => (
-                                <option key={folder} value={folder}>{folder}</option>
-                              ))}
-                          </select>
+                          {category !== IMMEDIATE_UPLOAD_FOLDER ? (
+                            <select
+                              value={category}
+                              onChange={(e) => {
+                                if (e.target.value && e.target.value !== category) {
+                                  void handleMoveKnowledgeItem(item.item_id, e.target.value);
+                                }
+                              }}
+                              disabled={knowledgeBusy || folders.length === 0}
+                              className="rounded-md border border-slate-200 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
+                            >
+                              <option value="">{t("knowledge.moveTo")}</option>
+                              {folders
+                                .filter((f) => f !== category && f !== IMMEDIATE_UPLOAD_FOLDER)
+                                .map((folder) => (
+                                  <option key={folder} value={folder}>{getKnowledgeFolderLabel(folder)}</option>
+                                ))}
+                            </select>
+                          ) : null}
                           <button
                             type="button"
                             onClick={() => handleDeleteKnowledgeItem(item.item_id)}
