@@ -922,7 +922,7 @@ export default function CampaignCenterPage() {
 
     setKnowledgeBusy(true);
     try {
-      await uploadKnowledgeItem(knowledgeFile, knowledgeTitle || knowledgeFile.name, knowledgeDescription, knowledgeCategory || "General");
+      await uploadKnowledgeItem(knowledgeFile, knowledgeTitle || knowledgeFile.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER);
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
       setKnowledgeFile(null);
