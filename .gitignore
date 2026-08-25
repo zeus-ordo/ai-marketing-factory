@@ -10,6 +10,7 @@ build/
 coverage/
 .turbo/
 .sisyphus/
+.worktrees/
 *.pyc
 __pycache__/
 *.egg-info/
