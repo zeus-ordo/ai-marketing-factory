@@ -21,7 +21,7 @@ import { useI18n } from "@/lib/i18n/context";
 export default function ReviewPage() {
   const { t } = useI18n();
   const { user, isLoading: authLoading } = useAuth();
-  const canReview = user?.permissions.some((permission) => ["review:approve", "review:reject", "review:revision"].includes(permission)) ?? false;
+  const canReview = user?.permissions.some((permission) => ["*", "admin", "platform:admin", "review:approve", "review:reject", "review:revision"].includes(permission)) ?? false;
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [campaignNameMap, setCampaignNameMap] = useState<Record<string, string>>({});
   const [logs, setLogs] = useState<ReviewAuditEntry[]>([]);

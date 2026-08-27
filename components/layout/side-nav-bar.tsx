@@ -7,7 +7,7 @@ import { useI18n } from "@/lib/i18n/context";
 
 function canSeeNavItem(href: string, permissions: string[]) {
   if (href === "/review") {
-    return permissions.some((permission) => ["review:approve", "review:reject", "review:revision"].includes(permission));
+    return permissions.some((permission) => ["*", "admin", "platform:admin", "review:approve", "review:reject", "review:revision"].includes(permission));
   }
   if (href === "/roles") {
     return permissions.includes("role:manage");
