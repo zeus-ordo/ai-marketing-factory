@@ -79,7 +79,9 @@ def test_retry_dispatch_failure_is_terminal_but_retryable():
 
 
 def test_structured_secret_fields_are_redacted():
-    detail = sanitize_worker_error_detail('{"api_key":"provider-key", "credentials":{"token":"abc", "password":"pw"}}')
+    detail = sanitize_worker_error_detail("{'api_key':'provider-key', 'credentials':{'token':'abc', 'password':'pw'}, 'authorization':'Bearer supersecret'}")
     assert "provider-key" not in detail
     assert "abc" not in detail
     assert "pw" not in detail
+    assert "supersecret" not in detail
+    assert "Bearer supersecret" not in detail

@@ -1,4 +1,5 @@
 import base64
+import ast
 import json
 import logging
 import mimetypes
@@ -989,7 +990,24 @@ def classify_worker_error(exc: Exception) -> str:
 
 def sanitize_worker_error_detail(message: str) -> str:
     text = (message or "").strip()
+    try:
+        structured = ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        structured = None
+    if isinstance(structured, (dict, list)):
+        def redact(value: Any, key: str = "") -> Any:
+            if key.lower().replace("-", "_") in {"api_key", "token", "password", "authorization", "credentials", "credential", "secret"}:
+                return "[REDACTED]"
+            if isinstance(value, dict):
+                return {name: redact(item, str(name)) for name, item in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, str):
+                return re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
+            return value
+        text = json.dumps(redact(structured), separators=(",", ":"))
     text = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
     text = re.sub(
         r"(?i)([\"']?(?:api[_-]?key|token|password|secret|credentials?|authorization)[\"']?\s*[:=]\s*[\"']?)([^\"',}\s]+)",
         r"\1[REDACTED]",
@@ -1070,7 +1088,7 @@ def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaig
                     "error": error_detail,
                     "error_detail": error_detail,
                     "worker_url": url,
-                    "worker_payload": payload,
+                    "worker_payload": sanitize_worker_error_detail(json.dumps(payload)),
                 },
                 source="workers",
                 company_id=company_id,

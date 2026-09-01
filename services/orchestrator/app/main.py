@@ -1,4 +1,5 @@
 import importlib
+import ast
 import json
 import logging
 import os
@@ -432,7 +433,25 @@ def classify_worker_error(exc: Exception) -> str:
 
 
 def sanitize_error_detail(detail: str) -> str:
-    sanitized = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", detail)
+    sanitized = detail or ""
+    try:
+        structured = ast.literal_eval(sanitized)
+    except (SyntaxError, ValueError):
+        structured = None
+    if isinstance(structured, (dict, list)):
+        def redact(value: Any, key: str = "") -> Any:
+            if key.lower().replace("-", "_") in {"api_key", "token", "password", "authorization", "credentials", "credential", "secret"}:
+                return "[REDACTED]"
+            if isinstance(value, dict):
+                return {name: redact(item, str(name)) for name, item in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, str):
+                return re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
+            return value
+        sanitized = json.dumps(redact(structured), separators=(",", ":"))
+    sanitized = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", sanitized)
+    sanitized = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", sanitized)
     sanitized = re.sub(
         r"(?i)([\"']?(?:api[_-]?key|token|password|secret|credentials?|authorization)[\"']?\s*[:=]\s*[\"']?)([^\"',}\s]+)",
         r"\1[REDACTED]",
@@ -480,7 +499,7 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
             body = exc.read().decode("utf-8", errors="replace")
         except Exception:
             body = ""
-        detail = f" HTTP response body: {body[:1000]}" if body else ""
+        detail = f" HTTP response body: {sanitize_error_detail(body[:1000])}" if body else ""
         raise RuntimeError(f"Worker request failed for {url}: HTTP Error {exc.code}: {exc.reason}.{detail}") from exc
     except (error.URLError, TimeoutError) as exc:
         raise RuntimeError(f"Worker request failed for {url}: {exc}") from exc
@@ -496,7 +515,7 @@ def get_json(url: str) -> dict[str, Any]:
             body = exc.read().decode("utf-8", errors="replace")
         except Exception:
             body = ""
-        detail = f" HTTP response body: {body[:1000]}" if body else ""
+        detail = f" HTTP response body: {sanitize_error_detail(body[:1000])}" if body else ""
         raise RuntimeError(f"Worker request failed for {url}: HTTP Error {exc.code}: {exc.reason}.{detail}") from exc
     except (error.URLError, TimeoutError) as exc:
         raise RuntimeError(f"Worker request failed for {url}: {exc}") from exc
@@ -725,11 +744,11 @@ def _report_worker_result_to_campaign_service(task_type: str, result: dict[str, 
         )
         with _req.urlopen(req, timeout=15) as response:
             body = response.read().decode("utf-8")
-            logger.info(f"Worker result reported to campaign_service: {body}")
+            logger.info("Worker result reported to campaign_service: %s", sanitize_error_detail(body))
     except Exception as exc:
         # Log as error (not warning) since this means assets may not be persisted
         # The campaign_service failover mechanism (generate_outputs_via_workers) should handle this
-        logger.error(f"Orchestrator: failed to report worker result to campaign_service: {exc}")
+        logger.error("Orchestrator: failed to report worker result to campaign_service: %s", sanitize_error_detail(str(exc)))
 
 
 def process_task(campaign_id: str, task_id: str) -> None:
@@ -742,7 +761,15 @@ def process_task(campaign_id: str, task_id: str) -> None:
         return
 
     task.status = "running"
-    persist_campaign_task_state(campaign_id, campaign_tasks)
+    if not persist_campaign_task_state(campaign_id, campaign_tasks):
+        logger.error("persistence_error: task %s remains retryable because running state was not durable", task_id)
+        task.status = "retrying"
+        task.error_class = "persistence_error"
+        task.error_detail = "Unable to persist task state"
+        campaign_tasks[task_id] = task
+        with task_state_lock:
+            task_state[campaign_id] = campaign_tasks
+        return
     with task_state_lock:
         task_state[campaign_id] = campaign_tasks
 
@@ -754,8 +781,19 @@ def process_task(campaign_id: str, task_id: str) -> None:
         campaign_tasks[task_id] = task
 
         next_tasks = mark_ready_tasks_as_planned(campaign_tasks)
-        for next_task in next_tasks:
-            publish_task(TASK_TOPIC_MAP[next_task.task_type], campaign_id, next_task)
+        if not persist_campaign_task_state(campaign_id, campaign_tasks):
+            logger.error("persistence_error: successful task %s is kept retryable and descendants were not published", task_id)
+            task.status = "retrying"
+            task.error_class = "persistence_error"
+            task.error_detail = "Unable to persist completed task state"
+            campaign_tasks[task_id] = task
+            for next_task in next_tasks:
+                next_task.status = "pending"
+        else:
+            with task_state_lock:
+                task_state[campaign_id] = campaign_tasks
+            for next_task in next_tasks:
+                publish_task(TASK_TOPIC_MAP[next_task.task_type], campaign_id, next_task)
         with retry_state_lock:
             retry_state.pop(retry_key, None)
     except Exception as exc:
@@ -766,15 +804,22 @@ def process_task(campaign_id: str, task_id: str) -> None:
 
         retryable = error_class in {"quota", "rate_limit", "timeout", "provider_error"}
         if retryable and current_retry <= MAX_RETRY:
-            task.status = "retrying"
+            task.status = "planned"
             task.retry_count = current_retry
             task.error_class = error_class
             task.error_detail = sanitize_error_detail(str(exc))
             campaign_tasks[task_id] = task
             time.sleep(next_retry_delay(current_retry))
-            task.status = "planned"
-            campaign_tasks[task_id] = task
-            publish_task(TASK_TOPIC_MAP[task.task_type], campaign_id, task)
+            if not persist_campaign_task_state(campaign_id, campaign_tasks):
+                logger.error("persistence_error: retry for task %s remains retryable and was not published", task_id)
+                task.status = "retrying"
+                task.error_class = "persistence_error"
+                task.error_detail = "Unable to persist retry state"
+                campaign_tasks[task_id] = task
+            else:
+                with task_state_lock:
+                    task_state[campaign_id] = campaign_tasks
+                publish_task(TASK_TOPIC_MAP[task.task_type], campaign_id, task)
         else:
             task.status = "failed"
             task.retry_count = current_retry
@@ -782,12 +827,10 @@ def process_task(campaign_id: str, task_id: str) -> None:
             task.error_detail = sanitize_error_detail(str(exc))
             campaign_tasks[task_id] = task
             block_pending_descendants(campaign_tasks, task_id)
+            if not persist_campaign_task_state(campaign_id, campaign_tasks):
+                logger.error("persistence_error: terminal failure for task %s is not durable", task_id)
             publish_dlq(campaign_id, task, task.error_detail or "worker failure")
-
-    # Persist to Postgres FIRST, then update in-memory state.
-    # This ensures that if we crash between persist and memory update,
-    # on restart we reload from Postgres (which has the correct state).
-    persist_campaign_task_state(campaign_id, campaign_tasks)
+    # Persistence is attempted before publishing or updating the shared state.
     with task_state_lock:
         task_state[campaign_id] = campaign_tasks
 
@@ -853,7 +896,11 @@ def dispatch(payload: DispatchRequest) -> DispatchResponse:
         task.status = "planned" if len(task.depends_on) == 0 else "pending"
         campaign_tasks[task.task_id] = task
 
-    persist_campaign_task_state(payload.campaign_id, campaign_tasks)
+    if not persist_campaign_task_state(payload.campaign_id, campaign_tasks):
+        logger.error("persistence_error: dispatch for campaign %s was not durable; tasks remain retryable", payload.campaign_id)
+        with task_state_lock:
+            task_state[payload.campaign_id] = campaign_tasks
+        return DispatchResponse(campaign_id=payload.campaign_id, status="persistence_failed", tasks=list(campaign_tasks.values()))
     with task_state_lock:
         task_state[payload.campaign_id] = campaign_tasks
 
@@ -887,13 +934,16 @@ def task_complete(payload: TaskCompleteRequest) -> TaskCompleteResponse:
     campaign_tasks[payload.task_id] = current
 
     next_tasks = mark_ready_tasks_as_planned(campaign_tasks)
+    if not persist_campaign_task_state(payload.campaign_id, campaign_tasks):
+        logger.error("persistence_error: completion for task %s was not durable; ready descendants were not published", payload.task_id)
+        with task_state_lock:
+            task_state[payload.campaign_id] = campaign_tasks
+        raise HTTPException(status_code=503, detail="Task state persistence unavailable")
+    with task_state_lock:
+        task_state[payload.campaign_id] = campaign_tasks
     for task in next_tasks:
         topic = TASK_TOPIC_MAP[task.task_type]
         publish_task(topic, payload.campaign_id, task)
-
-    persist_campaign_task_state(payload.campaign_id, campaign_tasks)
-    with task_state_lock:
-        task_state[payload.campaign_id] = campaign_tasks
     return TaskCompleteResponse(
         campaign_id=payload.campaign_id,
         task_id=payload.task_id,

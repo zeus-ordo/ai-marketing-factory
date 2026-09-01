@@ -29,3 +29,9 @@ Known non-blocking warnings are the existing FastAPI `on_event` deprecations and
 - Persistence failures are returned as failure results and logged with a classified `persistence_error` instead of being swallowed.
 - Redaction now handles query parameters and structured JSON-style API key, token, password, credential, and authorization fields.
 - Added regression tests for retry success, retry failure and retryability, blocked synchronization, persistence failures, and structured secret redaction.
+
+## Remaining Review Fixes
+
+- All orchestrator persistence callers now inspect the result, gate task publication, log classified durability failures, and leave affected tasks retryable or terminal without claiming durable success.
+- Structured redaction now handles nested credential maps, complete sensitive field values, and full Bearer tokens without malformed suffixes.
+- Added caller-level tests for dispatch and completion durability behavior, plus nested credential and Bearer redaction coverage.
