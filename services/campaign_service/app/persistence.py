@@ -783,7 +783,7 @@ class PostgresPersistence:
             run_id=row[18],
         )
 
-    def fail_manual_task_retry(self, campaign_id: str, task_id: str, error_class: str, error_detail: str) -> None:
+    def fail_manual_task_retry(self, campaign_id: str, task_id: str, error_class: str, error_detail: str) -> bool:
         """Durably reconcile a claimed retry after worker dispatch fails."""
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -791,10 +791,13 @@ class PostgresPersistence:
                     """UPDATE campaign_tasks
                        SET status = 'failed', retryable = TRUE, error_class = %s, error_detail = %s,
                            next_retry_at = NULL
-                       WHERE campaign_id = %s AND task_id = %s AND status = 'retrying'""",
+                       WHERE campaign_id = %s AND task_id = %s AND status = 'retrying'
+                       RETURNING task_id, status""",
                     (error_class, error_detail, campaign_id, task_id),
                 )
+                updated = cur.fetchone()
             conn.commit()
+        return updated is not None and updated[1] == "failed"
 
     def release_manual_task_retry(self, campaign_id: str, task_id: str) -> None:
         with self._connect() as conn:

@@ -225,6 +225,10 @@ def test_retry_dispatch_failure_reconciles_terminal_state_when_store_save_fails(
 
         def fail_manual_task_retry(self, *args, **kwargs):
             reconciled.append((args, kwargs))
+            return True
+
+        def release_manual_task_retry(self, *_args):
+            pass
 
     class FailingStore(Store):
         def __init__(self, campaign):
@@ -251,3 +255,101 @@ def test_retry_dispatch_failure_reconciles_terminal_state_when_store_save_fails(
         main.retry_worker_task(item.campaign_id, RetryWorkerTaskRequest(task_id=task_item.task_id), object())
     assert failure.value.status_code == 502
     assert reconciled
+
+
+def test_retry_dispatch_failure_reconciles_from_authoritative_claim_when_store_read_fails(monkeypatch):
+    item = campaign("camp-read-reconcile")
+    task_item = TaskRecord(company_id="co-1", campaign_id=item.campaign_id, task_id="task-retry", task_type="image_generation", status="failed", priority=1, retry_count=1, acceptance=[])
+    reconciled = []
+
+    class Persistence:
+        def claim_manual_task_retry(self, *_args):
+            return task_item.model_copy(update={"status": "retrying", "retry_count": 2})
+
+        def record_task_attempt(self, *_args):
+            pass
+
+        def fail_manual_task_retry(self, *args, **kwargs):
+            reconciled.append((args, kwargs))
+            return True
+
+    class StoreWithReadFailure(Store):
+        def __init__(self, campaign):
+            super().__init__(campaign)
+            self.reads = 0
+            self.writes = 0
+
+        def get_tasks(self, campaign_id):
+            self.reads += 1
+            if self.reads > 1:
+                raise RuntimeError("database unavailable")
+            return [task_item]
+
+        def set_tasks(self, _campaign_id, tasks):
+            self.writes += 1
+            if self.writes > 1:
+                raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(main, "store", StoreWithReadFailure(item))
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main, "require_review_action_access", lambda req: None)
+    monkeypatch.setattr(main, "require_campaign_access", lambda req, campaign: None)
+    monkeypatch.setattr(main, "_dispatch_worker_for_task", lambda *_args: (_ for _ in ()).throw(RuntimeError("worker unavailable")))
+    monkeypatch.setattr(main, "append_trace_event", lambda **kwargs: None)
+    monkeypatch.setattr(main, "_notify_webhook", lambda **kwargs: None)
+
+    with pytest.raises(main.HTTPException) as failure:
+        main.retry_worker_task(item.campaign_id, RetryWorkerTaskRequest(task_id=task_item.task_id), object())
+    assert failure.value.status_code == 502
+    assert reconciled
+
+
+def test_retry_rejects_run_scoped_asset_without_run_id(monkeypatch):
+    item = campaign("camp-no-asset-run")
+    review = main.ReviewItem(review_id="review-1", campaign_id=item.campaign_id, asset_id="asset-1", score=1, status="review_pending", submitted_at=datetime.utcnow().isoformat(), run_id="run-old")
+    asset = AssetOutput(company_id="co-1", asset_id="asset-1", campaign_id=item.campaign_id, task_id="task-1", asset_type="image", url="https://asset", created_at=datetime.utcnow(), run_id=None)
+    monkeypatch.setattr(main, "store", Store(item))
+    monkeypatch.setattr(main, "require_review_action_access", lambda req: None)
+    monkeypatch.setattr(main, "require_campaign_access", lambda req, campaign: None)
+    monkeypatch.setattr(main, "find_review_item", lambda _review_id: review)
+    monkeypatch.setattr(main, "get_asset_output_by_id", lambda _asset_id: asset)
+
+    with pytest.raises(main.HTTPException) as failure:
+        main.retry_worker_task(item.campaign_id, RetryWorkerTaskRequest(task_id="task-1", review_id=review.review_id), object())
+    assert failure.value.status_code == 400
+
+
+def test_retry_reconciliation_zero_rows_returns_recovery_pending(monkeypatch):
+    item = campaign("camp-zero-reconcile")
+    task_item = TaskRecord(company_id="co-1", campaign_id=item.campaign_id, task_id="task-retry", task_type="image_generation", status="failed", priority=1, retry_count=1, acceptance=[])
+
+    class Persistence:
+        def claim_manual_task_retry(self, *_args):
+            return task_item.model_copy(update={"status": "retrying", "retry_count": 2})
+
+        def record_task_attempt(self, *_args):
+            pass
+
+        def fail_manual_task_retry(self, *_args, **_kwargs):
+            return False
+
+        def release_manual_task_retry(self, *_args):
+            pass
+
+    class FailingStore(Store):
+        def get_tasks(self, _campaign_id):
+            return [task_item]
+
+        def set_tasks(self, _campaign_id, tasks):
+            if any(task.status == "failed" for task in tasks):
+                raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(main, "store", FailingStore(item))
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main, "require_review_action_access", lambda req: None)
+    monkeypatch.setattr(main, "require_campaign_access", lambda req, campaign: None)
+    monkeypatch.setattr(main, "_dispatch_worker_for_task", lambda *_args: (_ for _ in ()).throw(RuntimeError("worker unavailable")))
+
+    with pytest.raises(main.HTTPException) as failure:
+        main.retry_worker_task(item.campaign_id, RetryWorkerTaskRequest(task_id=task_item.task_id), object())
+    assert failure.value.status_code == 503

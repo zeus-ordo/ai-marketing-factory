@@ -15,6 +15,21 @@ Verification:
 - `node scripts/test-campaign-flow-contract.mjs`: passed
 - `python -m pytest services/campaign_service -q`: 47 passed
 - `npm run build`: passed
+
+## Retry Reconciliation Safeguards
+
+- Dispatch-failure task reconstruction is now guarded end-to-end; store read failures fall back to the authoritative claimed task row for direct persistence reconciliation.
+- Run-scoped asset retries require a known asset `run_id` and exact target-run agreement; only an explicit legacy review path may use records without a run.
+- Persistence reconciliation now uses `UPDATE ... RETURNING` and reports failure when no claimed retry row was updated, preserving explicit recovery-pending handling.
+- Added regressions for store-read failure, missing asset run IDs, and zero-row reconciliation.
+
+Verification:
+
+- `python -m pytest services/campaign_service -q`: 62 passed
+- `python -m pytest services/orchestrator -q`: 25 passed
+- `node scripts/test-campaign-flow-contract.mjs`: passed
+- `git diff --check`: passed
+- `npm run build`: passed
 - `git diff --check`: passed
 
 ## P1 Retry Follow-up
