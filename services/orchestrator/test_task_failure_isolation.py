@@ -114,6 +114,27 @@ def test_queue_message_is_not_acknowledged_when_task_persistence_fails(monkeypat
     assert acknowledged == []
 
 
+def test_acknowledged_message_with_missing_metadata_releases_message_claim(monkeypatch):
+    released = []
+
+    class Redis:
+        def set(self, *_args, **_kwargs):
+            return True
+
+        def eval(self, script, _keys, key, *_args):
+            if "del" in script:
+                released.append(key)
+            return 1
+
+        def xack(self, *_args):
+            return 1
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+
+    assert orchestrator.process_queue_message("task.image", "missing-metadata", {}) is True
+    assert released == ["orchestrator:message-claim:task.image:missing-metadata"]
+
+
 def test_ack_exception_retains_message_and_task_claims(monkeypatch):
     released = []
 

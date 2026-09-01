@@ -963,7 +963,11 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
         campaign_id = fields.get("campaign_id")
         task_id = fields.get("task_id")
         if not campaign_id or not task_id:
-            redis_client.xack(stream_name, GROUP_NAME, message_id)
+            ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
+            if ack_result is not None and not ack_result:
+                logger.warning("XACK did not acknowledge message %s", message_id)
+                return False
+            acknowledged = True
             return True
         if not process_task(campaign_id, task_id) or heartbeat_failed.is_set():
             logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)

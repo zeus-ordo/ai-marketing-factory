@@ -19,6 +19,19 @@ Verification:
 - `git diff --check`: passed
 - `npm run build`: passed
 
+## Malformed Message Claim Release
+
+- Successful ACKs for messages missing campaign or task metadata now set the common acknowledgement flag, releasing the message claim immediately instead of waiting for TTL expiry.
+- ACK result failures still leave the message pending and retain ownership.
+- Added regression coverage for claim release on successfully acknowledged metadata-missing messages.
+
+Verification:
+
+- `python -m pytest services/orchestrator -q`: 25 passed
+- `python -m pytest services/campaign_service -q`: 47 passed
+- `git diff --check`: passed
+- `npm run build`: passed
+
 ## Safe Pending Message Recovery Coordination
 
 - Added an active message-id registry guarded by a process lock so recovery skips messages still being processed, with an atomic acquisition check closing the recovery/processing race.
