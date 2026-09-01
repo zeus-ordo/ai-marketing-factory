@@ -2175,6 +2175,23 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
     )
 
 
+def snapshot_for_campaign(campaign: CampaignRecord, run_id: str | None = None) -> GenerationContextSnapshot | None:
+    snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
+    if snapshot is None and persistence is not None and run_id:
+        snapshot = persistence.load_generation_context(campaign.campaign_id, run_id)
+        if snapshot is not None:
+            generation_context_cache[snapshot.generation_context_id] = snapshot
+    return snapshot
+
+
+def snapshot_prompt_context(snapshot: GenerationContextSnapshot | None) -> str:
+    if snapshot is None:
+        return ""
+    return "\n\nPersisted generation snapshot sources:\n" + "\n".join(
+        f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
+    )
+
+
 def build_campaign_prompt_context(campaign: CampaignRecord) -> str:
     brief = campaign.brief
     target = brief.target_audience
@@ -2414,6 +2431,8 @@ def generate_outputs_via_workers(
     assets: list[AssetOutput] = []
     validations: list[ValidationResult] = []
     worker_context = {"generation_context_id": generation_context_id} if generation_context_id else {}
+    snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.generation_context_id == generation_context_id), None) if generation_context_id else snapshot_for_campaign(campaign, run_id)
+    prompt_context = snapshot_prompt_context(snapshot)
 
     for task in tasks:
         if task.task_type not in {"copywriting", "image_generation", "video_generation", "ads_strategy"}:
@@ -2424,7 +2443,7 @@ def generate_outputs_via_workers(
                 continue
 
             if task.task_type == "copywriting":
-                copy_prompt = build_copy_generation_prompt(campaign)
+                copy_prompt = build_copy_generation_prompt(campaign) + prompt_context
                 copy_resp = _worker_post_json(
                     f"{WORKER_COPY_URL}/internal/workers/copy/run",
                     {
@@ -2478,7 +2497,7 @@ def generate_outputs_via_workers(
                     append_validation_for_asset(validations, company_id, campaign_id, asset_id, now, run_id=run_id)
 
             elif task.task_type == "image_generation":
-                image_prompt = build_image_generation_prompt(campaign)
+                image_prompt = build_image_generation_prompt(campaign) + prompt_context
                 image_resp = _worker_post_json(
                     f"{WORKER_IMAGE_URL}/internal/workers/image/run",
                     {
@@ -2531,7 +2550,7 @@ def generate_outputs_via_workers(
                     append_validation_for_asset(validations, company_id, campaign_id, asset_id, now, run_id=run_id)
 
             elif task.task_type == "video_generation":
-                video_prompt = build_video_generation_prompt(campaign)
+                video_prompt = build_video_generation_prompt(campaign) + prompt_context
                 video_resp = _worker_post_json(
                     f"{WORKER_VIDEO_URL}/internal/workers/video/run",
                     {
@@ -2597,6 +2616,7 @@ def generate_outputs_via_workers(
                         "objective": campaign.brief.objective,
                         "budget": float(campaign.brief.budget),
                         "platforms": campaign.brief.platforms,
+                        "context": prompt_context,
                         **worker_context,
                     },
                     "ads_strategy",
@@ -5059,7 +5079,7 @@ def _generate_single_asset_background(campaign: CampaignRecord, payload: SingleA
     })
     try:
         run_id = latest_campaign_run_id(campaign.campaign_id) or ""
-        snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
+        snapshot = snapshot_for_campaign(campaign, run_id or None)
         if snapshot is None:
             snapshot = create_generation_context(campaign, run_id or f"single_{task.task_id}")
             generation_context_cache[snapshot.generation_context_id] = snapshot
@@ -6704,10 +6724,11 @@ class RetryWorkerTaskRequest(BaseModel):
 
 
 def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tuple[list[AssetOutput], list[ValidationResult]]:
-    snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
+    run_id = latest_campaign_run_id(campaign.campaign_id)
+    snapshot = snapshot_for_campaign(campaign, run_id)
     return generate_outputs_via_workers(
         campaign.company_id, campaign.campaign_id, campaign, [task],
-        run_id=latest_campaign_run_id(campaign.campaign_id),
+        run_id=run_id,
         generation_context_id=snapshot.generation_context_id if snapshot else None,
     )
 

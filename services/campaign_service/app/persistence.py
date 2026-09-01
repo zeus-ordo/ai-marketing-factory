@@ -13,6 +13,16 @@ except ModuleNotFoundError:
     psycopg = None
 
 
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set)):
+        return [_jsonable(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
 class PostgresPersistence:
     def __init__(self, dsn: str):
         if psycopg is None:
@@ -87,6 +97,18 @@ class PostgresPersistence:
                     );
                     """
                 )
+                for statement in (
+                    "ALTER TABLE generation_contexts ADD COLUMN IF NOT EXISTS external_search_error TEXT;",
+                    "ALTER TABLE generation_contexts ADD COLUMN IF NOT EXISTS task_id TEXT;",
+                    "ALTER TABLE generation_contexts ADD COLUMN IF NOT EXISTS selected_reference_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb;",
+                    "ALTER TABLE generation_contexts ADD COLUMN IF NOT EXISTS matched_folder_names_json JSONB NOT NULL DEFAULT '[]'::jsonb;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS folder TEXT;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS url TEXT;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS provider TEXT;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS query TEXT;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS retrieved_at TIMESTAMP;",
+                ):
+                    cur.execute(statement)
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS campaign_tasks (
@@ -583,9 +605,35 @@ class PostgresPersistence:
                          metadata.get("provider"), metadata.get("query"),
                          max(1, (len(item.text.encode("utf-8")) + 3) // 4),
                          metadata.get("retrieved_at").isoformat() if hasattr(metadata.get("retrieved_at"), "isoformat") else metadata.get("retrieved_at"),
-                         json.dumps(metadata, default=lambda value: value.isoformat() if hasattr(value, "isoformat") else str(value))),
+                         json.dumps(_jsonable(metadata))),
                     )
             conn.commit()
+
+    def load_generation_context(self, campaign_id: str, run_id: str) -> GenerationContextSnapshot | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT generation_context_id, internal_token_count, external_token_count, internal_ratio, external_ratio, external_source_urls_json, external_search_status, external_search_error, task_id, selected_reference_ids_json, matched_folder_names_json FROM generation_contexts WHERE campaign_id = %s AND run_id = %s",
+                    (campaign_id, run_id),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                cur.execute(
+                    "SELECT source_type, source_id, label, text, metadata_json FROM generation_context_items WHERE generation_context_id = %s ORDER BY position",
+                    (row[0],),
+                )
+                items = cur.fetchall()
+        from .context_assembler import ContextSourceItem
+        return GenerationContextSnapshot(
+            generation_context_id=row[0], campaign_id=campaign_id,
+            internal_token_count=int(row[1]), external_token_count=int(row[2]),
+            internal_ratio=float(row[3]), external_ratio=float(row[4]),
+            items=tuple(ContextSourceItem(r[0], r[1], r[2], r[3], r[4] or {}) for r in items),
+            external_source_urls=tuple(row[5] or []), external_search_status=row[6],
+            external_search_error=row[7], task_id=row[8],
+            selected_reference_ids=tuple(row[9] or []), matched_folder_names=tuple(row[10] or []),
+        )
 
     def update_campaign_brief(self, campaign_id: str, brief: CampaignBrief) -> None:
         with self._connect() as conn:

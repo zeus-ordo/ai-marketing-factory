@@ -37,3 +37,19 @@ Fix verification:
 
 - `python -m pytest services/campaign_service/test_context_assembler.py -q`: 6 passed.
 - `python -m compileall -q services/campaign_service/app services/orchestrator/app`: passed.
+
+## Final Review Fix Report
+
+- Direct worker, single-asset, and retry paths now load and consume the persisted snapshot content and ID.
+- Source ordering is deterministic in both assembly and prompt rendering.
+- Existing databases receive additive `ALTER TABLE ... IF NOT EXISTS` migrations for all later snapshot columns.
+- Retry paths rehydrate snapshots from PostgreSQL after restart.
+- Nested snapshot metadata is recursively frozen.
+- Added focused coverage for direct generation, priority, migrations, and rehydration.
+
+Final verification:
+
+- `python -m pytest services/campaign_service/test_context_assembler.py -q`: 9 passed.
+- `python -m pytest services/campaign_service -q`: 38 passed.
+- `git diff --check`: passed.
+- `npm run build`: passed.

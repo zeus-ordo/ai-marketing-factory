@@ -143,3 +143,52 @@ def test_snapshot_has_required_provenance_fields_and_is_immutable():
     assert snapshot.matched_folder_names == ("Food",)
     with pytest.raises(TypeError):
         snapshot.items[0].metadata["folder"] = "changed"
+    with pytest.raises(TypeError):
+        snapshot.items[0].metadata["nested"] = {"x": []}
+
+
+def test_direct_worker_generation_uses_persisted_snapshot_prompt(monkeypatch):
+    import importlib
+    main = importlib.import_module("app.main")
+    snapshot = assemble_generation_context(campaign(), [item("user_selected", "ref", "UNIQUE SNAPSHOT")], [], [], 100)
+    main.generation_context_cache[snapshot.generation_context_id] = snapshot
+    captured = {}
+    monkeypatch.setattr(main, "_worker_post_json", lambda url, payload, *args: captured.update(payload) or {"variants": [{"body": "ok"}]})
+    from app.schemas import TaskRecord
+    main.generate_outputs_via_workers("co-1", "camp-1", campaign(), [TaskRecord(company_id="co-1", task_id="t", campaign_id="camp-1", task_type="copywriting", status="planned", priority=1)], generation_context_id=snapshot.generation_context_id)
+    assert "UNIQUE SNAPSHOT" in captured["prompt"]
+    assert captured["generation_context_id"] == snapshot.generation_context_id
+
+
+def test_existing_table_migrations_are_additive():
+    from app.persistence import PostgresPersistence
+    class Cursor:
+        def __init__(self): self.queries = []
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def execute(self, query, params=None): self.queries.append(query)
+    class Connection:
+        def __init__(self, cursor): self.cursor_value = cursor
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def cursor(self): return self.cursor_value
+        def commit(self): pass
+    cursor = Cursor()
+    persistence = object.__new__(PostgresPersistence)
+    persistence._connect = lambda: Connection(cursor)
+    persistence.initialize()
+    migrations = [query for query in cursor.queries if "ALTER TABLE generation_context" in query]
+    assert migrations
+    assert all("IF NOT EXISTS" in query for query in migrations)
+    assert not any("DROP " in query.upper() for query in migrations)
+
+
+def test_retry_rehydrates_snapshot_from_persistence(monkeypatch):
+    import importlib
+    main = importlib.import_module("app.main")
+    snapshot = assemble_generation_context(campaign(), [item("campaign_reference", "ref", "persisted")], [], [], 100)
+    class Persistence:
+        def load_generation_context(self, campaign_id, run_id): return snapshot
+    main.generation_context_cache.clear()
+    monkeypatch.setattr(main, "persistence", Persistence())
+    assert main.snapshot_for_campaign(campaign(), "run-1") is snapshot

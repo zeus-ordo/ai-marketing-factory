@@ -11,6 +11,14 @@ from uuid import uuid4
 from .schemas import CampaignRecord
 
 
+def _freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple, set)):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
 @dataclass(frozen=True)
 class ContextSourceItem:
     source_type: str
@@ -20,7 +28,7 @@ class ContextSourceItem:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        object.__setattr__(self, "metadata", _freeze(dict(self.metadata)))
 
 
 @dataclass(frozen=True)
