@@ -35,6 +35,20 @@ Verification:
 
 Known non-blocking warnings are the existing FastAPI `on_event` deprecations and Next.js multiple-lockfile workspace-root warning.
 
+## Lease Acknowledgement Race Fixes
+
+- Heartbeats are stopped and joined before the final lease ownership check and stream ACK.
+- Final message/task lease renewal is synchronized with heartbeat renewal; renewal loss immediately before ACK leaves the entry pending.
+- Message and task claims are released only after a confirmed ACK; ACK exceptions and failed ACK counts retain ownership until lease expiry.
+- Added deterministic coverage for ACK exceptions retaining claims and final renewal loss suppressing ACK.
+
+Verification:
+
+- `python -m pytest services/orchestrator -q`: 24 passed
+- `python -m pytest services/campaign_service -q`: 47 passed
+- `git diff --check`: passed
+- `npm run build`: passed
+
 ## Duplicate Execution Review Fixes
 
 - Message leases now renew periodically during processing with owner-checked Redis Lua `PEXPIRE`; renewal loss conservatively leaves the message pending and does not ACK or release the lease.

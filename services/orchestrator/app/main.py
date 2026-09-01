@@ -908,7 +908,9 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
     task_token: str | None = None
     heartbeat_failed = threading.Event()
     heartbeat_stop = threading.Event()
+    heartbeat_lock = threading.Lock()
     heartbeat_thread: threading.Thread | None = None
+    acknowledged = False
     redis_set = getattr(redis_client, "set", None)
     active_key = f"{stream_name}:{message_id}"
     with active_message_ids_lock:
@@ -939,12 +941,13 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
 
             def heartbeat() -> None:
                 while not heartbeat_stop.wait(LEASE_HEARTBEAT_INTERVAL_SECONDS):
-                    if not _renew_lease(message_key, message_token):
-                        heartbeat_failed.set()
-                        return
-                    if task_key and task_token and not _renew_lease(task_key, task_token):
-                        heartbeat_failed.set()
-                        return
+                    with heartbeat_lock:
+                        if not _renew_lease(message_key, message_token):
+                            heartbeat_failed.set()
+                            return
+                        if task_key and task_token and not _renew_lease(task_key, task_token):
+                            heartbeat_failed.set()
+                            return
 
             heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
             heartbeat_thread.start()
@@ -965,15 +968,35 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
         if not process_task(campaign_id, task_id) or heartbeat_failed.is_set():
             logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)
             return False
-        redis_client.xack(stream_name, GROUP_NAME, message_id)
-        return True
+
+        # Join the heartbeat before the final ownership check so renewal and ACK
+        # cannot race, then retain claims unless the ACK is confirmed.
+        heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join()
+        if callable(redis_set):
+            with heartbeat_lock:
+                ownership_valid = not heartbeat_failed.is_set() and _renew_lease(message_key, message_token)
+                if task_key and task_token:
+                    ownership_valid = ownership_valid and _renew_lease(task_key, task_token)
+                if not ownership_valid:
+                    heartbeat_failed.set()
+                    logger.warning("Lease ownership lost before acknowledging message %s", message_id)
+                    return False
+        with heartbeat_lock:
+            ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
+            if ack_result is not None and not ack_result:
+                logger.warning("XACK did not acknowledge message %s", message_id)
+                return False
+            acknowledged = True
+            return True
     finally:
         heartbeat_stop.set()
         if heartbeat_thread:
-            heartbeat_thread.join(timeout=LEASE_HEARTBEAT_INTERVAL_SECONDS + 1)
+            heartbeat_thread.join()
         with active_message_ids_lock:
             active_message_ids.discard(active_key)
-        if callable(redis_set) and not heartbeat_failed.is_set():
+        if callable(redis_set) and acknowledged:
             if task_key and task_token:
                 _release_lease(task_key, task_token)
             _release_lease(message_key, message_token)

@@ -114,6 +114,58 @@ def test_queue_message_is_not_acknowledged_when_task_persistence_fails(monkeypat
     assert acknowledged == []
 
 
+def test_ack_exception_retains_message_and_task_claims(monkeypatch):
+    released = []
+
+    class Redis:
+        def set(self, *_args, **_kwargs):
+            return True
+
+        def eval(self, script, _keys, key, *_args):
+            if "del" in script:
+                released.append(key)
+            return 1
+
+        def xack(self, *_args):
+            raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", lambda *_: True)
+
+    with pytest.raises(RuntimeError, match="redis unavailable"):
+        orchestrator.process_queue_message("task.image", "ack-error", {"campaign_id": "camp", "task_id": "image"})
+
+    assert released == []
+
+
+def test_renewal_failure_immediately_before_ack_leaves_message_pending(monkeypatch):
+    acknowledged = []
+    renewals = []
+
+    class Redis:
+        def set(self, *_args, **_kwargs):
+            return True
+
+        def eval(self, script, _keys, key, *_args):
+            if "pexpire" in script:
+                renewals.append(key)
+                return 0
+            return 1
+
+        def xack(self, *args):
+            acknowledged.append(args)
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", lambda *_: True)
+    monkeypatch.setattr(orchestrator, "LEASE_HEARTBEAT_INTERVAL_SECONDS", 60)
+
+    assert orchestrator.process_queue_message(
+        "task.image", "final-renewal-loss", {"campaign_id": "camp", "task_id": "image"}
+    ) is False
+    assert renewals
+    assert acknowledged == []
+
+
 def test_message_lease_is_renewed_while_task_runs(monkeypatch):
     acknowledged = []
     renewals = []
