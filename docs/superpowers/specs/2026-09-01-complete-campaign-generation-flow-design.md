@@ -17,7 +17,7 @@
 1. 前端與後端都強制驗證五個建立活動必填欄位。
 2. 勾選投放策略時，預算必須大於零。
 3. 使用者指定的 Reference 與對應產業資料優先於外部資料。
-4. 系統自動依活動內容搜尋公開網路資料。
+4. 系統自動依活動內容搜尋公開網路資料，並透過可替換的 Search Adapter 執行。
 5. 內部資料與外部資料實際按約 75:25 組成生成 Context。
 6. 保存每次生成使用的資料來源、token 數與比例。
 7. 產業匹配支援資料夾、標題、描述及同義詞／關鍵字。
@@ -142,6 +142,43 @@ HTTP 422，且不得建立 Campaign、Run 或 Task。
 匹配結果最多取設定的上限，並記錄實際採用的資料夾與項目 ID。
 
 ## 8. 外部網路搜尋
+
+### 8.1 Search Adapter
+
+Campaign Service 不直接綁定單一搜尋服務，統一透過 Search Adapter 介面：
+
+```python
+class SearchProvider(Protocol):
+    def search(self, query: str, limit: int) -> list[ExternalSearchResult]: ...
+```
+
+第一個正式 Provider 使用 Google Programmable Search／Custom Search API。
+未來可在不修改 Context 組裝器的情況下替換為 Tavily、Brave 或其他 Provider。
+
+Provider 由環境變數指定：
+
+```text
+EXTERNAL_SEARCH_PROVIDER=google
+EXTERNAL_SEARCH_API_KEY=<secret>
+EXTERNAL_SEARCH_ENGINE_ID=<engine-id>
+```
+
+API key 不得寫入 Git、資料庫、prompt 或一般 application log。
+
+Search Adapter 必須將不同 Provider 的結果正規化為：
+
+```json
+{
+  "source_type": "external_web",
+  "title": "搜尋結果標題",
+  "url": "https://example.com",
+  "summary": "資料摘要",
+  "retrieved_at": "2026-09-01T00:00:00Z",
+  "provider": "google"
+}
+```
+
+### 8.2 自動查詢與失敗處理
 
 系統自動使用以下欄位產生搜尋查詢：
 
