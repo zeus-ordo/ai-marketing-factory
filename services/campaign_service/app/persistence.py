@@ -1,6 +1,7 @@
 import importlib
 import json
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any
 
 from .schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord, ValidationResult
@@ -57,6 +58,10 @@ class PostgresPersistence:
                         external_ratio NUMERIC(8,6) NOT NULL,
                         external_source_urls_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         external_search_status TEXT NOT NULL DEFAULT 'not_requested',
+                        external_search_error TEXT,
+                        task_id TEXT,
+                        selected_reference_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        matched_folder_names_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                         UNIQUE (campaign_id, run_id)
                     );
@@ -549,17 +554,20 @@ class PostgresPersistence:
                     INSERT INTO generation_contexts
                         (generation_context_id, campaign_id, run_id, internal_token_count,
                          external_token_count, internal_ratio, external_ratio,
-                         external_source_urls_json, external_search_status)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                         external_source_urls_json, external_search_status, external_search_error,
+                         task_id, selected_reference_ids_json, matched_folder_names_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb, %s::jsonb)
                     ON CONFLICT (generation_context_id) DO NOTHING;
                     """,
                     (snapshot.generation_context_id, snapshot.campaign_id, run_id,
                      snapshot.internal_token_count, snapshot.external_token_count,
                      snapshot.internal_ratio, snapshot.external_ratio,
-                     json.dumps(snapshot.external_source_urls), snapshot.external_search_status),
+                     json.dumps(snapshot.external_source_urls), snapshot.external_search_status,
+                     snapshot.external_search_error, snapshot.task_id,
+                     json.dumps(snapshot.selected_reference_ids), json.dumps(snapshot.matched_folder_names)),
                 )
                 for position, item in enumerate(snapshot.items):
-                    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+                    metadata = dict(item.metadata) if isinstance(item.metadata, Mapping) else {}
                     cur.execute(
                         """
                         INSERT INTO generation_context_items
@@ -573,8 +581,9 @@ class PostgresPersistence:
                          position, item.source_type, item.source_id, item.label, item.text,
                          metadata.get("folder") or metadata.get("folder_name"), metadata.get("url"),
                          metadata.get("provider"), metadata.get("query"),
-                         max(1, (len(item.text.encode("utf-8")) + 3) // 4), metadata.get("retrieved_at"),
-                         json.dumps(metadata)),
+                         max(1, (len(item.text.encode("utf-8")) + 3) // 4),
+                         metadata.get("retrieved_at").isoformat() if hasattr(metadata.get("retrieved_at"), "isoformat") else metadata.get("retrieved_at"),
+                         json.dumps(metadata, default=lambda value: value.isoformat() if hasattr(value, "isoformat") else str(value))),
                     )
             conn.commit()
 

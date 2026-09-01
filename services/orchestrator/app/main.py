@@ -550,6 +550,8 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             f"{WORKER_COPY_URL}/internal/workers/copy/run",
             payload,
         )
+        if worker_payload.get("generation_context_id"):
+            result.setdefault("generation_context_id", worker_payload["generation_context_id"])
         _report_worker_result_to_campaign_service(task.task_type, result, campaign_id, company_id, run_id)
         return result
     elif task.task_type == "image_generation":
@@ -566,6 +568,8 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             f"{WORKER_IMAGE_URL}/internal/workers/image/run",
             payload,
         )
+        if worker_payload.get("generation_context_id"):
+            result.setdefault("generation_context_id", worker_payload["generation_context_id"])
         _report_worker_result_to_campaign_service(task.task_type, result, campaign_id, company_id, run_id)
         return result
     elif task.task_type == "video_generation":
@@ -582,6 +586,8 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             f"{WORKER_VIDEO_URL}/internal/workers/video/run",
             payload,
         )
+        if worker_payload.get("generation_context_id"):
+            result.setdefault("generation_context_id", worker_payload["generation_context_id"])
         _report_worker_result_to_campaign_service(task.task_type, result, campaign_id, company_id, run_id)
         return result
     elif task.task_type == "ads_strategy":
@@ -598,6 +604,8 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             f"{WORKER_ADS_URL}/internal/workers/ads/run",
             payload,
         )
+        if worker_payload.get("generation_context_id"):
+            result.setdefault("generation_context_id", worker_payload["generation_context_id"])
         _report_worker_result_to_campaign_service(task.task_type, result, campaign_id, company_id, run_id)
         return result
     return {}

@@ -116,7 +116,10 @@ def test_automatic_search_is_added_and_failure_is_classified(monkeypatch):
     monkeypatch.setattr(main, "external_search_provider", Provider())
     snapshot = main.create_generation_context(campaign(), "run-1")
     assert snapshot.external_search_status == "succeeded"
-    assert snapshot.external_source_urls == ["https://web.test"]
+    assert snapshot.external_source_urls == ("https://web.test",)
+    payload = main.build_worker_payload_for_task(campaign(), {"task_id": "task-1", "task_type": "copywriting"}, snapshot)
+    assert payload["generation_context_id"] == snapshot.generation_context_id
+    assert "facts" in payload["prompt"] or "Web" in payload["prompt"]
     class FailingProvider:
         def search(self, query, limit):
             raise RuntimeError("unavailable")
@@ -124,4 +127,19 @@ def test_automatic_search_is_added_and_failure_is_classified(monkeypatch):
     monkeypatch.setattr(main, "external_search_provider", FailingProvider())
     failed = main.create_generation_context(campaign(), "run-2")
     assert failed.external_search_status == "provider_error"
-    assert failed.external_source_urls == []
+    assert failed.external_source_urls == ()
+
+
+def test_snapshot_has_required_provenance_fields_and_is_immutable():
+    snapshot = assemble_generation_context(
+        campaign(),
+        [item("immediate_upload", "ref-1", "body", folder="Upload")],
+        [item("industry_matched", "knowledge-1", "facts", folder_name="Food")],
+        [],
+        100,
+    )
+    assert snapshot.task_id is None
+    assert snapshot.selected_reference_ids == ("ref-1",)
+    assert snapshot.matched_folder_names == ("Food",)
+    with pytest.raises(TypeError):
+        snapshot.items[0].metadata["folder"] = "changed"

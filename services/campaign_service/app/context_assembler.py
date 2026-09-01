@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import floor
+from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
@@ -18,6 +19,9 @@ class ContextSourceItem:
     text: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
 
 @dataclass(frozen=True)
 class GenerationContextSnapshot:
@@ -27,9 +31,13 @@ class GenerationContextSnapshot:
     external_token_count: int
     internal_ratio: float
     external_ratio: float
-    items: list[ContextSourceItem]
-    external_source_urls: list[str]
+    items: tuple[ContextSourceItem, ...]
+    external_source_urls: tuple[str, ...]
     external_search_status: str = "not_requested"
+    external_search_error: str | None = None
+    task_id: str | None = None
+    selected_reference_ids: tuple[str, ...] = ()
+    matched_folder_names: tuple[str, ...] = ()
 
 
 def estimate_tokens(text: str) -> int:
@@ -70,6 +78,8 @@ def assemble_generation_context(
         external_token_count=external_used,
         internal_ratio=internal_used / total_used if total_used else 0.0,
         external_ratio=external_used / total_used if total_used else 0.0,
-        items=items,
-        external_source_urls=[str(item.metadata.get("url") or "") for item in external if item.metadata.get("url")],
+        items=tuple(items),
+        external_source_urls=tuple(str(item.metadata.get("url") or "") for item in external if item.metadata.get("url")),
+        selected_reference_ids=tuple(item.source_id for item in selected_items if item.source_type in {"user_selected", "immediate_upload", "campaign_reference"}),
+        matched_folder_names=tuple(dict.fromkeys(str(item.metadata.get("folder") or item.metadata.get("folder_name") or "") for item in industry_items if item.metadata.get("folder") or item.metadata.get("folder_name"))),
     )

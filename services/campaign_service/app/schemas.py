@@ -235,6 +235,7 @@ class WorkerCopyResult(BaseModel):
     campaign_id: str
     company_id: str
     run_id: str
+    generation_context_id: str | None = None
     variants: list[dict[str, Any]]  # [{title, body, cta}]
 
 
@@ -243,6 +244,7 @@ class WorkerImageResult(BaseModel):
     campaign_id: str
     company_id: str
     run_id: str
+    generation_context_id: str | None = None
     image_assets: list[dict[str, Any]]  # [{url, size}]
 
 
@@ -251,6 +253,7 @@ class WorkerVideoResult(BaseModel):
     campaign_id: str
     company_id: str
     run_id: str
+    generation_context_id: str | None = None
     video_url: str
     thumbnail_url: str
     provider: str = "MiniMax"
@@ -264,6 +267,7 @@ class WorkerAdsResult(BaseModel):
     campaign_id: str
     company_id: str
     run_id: str
+    generation_context_id: str | None = None
     ads_plan: dict[str, Any]
 
 

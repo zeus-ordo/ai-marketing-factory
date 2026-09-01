@@ -836,13 +836,16 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0").strip()
 EXTERNAL_SEARCH_PROVIDER = os.getenv("EXTERNAL_SEARCH_PROVIDER", "").strip()
 EXTERNAL_SEARCH_API_KEY = os.getenv("EXTERNAL_SEARCH_API_KEY", "").strip()
 EXTERNAL_SEARCH_ENGINE_ID = os.getenv("EXTERNAL_SEARCH_ENGINE_ID", "").strip()
-external_search_provider = build_search_provider(
-    {
-        "EXTERNAL_SEARCH_PROVIDER": EXTERNAL_SEARCH_PROVIDER,
-        "EXTERNAL_SEARCH_API_KEY": EXTERNAL_SEARCH_API_KEY,
-        "EXTERNAL_SEARCH_ENGINE_ID": EXTERNAL_SEARCH_ENGINE_ID,
-    }
-)
+try:
+    external_search_provider = build_search_provider(
+        {
+            "EXTERNAL_SEARCH_PROVIDER": EXTERNAL_SEARCH_PROVIDER,
+            "EXTERNAL_SEARCH_API_KEY": EXTERNAL_SEARCH_API_KEY,
+            "EXTERNAL_SEARCH_ENGINE_ID": EXTERNAL_SEARCH_ENGINE_ID,
+        }
+    )
+except ExternalSearchError:
+    external_search_provider = None
 _last_sla_scan_at: datetime | None = None
 
 if not CHATBOT_INTERNAL_API_KEY:
@@ -2151,6 +2154,7 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
         ))
     external: list[ContextSourceItem] = []
     search_status = "not_configured" if external_search_provider is None else "available"
+    search_error: str | None = None
     if external_search_provider is not None:
         try:
             for result in search_campaign_external_context(campaign):
@@ -2161,11 +2165,13 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
             search_status = "succeeded"
         except ExternalSearchError as exc:
             search_status = exc.category
+            search_error = str(exc)
         except Exception:
             search_status = "provider_error"
+            search_error = "External search provider failed"
     snapshot = assemble_generation_context(campaign, selected, industry, external, GENERATION_CONTEXT_TOKEN_BUDGET)
     return GenerationContextSnapshot(
-        **{**snapshot.__dict__, "external_search_status": search_status}
+        **{**snapshot.__dict__, "external_search_status": search_status, "external_search_error": search_error}
     )
 
 
@@ -2272,12 +2278,15 @@ def build_worker_payload_for_task(
             for item in snapshot.items
         ],
     } if snapshot else {}
+    context_text = "\n\nSnapshot source context:\n" + "\n".join(
+        f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
+    ) if snapshot else ""
     if task_type == "copywriting":
         return {
             "task_id": task_id,
             "campaign_id": campaign_id,
             "company_id": company_id,
-            "prompt": build_copy_generation_prompt(campaign),
+            "prompt": build_copy_generation_prompt(campaign) + context_text,
             "brand_context": {
                 "campaign_name": campaign.brief.campaign_name,
                 "product_name": campaign.brief.product_name,
@@ -2299,7 +2308,7 @@ def build_worker_payload_for_task(
             "task_id": task_id,
             "campaign_id": campaign_id,
             "company_id": company_id,
-            "prompt": image_prompt,
+            "prompt": image_prompt + context_text,
             "sizes": image_sizes_for_count(campaign.brief.deliverables.image_assets),
             "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
             **context_payload,
@@ -2309,7 +2318,7 @@ def build_worker_payload_for_task(
             "task_id": task_id,
             "campaign_id": campaign_id,
             "company_id": company_id,
-            "prompt": build_video_generation_prompt(campaign),
+            "prompt": build_video_generation_prompt(campaign) + context_text,
             "duration": 6,
             "aspect_ratio": "9:16",
             **context_payload,
@@ -2322,6 +2331,7 @@ def build_worker_payload_for_task(
             "objective": campaign.brief.objective,
             "budget": float(campaign.brief.budget),
             "platforms": campaign.brief.platforms,
+            "context": context_text,
             **context_payload,
         }
     return {}
@@ -2403,6 +2413,7 @@ def generate_outputs_via_workers(
     now = now_utc()
     assets: list[AssetOutput] = []
     validations: list[ValidationResult] = []
+    worker_context = {"generation_context_id": generation_context_id} if generation_context_id else {}
 
     for task in tasks:
         if task.task_type not in {"copywriting", "image_generation", "video_generation", "ads_strategy"}:
@@ -2434,6 +2445,7 @@ def generate_outputs_via_workers(
                             "deadline": campaign.brief.deadline.isoformat() if hasattr(campaign.brief.deadline, "isoformat") else str(campaign.brief.deadline),
                         },
                         "variants": min(10, max(0, int(campaign.brief.deliverables.copy_variants or 0))),
+                        **worker_context,
                     },
                     "copywriting",
                     campaign_id,
@@ -2475,6 +2487,7 @@ def generate_outputs_via_workers(
                         "prompt": image_prompt,
                         "sizes": image_sizes_for_count(campaign.brief.deliverables.image_assets),
                         "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
+                        **worker_context,
                     },
                     "image_generation",
                     campaign_id,
@@ -2528,6 +2541,7 @@ def generate_outputs_via_workers(
                         "prompt": video_prompt,
                         "duration": 6,
                         "aspect_ratio": "9:16",
+                        **worker_context,
                     },
                     "video_generation",
                     campaign_id,
@@ -2583,6 +2597,7 @@ def generate_outputs_via_workers(
                         "objective": campaign.brief.objective,
                         "budget": float(campaign.brief.budget),
                         "platforms": campaign.brief.platforms,
+                        **worker_context,
                     },
                     "ads_strategy",
                     campaign_id,
@@ -5044,12 +5059,19 @@ def _generate_single_asset_background(campaign: CampaignRecord, payload: SingleA
     })
     try:
         run_id = latest_campaign_run_id(campaign.campaign_id) or ""
+        snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
+        if snapshot is None:
+            snapshot = create_generation_context(campaign, run_id or f"single_{task.task_id}")
+            generation_context_cache[snapshot.generation_context_id] = snapshot
+            if persistence is not None:
+                persistence.save_generation_context(snapshot, run_id or f"single_{task.task_id}")
         assets, validations = generate_outputs_via_workers(
             campaign.company_id,
             campaign.campaign_id,
             generated_campaign,
             [task],
             run_id=run_id,
+            generation_context_id=snapshot.generation_context_id,
         )
         save_assets_and_validations(assets, validations)
         append_trace_event(
@@ -6682,7 +6704,12 @@ class RetryWorkerTaskRequest(BaseModel):
 
 
 def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tuple[list[AssetOutput], list[ValidationResult]]:
-    return generate_outputs_via_workers(campaign.company_id, campaign.campaign_id, campaign, [task], run_id=latest_campaign_run_id(campaign.campaign_id))
+    snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
+    return generate_outputs_via_workers(
+        campaign.company_id, campaign.campaign_id, campaign, [task],
+        run_id=latest_campaign_run_id(campaign.campaign_id),
+        generation_context_id=snapshot.generation_context_id if snapshot else None,
+    )
 
 
 @app.post(

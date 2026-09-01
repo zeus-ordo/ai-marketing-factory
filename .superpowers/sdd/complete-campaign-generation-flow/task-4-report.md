@@ -20,3 +20,20 @@ Verification:
 - `npm run build`: passed.
 
 Concern: the existing project emits FastAPI `on_event` deprecation warnings during tests; this task does not alter that unrelated behavior.
+
+## Review Fix Report
+
+Fixed all requested Task 4 findings:
+
+- Propagated `generation_context_id` through orchestrator worker requests/results, retry, single-asset generation, and asset metadata.
+- Serialized retrieved timestamps as ISO strings and retained classified search errors without preventing persistence.
+- Made snapshot source metadata immutable at the application boundary and added insert-only persistence with required task/reference/folder provenance fields.
+- Appended the exact snapshot source content to worker prompts.
+- Applied the required source priority consistently.
+- Made incomplete external-search configuration fall back to classified internal-only context without import failure.
+- Restored focused tests for serialization, required fields, immutability, ranking, prompt propagation, and fallback.
+
+Fix verification:
+
+- `python -m pytest services/campaign_service/test_context_assembler.py -q`: 6 passed.
+- `python -m compileall -q services/campaign_service/app services/orchestrator/app`: passed.
