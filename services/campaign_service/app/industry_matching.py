@@ -72,7 +72,8 @@ def match_industry_items(
         matched_terms = {term for term in terms if term and term in searchable}
         if not matched_terms:
             continue
-        exact = int(category in category_text.split() or category in category_text)
+        # An exact category anywhere in the searchable fields outranks synonyms.
+        exact = int(category in searchable)
         relevance = len(matched_terms)
         relevance += sum(term in searchable for term in product_terms | objective_terms)
         ranked.append((exact, relevance, -index, {**item, "source_type": "industry_matched"}))

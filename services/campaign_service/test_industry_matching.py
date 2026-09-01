@@ -11,6 +11,8 @@ from app.main import (
     campaign_references,
     campaign_reference_files,
     list_campaign_reference_prompt_lines,
+    list_campaign_reference_context,
+    list_industry_knowledge_context,
     list_industry_knowledge_prompt_lines,
     knowledge_items,
 )
@@ -58,6 +60,20 @@ def test_exact_industry_matches_rank_before_synonyms():
     assert [item["title"] for item in matched] == ["餐酒館品牌指南", "酒吧靈感"]
 
 
+def test_exact_title_and_folder_match_rank_before_synonyms():
+    items = [
+        {"title": "酒吧靈感", "metadata": {"folder": "酒吧"}},
+        {"title": "餐酒館品牌指南", "metadata": {"keywords": ["餐酒館"]}},
+    ]
+    matched = match_industry_items("餐酒館", "新品調酒", "awareness", items)
+    assert [item["title"] for item in matched] == ["餐酒館品牌指南", "酒吧靈感"]
+
+
+def test_match_limit_is_applied():
+    items = [{"title": f"酒吧 {index}", "metadata": {"category": "酒吧"}} for index in range(10)]
+    assert len(match_industry_items("餐酒館", "新品調酒", "awareness", items, limit=3)) == 3
+
+
 def test_does_not_match_unrelated_industry():
     items = [{"title": "汽車保養", "description": "車輛維修", "metadata": {"category": "汽車"}}]
     assert match_industry_items("餐酒館", "新品調酒", "awareness", items) == []
@@ -70,7 +86,7 @@ def test_prompt_helpers_add_source_type_without_removing_existing_text(monkeypat
     )
     reference = CampaignReferenceRecord(
         reference_id="ref_1", campaign_id="ca_1", file_name="brief.txt", file_type="text/plain",
-        file_size=5, uploaded_at=datetime.now(timezone.utc).isoformat(), download_url="/brief.txt"
+        file_size=5, uploaded_at=datetime.now(timezone.utc).isoformat(), download_url="/brief.txt", folder="即時上傳"
     )
     path = tmp_path / "brief.txt"
     path.write_text("brand facts", encoding="utf-8")
@@ -81,9 +97,16 @@ def test_prompt_helpers_add_source_type_without_removing_existing_text(monkeypat
     try:
         knowledge_lines = list_industry_knowledge_prompt_lines(campaign())
         reference_lines = list_campaign_reference_prompt_lines(campaign())
+        reference_context = list_campaign_reference_context(campaign())
+        knowledge_context = list_industry_knowledge_context(campaign())
         assert "source_type=industry_matched" in knowledge_lines[0]
-        assert "source_type=campaign_reference" in reference_lines[0]
+        assert "source_type=immediate_upload" in reference_lines[0]
         assert "brand facts" in reference_lines[0]
+        assert reference_context[0]["reference_id"] == "ref_1"
+        assert reference_context[0]["folder"] == "即時上傳"
+        assert reference_context[0]["source_type"] == "immediate_upload"
+        assert knowledge_context[0]["item_id"] == "ki_1"
+        assert knowledge_context[0]["source_type"] == "industry_matched"
     finally:
         knowledge_items.pop("co_1", None)
         campaign_references.pop("ca_1", None)

@@ -1999,7 +1999,7 @@ def safe_reference_excerpt(stored_path: str | None, file_type: str | None, max_c
         return ""
 
 
-def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
+def list_campaign_reference_context(campaign: CampaignRecord, limit: int = 8) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if persistence is not None:
         try:
@@ -2016,13 +2016,21 @@ def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 
                 "folder": item.folder,
             })
 
-    lines: list[str] = []
+    context: list[dict[str, Any]] = []
     for row in rows[:limit]:
+        folder = str(row.get("folder") or "")
+        source_type = "immediate_upload" if folder == "即時上傳" else "campaign_reference"
+        context.append({**row, "source_type": source_type, "folder": folder})
+    return context
+
+
+def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
+    lines: list[str] = []
+    for row in list_campaign_reference_context(campaign, limit):
         file_name = str(row.get("file_name") or "reference")
         file_type = str(row.get("file_type") or "")
         stored_path = str(row.get("stored_path") or "")
-        folder = str(row.get("folder") or "")
-        source_type = "immediate_upload" if "immediate" in folder.casefold() or "upload" in folder.casefold() else "campaign_reference"
+        source_type = str(row["source_type"])
         excerpt = safe_reference_excerpt(stored_path, file_type)
         if excerpt:
             lines.append(f"- Manual/campaign reference: [source_type={source_type}] {file_name}\n  Excerpt: {excerpt}")
@@ -2031,7 +2039,7 @@ def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 
     return lines
 
 
-def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
+def list_industry_knowledge_context(campaign: CampaignRecord, limit: int = 8) -> list[dict[str, Any]]:
     industry = (getattr(campaign.brief, "industry_category", "") or "").strip().lower()
     if not industry:
         return []
@@ -2060,15 +2068,23 @@ def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 
         candidates,
         limit=max(0, limit - len(selected)),
     )]
-
-    lines: list[str] = []
+    context: list[dict[str, Any]] = []
     for row in matched[:limit]:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        folder = str(metadata.get("folder") or metadata.get("folder_name") or metadata.get("category") or "")
+        context.append({**row, "source_type": str(row.get("source_type") or "industry_matched"), "folder": folder})
+    return context
+
+
+def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
+    lines: list[str] = []
+    for row in list_industry_knowledge_context(campaign, limit):
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         category = str(metadata.get("category") or metadata.get("folder") or metadata.get("folder_name") or "uncategorized")
         file_name = str(metadata.get("file_name") or "")
         title = str(row.get("title") or file_name or "knowledge item")
         description = str(row.get("description") or "").strip()
-        source_type = str(row.get("source_type") or "industry_matched")
+        source_type = str(row["source_type"])
         detail = f"- Industry-matched knowledge folder/item: [source_type={source_type}] [{category}] {title}"
         if file_name and file_name != title:
             detail += f" / file: {file_name}"

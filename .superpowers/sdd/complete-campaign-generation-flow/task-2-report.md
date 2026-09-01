@@ -16,3 +16,14 @@
 ## Concern
 
 - The frontend build retains the existing warning about multiple lockfiles and inferred workspace root.
+
+## Review Fixes
+
+- Added structured reference and knowledge context helpers that retain source tags, IDs, and folders.
+- Classified the canonical `即時上傳` folder as `immediate_upload`.
+- Exact industry text now outranks synonyms across all searchable item fields.
+- Added tests for Chinese immediate-upload tagging, source traceability, exact field ranking, and result limits.
+
+## Fix Verification
+
+- `python -m pytest services/campaign_service/test_industry_matching.py -q`: 7 passed.
