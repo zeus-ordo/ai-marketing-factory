@@ -52,3 +52,17 @@ Known non-blocking warnings are the existing FastAPI `on_event` deprecations and
 Verification:
 
 - `python -m pytest services/orchestrator/test_task_failure_isolation.py services/campaign_service/test_worker_result_state.py -q`: passed
+
+## Pending Recovery and Lock-Scope Fixes
+
+- Added Redis consumer-group pending-entry recovery with `XAUTOCLAIM`, a five-minute default idle threshold, and a one-second reclaim backoff.
+- Reclaimed entries retain consumer-group ownership and use the existing ACK rules: successful and missing tasks are acknowledged, while storage failures remain pending.
+- Refactored campaign hydration so database I/O runs outside `task_state_lock`, with per-campaign single-flight hydration and race-safe cache insertion.
+- Added regression tests for storage recovery retry, lock availability during hydration, and concurrent hydration deduplication.
+
+Verification:
+
+- `python -m pytest services/orchestrator -q`: 14 passed
+- `python -m pytest services/campaign_service -q`: 47 passed
+- `git diff --check`: passed
+- `npm run build`: passed

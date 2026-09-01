@@ -1,10 +1,11 @@
 import os
+import threading
 import pytest
 from urllib.error import HTTPError
 
 os.environ.setdefault("POSTGRES_DSN", "")
 
-from app.main import MAX_RETRY, classify_worker_error, next_retry_delay, process_task, dispatch
+from app.main import MAX_RETRY, classify_worker_error, next_retry_delay, process_task, dispatch, reclaim_pending_messages
 from app.schemas import DispatchRequest, OrchestratorTask, TaskCompleteRequest
 import app.main as orchestrator
 
@@ -133,6 +134,94 @@ def test_queue_message_is_not_acknowledged_when_task_load_fails(monkeypatch):
     assert len(load_attempts) == MAX_RETRY + 1
     assert delays == [next_retry_delay(1), next_retry_delay(2)]
     assert acknowledged == []
+
+
+def test_pending_queue_message_is_reclaimed_and_retried_after_storage_recovers(monkeypatch):
+    acknowledged = []
+    attempts = []
+
+    class Redis:
+        def xautoclaim(self, **kwargs):
+            assert kwargs["min_idle_time"] == orchestrator.PENDING_MESSAGE_IDLE_MS
+            if kwargs["name"] != "task.copy":
+                return ("0-0", [], [])
+            return ("0-0", [("1-0", {"campaign_id": "camp", "task_id": "image"})], [])
+
+        def xack(self, *args):
+            acknowledged.append(args)
+
+    def process(_campaign_id, _task_id):
+        attempts.append(1)
+        return len(attempts) > 1
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", process)
+
+    assert reclaim_pending_messages() == 1
+    assert acknowledged == []
+    assert reclaim_pending_messages() == 1
+    assert acknowledged == [("task.copy", orchestrator.GROUP_NAME, "1-0")]
+    assert len(attempts) == 2
+
+
+def test_hydration_does_not_hold_global_lock_during_database_io(monkeypatch):
+    campaign_id = "camp-lock-scope"
+    entered = threading.Event()
+    release = threading.Event()
+    hydrated = {"image": task("image", "image_generation")}
+
+    class SlowStore:
+        def load_campaign_tasks(self, _campaign_id):
+            entered.set()
+            assert release.wait(timeout=2)
+            return list(hydrated.values())
+
+    orchestrator.task_state.pop(campaign_id, None)
+    monkeypatch.setattr(orchestrator, "task_state_store", SlowStore())
+    result = []
+    worker = threading.Thread(target=lambda: result.append(orchestrator.get_or_hydrate_campaign_tasks(campaign_id)))
+    worker.start()
+    assert entered.wait(timeout=2)
+    with orchestrator.task_state_lock:
+        orchestrator.task_state[campaign_id] = {"copy": task("copy", "copywriting")}
+    release.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert result[0] == orchestrator.task_state[campaign_id]
+    assert "copy" in result[0]
+
+
+def test_concurrent_hydration_loads_campaign_once(monkeypatch):
+    campaign_id = "camp-single-flight"
+    entered = threading.Event()
+    release = threading.Event()
+    load_count = []
+
+    class SlowStore:
+        def load_campaign_tasks(self, _campaign_id):
+            load_count.append(1)
+            entered.set()
+            assert release.wait(timeout=2)
+            return [task("image", "image_generation")]
+
+    orchestrator.task_state.pop(campaign_id, None)
+    monkeypatch.setattr(orchestrator, "task_state_store", SlowStore())
+    results = []
+    workers = [
+        threading.Thread(target=lambda: results.append(orchestrator.get_or_hydrate_campaign_tasks(campaign_id)))
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    assert entered.wait(timeout=2)
+    release.set()
+    for worker in workers:
+        worker.join(timeout=2)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert len(load_count) == 1
+    assert results[0] is results[1]
 
 
 def test_task_complete_rolls_back_when_persistence_fails(monkeypatch):

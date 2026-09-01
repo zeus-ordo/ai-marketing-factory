@@ -365,6 +365,7 @@ app = FastAPI(
 
 task_state: dict[str, dict[str, OrchestratorTask]] = {}
 task_state_lock = threading.Lock()
+task_state_hydrations: dict[str, threading.Event] = {}
 retry_state: dict[str, int] = {}
 retry_state_lock = threading.Lock()
 operation_audit_logs: list[OperationAuditEntry] = []
@@ -383,6 +384,8 @@ INTERNAL_API_KEY = os.getenv("CHATBOT_INTERNAL_API_KEY", "").strip() or os.geten
 GROUP_NAME = "orchestrator"
 CONSUMER_NAME = "orchestrator-1"
 MAX_RETRY = 2
+PENDING_MESSAGE_IDLE_MS = max(1000, int(os.getenv("PENDING_MESSAGE_IDLE_MS", "300000")))
+PENDING_RECLAIM_BACKOFF_SECONDS = max(0.1, float(os.getenv("PENDING_RECLAIM_BACKOFF_SECONDS", "1")))
 OPS_RATE_LIMIT = 20
 OPS_WINDOW_SECONDS = 60
 
@@ -563,12 +566,22 @@ def persist_campaign_task_state(campaign_id: str, campaign_tasks: dict[str, Orch
 
 
 def get_or_hydrate_campaign_tasks(campaign_id: str) -> dict[str, OrchestratorTask] | None:
-    with task_state_lock:
-        campaign_tasks = task_state.get(campaign_id)
-        if campaign_tasks is not None:
-            return campaign_tasks
-        if task_state_store is None:
-            return None
+    while True:
+        with task_state_lock:
+            campaign_tasks = task_state.get(campaign_id)
+            if campaign_tasks is not None:
+                return campaign_tasks
+            if task_state_store is None:
+                return None
+            hydration = task_state_hydrations.get(campaign_id)
+            if hydration is None:
+                hydration = threading.Event()
+                task_state_hydrations[campaign_id] = hydration
+                break
+        # Wait without holding the global lock; another caller owns the load.
+        hydration.wait()
+
+    try:
         try:
             loaded = task_state_store.load_campaign_tasks(campaign_id)
         except Exception as exc:
@@ -581,8 +594,14 @@ def get_or_hydrate_campaign_tasks(campaign_id: str) -> dict[str, OrchestratorTas
         if not loaded:
             return None
         hydrated = {task.task_id: task for task in loaded}
-        task_state[campaign_id] = hydrated
-        return hydrated
+        with task_state_lock:
+            # Do not overwrite a dispatch or another state update that won the race.
+            return task_state.setdefault(campaign_id, hydrated)
+    finally:
+        with task_state_lock:
+            hydration = task_state_hydrations.pop(campaign_id, None)
+            if hydration is not None:
+                hydration.set()
 
 
 def check_and_mark_operation_rate_limit(operator: str, operation: str) -> bool:
@@ -871,6 +890,30 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
     return True
 
 
+def reclaim_pending_messages() -> int:
+    reclaimed = 0
+    for topic in TOPICS:
+        try:
+            result = redis_client.xautoclaim(
+                name=topic,
+                groupname=GROUP_NAME,
+                consumername=CONSUMER_NAME,
+                min_idle_time=PENDING_MESSAGE_IDLE_MS,
+                start_id="0-0",
+                count=10,
+            )
+        except Exception as exc:
+            logger.warning("Consumer loop: xautoclaim failed for %s: %s", topic, exc)
+            continue
+
+        # redis-py returns (next_start_id, messages, deleted_ids).
+        messages = result[1] if len(result) > 1 else []
+        for message_id, fields in messages:
+            reclaimed += 1
+            process_queue_message(topic, message_id, fields)
+    return reclaimed
+
+
 def ensure_groups() -> None:
     for topic in TOPICS:
         try:
@@ -889,6 +932,9 @@ def consumer_loop() -> None:
     streams_dict = {topic: ">" for topic in TOPICS}
 
     while True:
+        reclaimed = reclaim_pending_messages()
+        if reclaimed:
+            time.sleep(PENDING_RECLAIM_BACKOFF_SECONDS)
         try:
             messages = redis_client.xreadgroup(
                 groupname=GROUP_NAME,
