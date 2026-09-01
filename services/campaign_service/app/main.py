@@ -4717,6 +4717,10 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
     user_instruction = (payload.user_instruction if payload else None) or ""
     operator = (payload.operator if payload else None) or (actor_payload.sub if actor_payload is not None else "admin")
     regeneration_context = prepare_regeneration_naming(campaign, asset)
+    run_id = asset.run_id or latest_campaign_run_id(asset.campaign_id) or ""
+    snapshot = snapshot_for_campaign(campaign, run_id or None)
+    snapshot_context = snapshot_prompt_context(snapshot)
+    context_payload = {"generation_context_id": snapshot.generation_context_id} if snapshot else {}
     if persistence is not None:
         try:
             source_metadata = dict(asset.metadata if isinstance(asset.metadata, dict) else {})
@@ -4745,7 +4749,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
         instruction_block = f"\n\nUser regeneration work order instructions:\n{user_instruction.strip()}"
     company_id = asset.company_id or campaign.company_id
     if asset.asset_type == "copy":
-        base_prompt = build_copy_generation_prompt(campaign) + instruction_block
+        base_prompt = build_copy_generation_prompt(campaign) + snapshot_context + instruction_block
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,
@@ -4763,9 +4767,10 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
                 "target_audience": campaign.brief.target_audience.model_dump(mode="json"),
             },
             "variants": 1,
+            **context_payload,
         }
     elif asset.asset_type == "image":
-        base_prompt = build_image_generation_prompt(campaign) + instruction_block
+        base_prompt = build_image_generation_prompt(campaign) + snapshot_context + instruction_block
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,
@@ -4773,9 +4778,10 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "reject_reason": reject_reason,
             "sizes": ["1024x1024"],
             "style_profile": {"tone": campaign.brief.brand_tone},
+            **context_payload,
         }
     elif asset.asset_type == "video":
-        base_prompt = build_video_generation_prompt(campaign) + instruction_block
+        base_prompt = build_video_generation_prompt(campaign) + snapshot_context + instruction_block
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,
@@ -4784,6 +4790,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "reject_reason": reject_reason,
             "duration": 6,
             "aspect_ratio": "9:16",
+            **context_payload,
         }
     elif asset.asset_type == "ads":
         revision_payload = {
@@ -4794,6 +4801,8 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "budget": float(campaign.brief.budget),
             "platforms": campaign.brief.platforms,
             "reject_reason": reject_reason,
+            "context": snapshot_context,
+            **context_payload,
         }
     else:
         raise HTTPException(status_code=400, detail=f"Unknown asset type: {asset.asset_type}")
@@ -4807,7 +4816,6 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "video": "video_generation",
             "ads": "ads_strategy",
         }
-        run_id = asset.run_id or latest_campaign_run_id(asset.campaign_id) or ""
         worker_result = {
             **worker_response,
             "campaign_id": asset.campaign_id,
@@ -4815,6 +4823,8 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "run_id": run_id,
             "regeneration_context": regeneration_context,
         }
+        if snapshot:
+            worker_result["generation_context_id"] = snapshot.generation_context_id
         result_payload = WorkerResultRequest(
             task_type=task_type_map.get(asset.asset_type, asset.asset_type),
             result=worker_result,

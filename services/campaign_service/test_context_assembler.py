@@ -108,6 +108,7 @@ def test_automatic_search_is_added_and_failure_is_classified(monkeypatch):
     monkeypatch.setenv("CAMPAIGN_REQUIRE_POSTGRES", "false")
     import importlib
     main = importlib.import_module("app.main")
+    monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
 
     class Provider:
         def search(self, query, limit):
@@ -192,3 +193,39 @@ def test_retry_rehydrates_snapshot_from_persistence(monkeypatch):
     main.generation_context_cache.clear()
     monkeypatch.setattr(main, "persistence", Persistence())
     assert main.snapshot_for_campaign(campaign(), "run-1") is snapshot
+
+
+def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
+    monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
+    import importlib
+    from starlette.requests import Request
+    from app.schemas import AssetOutput
+    main = importlib.import_module("app.main")
+    monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
+    snapshot = assemble_generation_context(campaign(), [item("user_selected", "ref", "REVIEW SNAPSHOT")], [], [], 100)
+    main.generation_context_cache.clear()
+    main.generation_context_cache[snapshot.generation_context_id] = snapshot
+    asset = AssetOutput(company_id="co-1", asset_id="asset", campaign_id="camp-1", task_id="task", asset_type="image", url="https://old", created_at=datetime.now(timezone.utc), run_id="run-1")
+    class Persistence:
+        def get_asset_output(self, asset_id): return asset
+        def get_review_item_by_asset(self, asset_id): return None
+        def list_asset_outputs(self, campaign_id): return [asset]
+        def save_asset_outputs(self, assets): pass
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main.store, "get_campaign", lambda campaign_id: campaign())
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: None)
+    monkeypatch.setattr(main, "finalize_campaign_workflow", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "append_trace_event", lambda *args, **kwargs: None)
+    captured = {}
+    def post_json(url, payload):
+        captured["payload"] = payload
+        result = {"image_assets": [{"url": "https://new", "size": "1024x1024"}]} if asset.asset_type == "image" else {"ads_plan": {}}
+        result.update({"task_id": "task", "campaign_id": "camp-1", "company_id": "co-1"})
+        return result
+    monkeypatch.setattr(main, "post_json", post_json)
+    request = Request({"type": "http", "headers": [(b"x-internal-api-key", b"test-key")]})
+    for asset_type in ("image", "ads"):
+        asset.asset_type = asset_type
+        main._perform_asset_regeneration(request, "asset")
+        assert captured["payload"]["generation_context_id"] == snapshot.generation_context_id
+        assert "REVIEW SNAPSHOT" in captured["payload"].get("prompt", captured["payload"].get("context", ""))

@@ -19,6 +19,19 @@ Verification:
 - `git diff --check`: passed.
 - `npm run build`: passed.
 
+## Review Regeneration Fix Report
+
+- Review regeneration now resolves and rehydrates the campaign snapshot, appends its source content to image/video/copy prompts, and supplies the same context ID to all review worker payloads including ads.
+- Worker results and generated asset metadata retain the context ID when present; campaigns without snapshots retain the existing fallback behavior.
+- Added focused image and ads regeneration coverage.
+
+Verification:
+
+- `python -m pytest services/campaign_service/test_context_assembler.py -q`: 10 passed.
+- `python -m pytest services/campaign_service -q`: 39 passed.
+- `git diff --check`: passed.
+- `npm run build`: passed.
+
 Concern: the existing project emits FastAPI `on_event` deprecation warnings during tests; this task does not alter that unrelated behavior.
 
 ## Review Fix Report
