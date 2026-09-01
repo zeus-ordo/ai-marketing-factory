@@ -8,6 +8,8 @@ class ImageRunRequest(BaseModel):
     sizes: list[str]
     style_profile: dict[str, object] = {}
     lora_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 class ImageAsset(BaseModel):
@@ -30,3 +32,5 @@ class RevisionRequest(BaseModel):
     sizes: list[str]
     style_profile: dict[str, object] = {}
     lora_id: str | None = None
+    provider: str | None = None
+    model: str | None = None

@@ -182,6 +182,14 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function formatCampaignApiError(error: unknown, fallback: string): string {
   if (!(error instanceof ApiRequestError)) return error instanceof Error ? error.message : fallback;
+  if (Array.isArray(error.detail)) {
+    return error.detail.map((entry) => {
+      if (!entry || typeof entry !== "object") return String(entry);
+      const item = entry as { loc?: unknown[]; msg?: unknown };
+      const location = Array.isArray(item.loc) ? item.loc.join(".") : "request";
+      return `${location}: ${typeof item.msg === "string" ? item.msg : JSON.stringify(item.msg)}`;
+    }).join("\n");
+  }
   if (error.detail && typeof error.detail === "object" && !Array.isArray(error.detail)) {
     return Object.entries(error.detail as Record<string, unknown>)
       .map(([field, detail]) => `${field}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`)

@@ -2590,6 +2590,7 @@ def generate_outputs_via_workers(
     run_id: str | None = None,
     generation_context_id: str | None = None,
     task_context: dict[str, Any] | None = None,
+    strict: bool = False,
 ) -> tuple[list[AssetOutput], list[ValidationResult]]:
     company_id = company_id or ""
     now = now_utc()
@@ -2605,6 +2606,7 @@ def generate_outputs_via_workers(
         if task.task_type not in {"copywriting", "image_generation", "video_generation", "ads_strategy"}:
             continue
 
+        asset_count_before = len(assets)
         try:
             if not task_enabled_by_deliverables(task.task_type, campaign.brief):
                 continue
@@ -2653,7 +2655,7 @@ def generate_outputs_via_workers(
                         task_id=task.task_id,
                         asset_type="copy",
                         url=f"generated://copy/{campaign_id}/{task.task_id}/{idx+1}",
-                        metadata={"variant": variant, "task_type": task.task_type, "priority": task.priority},
+                        metadata={"variant": variant, "task_type": task.task_type, "priority": task.priority, "provider": copy_resp.get("provider"), "model_name": copy_resp.get("model_name")},
                         validation_status="passed",
                         created_at=now,
                         run_id=run_id,
@@ -2687,7 +2689,7 @@ def generate_outputs_via_workers(
                     if not is_openable_asset_url(image_url):
                         continue
                     asset_id = f"ast_{uuid4().hex[:10]}"
-                    metadata = {"size": image_item.get("size"), "task_type": task.task_type, "priority": task.priority}
+                    metadata = {"size": image_item.get("size"), "task_type": task.task_type, "priority": task.priority, "provider": image_resp.get("provider"), "model_name": image_resp.get("model_name")}
                     try:
                         image_url, cached_metadata = cache_generated_asset_url(
                             company_id=company_id,
@@ -2799,7 +2801,7 @@ def generate_outputs_via_workers(
                     task_id=task.task_id,
                     asset_type="ads",
                     url=f"generated://ads/{campaign_id}/{task.task_id}",
-                    metadata={"ads_plan": ads_resp.get("ads_plan", {}), "task_type": task.task_type, "priority": task.priority},
+                    metadata={"ads_plan": ads_resp.get("ads_plan", {}), "task_type": task.task_type, "priority": task.priority, "provider": ads_resp.get("provider"), "model_name": ads_resp.get("model_name")},
                     validation_status="passed",
                     created_at=now,
                     run_id=run_id,
@@ -2820,6 +2822,11 @@ def generate_outputs_via_workers(
                 },
                 company_id=company_id,
             )
+            if strict:
+                raise
+
+        if strict and len(assets) == asset_count_before:
+            raise RuntimeError(f"Worker returned no displayable assets for task {task.task_id}")
 
     if generation_context_id:
         assets = [asset.model_copy(update={"metadata": {**asset.metadata, "generation_context_id": generation_context_id}}) for asset in assets]
@@ -6932,6 +6939,7 @@ def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tup
         run_id=run_id,
         generation_context_id=snapshot.generation_context_id if snapshot else None,
         task_context=task_context,
+        strict=True,
     )
 
 

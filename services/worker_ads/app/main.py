@@ -123,8 +123,8 @@ def run_ads_worker(payload: AdsRunRequest) -> AdsRunResponse:
         STUB_MODE_COUNT.inc()
         return AdsRunResponse(
             task_id=payload.task_id,
-            provider="DeepSeek",
-            model_name=f"{DEEPSEEK_MODEL}-stub",
+            provider=payload.provider or "DeepSeek",
+            model_name=payload.model or f"{DEEPSEEK_MODEL}-stub",
             ads_plan=normalized,
         )
 
@@ -184,8 +184,8 @@ def run_ads_worker(payload: AdsRunRequest) -> AdsRunResponse:
     REQUEST_COUNT.labels(status="success").inc()
     return AdsRunResponse(
         task_id=payload.task_id,
-        provider="DeepSeek",
-        model_name=DEEPSEEK_MODEL,
+        provider=payload.provider or "DeepSeek",
+        model_name=payload.model or DEEPSEEK_MODEL,
         ads_plan=normalized,
     )
 

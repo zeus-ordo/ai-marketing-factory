@@ -30,6 +30,23 @@ Verification:
 - `node scripts/test-campaign-flow-contract.mjs`: passed
 - `git diff --check`: passed
 
+## Final Diagnostics Review
+
+- Retry now uses strict worker result handling, preserving durable failure reconciliation when workers return no assets.
+- CampaignTask client data includes run and generation context IDs; Review task diagnostics are filtered to each diagnostic group's run/context.
+- Provider/model values are accepted by all worker request schemas, propagated through worker responses, asset metadata, and retry persistence.
+- Added FastAPI TestClient coverage for Campaign, Review, validation, retry, and cold-cache persistence hydration paths.
+- Added field-friendly formatting for FastAPI validation arrays and accessible Review status/rejection controls.
+
+Verification:
+
+- `python -m pytest services/campaign_service -q`: 65 passed
+- `python -m pytest services/orchestrator -q`: 25 passed
+- Worker tests: 2 passed
+- `node scripts/test-campaign-flow-contract.mjs`: passed
+- `npm run build`: passed
+- `git diff --check`: passed
+
 ## Review Run Diagnostics Follow-up
 
 - Retry dispatch now propagates authoritative task/provider/model context and persists provider/model diagnostics from worker output when available.

@@ -136,8 +136,8 @@ def run_copy_worker(payload: CopyRunRequest) -> CopyRunResponse:
         STUB_MODE_COUNT.inc()
         return CopyRunResponse(
             task_id=payload.task_id,
-            provider="DeepSeek",
-            model_name=f"{DEEPSEEK_MODEL}-stub",
+            provider=payload.provider or "DeepSeek",
+            model_name=payload.model or f"{DEEPSEEK_MODEL}-stub",
             variants=variants,
         )
 
@@ -217,8 +217,8 @@ def run_copy_worker(payload: CopyRunRequest) -> CopyRunResponse:
     REQUEST_COUNT.labels(status="success").inc()
     return CopyRunResponse(
         task_id=payload.task_id,
-        provider="DeepSeek",
-        model_name=DEEPSEEK_MODEL,
+        provider=payload.provider or "DeepSeek",
+        model_name=payload.model or DEEPSEEK_MODEL,
         variants=variants,
     )
 

@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import threading
 import pytest
+from fastapi.testclient import TestClient
 
 os.environ.setdefault("CAMPAIGN_REQUIRE_POSTGRES", "false")
 sys.path.insert(0, str(Path(__file__).parent))
@@ -132,6 +133,36 @@ def test_in_memory_review_fallback_retains_asset_task_run_id(monkeypatch):
     monkeypatch.setattr(main, "list_validation", lambda _campaign_id: [validation])
     result = main.build_review_items()
     assert result[0].run_id == "run-old"
+
+
+def test_fastapi_http_campaign_review_and_validation_routes(monkeypatch):
+    item = campaign("camp-http")
+    monkeypatch.setattr(main, "store", Store(item))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda req: True)
+    main.generation_context_cache["gctx-route"] = snapshot(item.campaign_id, "run-http")
+    review = ReviewItem(review_id="review-http", campaign_id=item.campaign_id, asset_id="asset-http", score=1, status="review_pending", submitted_at=datetime.utcnow().isoformat(), run_id="run-http")
+    monkeypatch.setattr(main, "build_review_items", lambda: [review])
+    client = TestClient(main.app)
+
+    assert client.get(f"/api/v1/campaigns/{item.campaign_id}").json()["generation_context_id"] == "gctx-route"
+    assert client.get("/api/v1/campaigns").json()["items"][0]["source_summary"]["internal_source_count"] == 1
+    assert client.get("/api/v1/review/items?run_id=run-http").json()["items"][0]["run_id"] == "run-http"
+    validation = client.post("/api/v1/campaigns", json={})
+    assert validation.status_code == 422
+    assert isinstance(validation.json()["detail"], list)
+
+
+def test_campaign_hydration_loads_persisted_snapshot_after_cold_cache(monkeypatch):
+    item = campaign("camp-cold")
+    class Persistence:
+        def list_campaign_runs(self, _campaign_id): return [{"run_id": "run-cold"}]
+        def load_generation_context(self, _campaign_id, run_id): return snapshot(item.campaign_id, run_id)
+    monkeypatch.setattr(main, "store", Store(item))
+    monkeypatch.setattr(main, "persistence", Persistence())
+    main.generation_context_cache.clear()
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda req: True)
+    result = main.get_campaign(object(), item.campaign_id)
+    assert result.generation_context_id == "gctx-route"
 
 
 def test_retry_uses_authoritative_claimed_retry_count_and_run(monkeypatch):

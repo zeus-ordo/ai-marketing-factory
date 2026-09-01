@@ -19,6 +19,7 @@ export type CampaignTask = {
   provider?: string | null;
   model?: string | null;
   retryable?: boolean | null;
+  run_id?: string | null;
 };
 
 export type GenerationSourceProvenance = {
@@ -435,6 +436,18 @@ export class ApiRequestError extends Error {
       }
     }
   }
+}
+
+export function formatApiDetail(detail: unknown): string {
+  if (Array.isArray(detail)) {
+    return detail.map((entry) => {
+      if (!entry || typeof entry !== "object") return String(entry);
+      const item = entry as { loc?: unknown[]; msg?: unknown };
+      return `${Array.isArray(item.loc) ? item.loc.join(".") : "request"}: ${typeof item.msg === "string" ? item.msg : JSON.stringify(item.msg)}`;
+    }).join("\n");
+  }
+  if (detail && typeof detail === "object") return Object.entries(detail as Record<string, unknown>).map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n");
+  return typeof detail === "string" ? detail : "";
 }
 
 async function refreshAccessTokenOnce(): Promise<boolean> {

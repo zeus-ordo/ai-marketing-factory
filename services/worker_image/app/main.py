@@ -149,8 +149,8 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
         STUB_MODE_COUNT.inc()
         return ImageRunResponse(
             task_id=payload.task_id,
-            provider=_active_provider_name(),
-            model_name=_active_model_name("-stub"),
+            provider=payload.provider or _active_provider_name(),
+            model_name=payload.model or _active_model_name("-stub"),
             image_assets=assets,
         )
 
@@ -181,8 +181,8 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
     REQUEST_COUNT.labels(status="success").inc()
     return ImageRunResponse(
         task_id=payload.task_id,
-        provider=_active_provider_name(),
-        model_name=_active_model_name(),
+        provider=payload.provider or _active_provider_name(),
+        model_name=payload.model or _active_model_name(),
         image_assets=assets,
     )
 
@@ -214,8 +214,8 @@ def regenerate_image(payload: RevisionRequest) -> ImageRunResponse:
         REGENERATE_COUNT.labels(status="stub").inc()
         return ImageRunResponse(
             task_id=payload.task_id,
-            provider=_active_provider_name(),
-            model_name=_active_model_name("-rev-stub"),
+            provider=payload.provider or _active_provider_name(),
+            model_name=payload.model or _active_model_name("-rev-stub"),
             image_assets=assets,
         )
 
@@ -246,8 +246,8 @@ def regenerate_image(payload: RevisionRequest) -> ImageRunResponse:
     REGENERATE_COUNT.labels(status="success").inc()
     return ImageRunResponse(
         task_id=payload.task_id,
-        provider=_active_provider_name(),
-        model_name=_active_model_name("-rev"),
+        provider=payload.provider or _active_provider_name(),
+        model_name=payload.model or _active_model_name("-rev"),
         image_assets=assets,
     )
 

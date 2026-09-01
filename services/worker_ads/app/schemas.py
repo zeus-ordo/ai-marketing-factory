@@ -8,6 +8,8 @@ class AdsRunRequest(BaseModel):
     objective: str
     budget: float
     platforms: list[str]
+    provider: str | None = None
+    model: str | None = None
 
 
 class AdsRunResponse(BaseModel):
@@ -25,3 +27,5 @@ class RevisionRequest(BaseModel):
     budget: float
     platforms: list[str]
     reject_reason: str
+    provider: str | None = None
+    model: str | None = None
