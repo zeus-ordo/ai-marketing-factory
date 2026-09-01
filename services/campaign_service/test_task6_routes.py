@@ -8,12 +8,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("CAMPAIGN_REQUIRE_POSTGRES", "false")
+os.environ.setdefault("CHATBOT_INTERNAL_API_KEY", "test-key")
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app import main
 from app.context_assembler import ContextSourceItem, GenerationContextSnapshot
 from app.main import ReviewItem, RetryWorkerTaskRequest
 from app.schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord, ValidationResult
+from services.worker_image.app.schemas import ImageRunRequest
 
 
 def campaign(campaign_id="camp-route"):
@@ -163,6 +165,52 @@ def test_campaign_hydration_loads_persisted_snapshot_after_cold_cache(monkeypatc
     monkeypatch.setattr(main, "is_platform_admin_request", lambda req: True)
     result = main.get_campaign(object(), item.campaign_id)
     assert result.generation_context_id == "gctx-route"
+
+
+@pytest.mark.parametrize("task_type,result", [
+    ("copywriting", {"task_id": "task-1", "campaign_id": "camp-empty", "company_id": "co-1", "variants": []}),
+    ("image_generation", {"task_id": "task-1", "campaign_id": "camp-empty", "company_id": "co-1", "image_assets": []}),
+    ("video_generation", {"task_id": "task-1", "campaign_id": "camp-empty", "company_id": "co-1", "video_url": ""}),
+    ("ads_strategy", {"task_id": "task-1", "campaign_id": "camp-empty", "company_id": "co-1", "ads_plan": {}}),
+])
+def test_http_worker_empty_result_is_failed_not_passed(monkeypatch, task_type, result):
+    item = campaign("camp-empty")
+    task_item = TaskRecord(company_id="co-1", campaign_id=item.campaign_id, task_id="task-1", task_type=task_type, status="running", priority=1, acceptance=[])
+    store = Store(item)
+    store.get_tasks = lambda _campaign_id: [task_item]
+    updated = []
+    store.set_tasks = lambda _campaign_id, tasks: updated.extend(tasks)
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
+    client = TestClient(main.app)
+    response = client.post("/internal/workers/results", json={"task_type": task_type, "result": result}, headers={"X-Internal-Api-Key": "test-key"})
+    assert response.status_code == 202
+    assert response.json()["status"] == "failed"
+    assert updated[0].status == "failed"
+    assert updated[0].blocked_reason is None
+
+
+def test_primary_worker_assets_preserve_provider_model_metadata(monkeypatch):
+    captured = []
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: captured.extend(assets))
+    now = datetime.utcnow()
+    main._save_copy_worker_result({"task_id": "copy", "campaign_id": "camp", "company_id": "co", "variants": [{"body": "copy"}], "provider": "p", "model_name": "m"}, now)
+    main._save_image_worker_result({"task_id": "image", "campaign_id": "camp", "company_id": "co", "image_assets": [{"url": "data:image/svg+xml,test", "size": "1:1"}], "provider": "p", "model_name": "m"}, now)
+    main._save_ads_worker_result({"task_id": "ads", "campaign_id": "camp", "company_id": "co", "ads_plan": {"social": {}}, "provider": "p", "model_name": "m"}, now)
+    assert len(captured) == 3
+    assert all(asset.metadata["provider"] == "p" and asset.metadata["model_name"] == "m" for asset in captured)
+
+
+def test_image_retry_payload_validates_company_and_authoritative_provider_model():
+    payload = main.build_worker_payload_for_task(campaign("camp-image"), TaskRecord(
+        company_id="co-1", campaign_id="camp-image", task_id="image-1", task_type="image_generation",
+        status="retrying", priority=1, acceptance=[], run_id="run-1", provider="p", model="m",
+    ))
+    validated = ImageRunRequest.model_validate(payload)
+    assert validated.company_id == "co-1"
+    assert validated.provider == "p"
+    assert validated.model == "m"
 
 
 def test_retry_uses_authoritative_claimed_retry_count_and_run(monkeypatch):

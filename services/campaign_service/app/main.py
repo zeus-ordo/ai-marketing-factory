@@ -1032,6 +1032,13 @@ def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dic
     if current is None:
         return tasks
     status = str(result.get("status", "passed"))
+    if status in {"passed", "accepted", "success"} and (
+        result.get("displayable_asset_count") == 0 or
+        any(key in result for key in ("variants", "image_assets", "video_url", "ads_plan"))
+        and not worker_result_has_displayable_assets(current.task_type, result)
+    ):
+        status = "failed"
+        result = {**result, "status": status, "error": "worker returned no displayable assets"}
     if status in {"failed", "error"} or result.get("error"):
         current = current.model_copy(update={
             "status": "failed",
@@ -1972,6 +1979,10 @@ def prepare_regeneration_naming(campaign: CampaignRecord, source_asset: AssetOut
 def apply_regeneration_metadata(metadata: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     if result.get("generation_context_id"):
         metadata["generation_context_id"] = result["generation_context_id"]
+    if result.get("provider"):
+        metadata["provider"] = result["provider"]
+    if result.get("model_name") or result.get("model"):
+        metadata["model_name"] = result.get("model_name") or result.get("model")
     context = result.get("regeneration_context")
     if isinstance(context, dict):
         for key in ("parent_asset_id", "root_asset_id", "asset_base_name", "asset_version", "asset_name", "is_regenerated"):
@@ -2459,6 +2470,10 @@ def build_worker_payload_for_task(
             for item in snapshot.items
         ],
     } if snapshot else {}
+    task_provider = task.get("provider") if isinstance(task, dict) else task.provider
+    task_model = task.get("model") if isinstance(task, dict) else task.model
+    task_run_id = task.get("run_id") if isinstance(task, dict) else task.run_id
+    context_payload.update({key: value for key, value in {"provider": task_provider, "model": task_model, "run_id": task_run_id}.items() if value})
     context_text = "\n\nSnapshot source context:\n" + "\n".join(
         f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
     ) if snapshot else ""
@@ -2672,6 +2687,7 @@ def generate_outputs_via_workers(
                     {
                         "task_id": task.task_id,
                         "campaign_id": campaign_id,
+                        "company_id": company_id,
                         "prompt": image_prompt,
                         "sizes": image_sizes_for_count(campaign.brief.deliverables.image_assets),
                         "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
@@ -6934,13 +6950,16 @@ def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tup
         task_context["provider"] = task.provider
     if task.model:
         task_context["model"] = task.model
-    return generate_outputs_via_workers(
+    assets, validations = generate_outputs_via_workers(
         campaign.company_id, campaign.campaign_id, campaign, [task],
         run_id=run_id,
         generation_context_id=snapshot.generation_context_id if snapshot else None,
         task_context=task_context,
         strict=True,
     )
+    if not assets:
+        raise RuntimeError(f"Worker returned no displayable assets for task {task.task_id}")
+    return assets, validations
 
 
 def dispatch_ready_retry_descendants(campaign: CampaignRecord, tasks: list[TaskRecord], task_id: str, run_id: str | None = None) -> list[TaskRecord]:
@@ -7743,6 +7762,18 @@ def require_internal_api_key_for_worker(req: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid internal API key")
 
 
+def worker_result_has_displayable_assets(task_type: str, result: dict[str, Any]) -> bool:
+    if task_type == "copywriting":
+        return any(isinstance(item, dict) and isinstance(item.get("body"), str) and item["body"].strip() for item in result.get("variants", []))
+    if task_type == "image_generation":
+        return any(isinstance(item, dict) and is_openable_asset_url(str(item.get("url", "")).strip()) for item in result.get("image_assets", []))
+    if task_type == "video_generation":
+        return is_openable_asset_url(str(result.get("video_url", "")).strip())
+    if task_type == "ads_strategy":
+        return bool(result.get("ads_plan"))
+    return False
+
+
 @app.post("/internal/workers/results", status_code=202)
 def ingest_worker_result(payload: WorkerResultRequest, req: Request) -> dict[str, str]:
     """
@@ -7755,7 +7786,10 @@ def ingest_worker_result(payload: WorkerResultRequest, req: Request) -> dict[str
     result = payload.result
     now = now_utc()
 
-    if task_type == "copywriting":
+    if not worker_result_has_displayable_assets(task_type, result):
+        result = {**result, "status": "failed", "error": "worker returned no displayable assets", "displayable_asset_count": 0}
+        response = {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": result["error"]}
+    elif task_type == "copywriting":
         response = _save_copy_worker_result(result, now)
     elif task_type == "image_generation":
         response = _save_image_worker_result(result, now)

@@ -1,5 +1,6 @@
 import os
 import sys
+import pytest
 from pathlib import Path
 
 os.environ.setdefault("CAMPAIGN_REQUIRE_POSTGRES", "false")
@@ -128,3 +129,20 @@ def test_worker_result_preserves_provider_and_model_diagnostics():
     })
     assert updated[0].provider == "vertex"
     assert updated[0].model == "imagen-3"
+
+
+@pytest.mark.parametrize("task_type,result", [
+    ("copywriting", {"status": "passed", "variants": []}),
+    ("image_generation", {"status": "passed", "image_assets": []}),
+    ("video_generation", {"status": "passed", "video_url": ""}),
+    ("ads_strategy", {"status": "passed", "ads_plan": {}}),
+])
+def test_empty_worker_result_fails_without_unblocking_descendants(task_type, result):
+    updated = apply_worker_result_state([
+        task("selected", task_type, status="running"),
+        task("dependent", "video_generation", ["selected"], status="pending"),
+    ], "selected", result)
+    assert updated[0].status == "failed"
+    assert updated[0].retryable is not False
+    assert "no displayable assets" in (updated[0].error_detail or "")
+    assert updated[1].status == "blocked"

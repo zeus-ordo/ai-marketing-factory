@@ -30,6 +30,23 @@ Verification:
 - `node scripts/test-campaign-flow-contract.mjs`: passed
 - `git diff --check`: passed
 
+## Worker Result Diagnostics Follow-up
+
+- Image generation payloads now include required company identity and preserve retry routing metadata.
+- Empty copy/image/video/ads worker results are classified as failed with a retryable diagnostic and cannot unblock descendants.
+- Provider/model metadata is retained in copy, image, ads, and video asset records for both primary and retry paths.
+- Added HTTP-level worker result coverage and direct payload/schema/metadata regression tests.
+
+Verification:
+
+- Focused route/state tests: 35 passed
+- Campaign service: 75 passed
+- Orchestrator: 25 passed
+- Worker tests: 2 passed
+- Contract test: passed
+- `npm run build`: passed
+- `git diff --check`: passed
+
 ## Final Diagnostics Review
 
 - Retry now uses strict worker result handling, preserving durable failure reconciliation when workers return no assets.

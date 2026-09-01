@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class ImageRunRequest(BaseModel):
     task_id: str
     campaign_id: str
+    company_id: str
     prompt: str
     sizes: list[str]
     style_profile: dict[str, object] = {}
