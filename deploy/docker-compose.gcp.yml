@@ -86,6 +86,7 @@ services:
       - generated_assets:/app/generated_assets
     env_file:
       - ../.env.local
+      - /opt/ai-marketing-factory/.env.video.local
     restart: unless-stopped
 
   worker-ads:
