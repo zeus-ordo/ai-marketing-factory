@@ -30,6 +30,24 @@ Verification:
 - `node scripts/test-campaign-flow-contract.mjs`: passed
 - `git diff --check`: passed
 
+## Complete Diagnostics Presentation Follow-up
+
+- Image `RevisionRequest` now requires `company_id`; both asset regeneration and the review revision caller supply it.
+- Added image regeneration schema/endpoint regression coverage and successful provider/model metadata assertions.
+- Campaign and Review now show provenance source type, label, folder, safe HTTP(S) URLs, provider/model, and sanitized task error details.
+- Added shared diagnostics transforms and contract assertions for URL safety, error redaction, and retry eligibility.
+- Retry controls require `retryable === true` and fewer than three attempts.
+
+Verification:
+
+- Campaign service: 77 passed
+- Orchestrator: 25 passed
+- Worker tests: 3 passed
+- Diagnostics contract: passed
+- Campaign flow contract: passed
+- `npm run build`: passed
+- `git diff --check`: passed
+
 ## Asset Regeneration Safety Follow-up
 
 - Image asset regeneration payloads now include `company_id` and are validated against `ImageRunRequest` in the regression suite.

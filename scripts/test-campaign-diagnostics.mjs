@@ -1,0 +1,24 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+const { canRetryTask, safeExternalUrl, sanitizeDiagnosticText } = await import("../lib/campaign-diagnostics.ts");
+
+const helper = fs.readFileSync("lib/campaign-diagnostics.ts", "utf8");
+const provenance = fs.readFileSync("components/diagnostics/provenance-list.tsx", "utf8");
+const campaigns = fs.readFileSync("app/campaigns/page.tsx", "utf8");
+const review = fs.readFileSync("components/review/review-queue-table.tsx", "utf8");
+
+assert.equal(safeExternalUrl("https://example.com/source?q=1"), "https://example.com/source?q=1");
+assert.equal(safeExternalUrl("javascript:alert(1)"), null);
+assert.equal(sanitizeDiagnosticText("provider token=secret"), "provider token=[REDACTED]");
+assert.equal(canRetryTask({ retryable: true, retry_count: 2 }), true);
+assert.equal(canRetryTask({ retryable: true, retry_count: 3 }), false);
+assert.equal(canRetryTask({ retryable: false, retry_count: 0 }), false);
+assert.match(helper, /parsed\.protocol === "http:"/);
+assert.match(helper, /parsed\.protocol === "https:"/);
+assert.match(helper, /source\.folder/);
+assert.match(provenance, /target="_blank"/);
+assert.match(campaigns, /ProvenanceList/);
+assert.match(campaigns, /sanitizeDiagnosticText/);
+assert.match(review, /ProvenanceList/);
+assert.match(review, /sanitizeDiagnosticText/);
+console.log("campaign diagnostics contract passed");

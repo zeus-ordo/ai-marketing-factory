@@ -218,7 +218,7 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
     import importlib
     from starlette.requests import Request
     from app.schemas import AssetOutput
-    from services.worker_image.app.schemas import ImageRunRequest
+    from services.worker_image.app.schemas import ImageRunRequest, RevisionRequest
     main = importlib.import_module("app.main")
     monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
     old_snapshot = assemble_generation_context(campaign(), [item("user_selected", "old", "OLD REVIEW SNAPSHOT")], [], [], 100)
@@ -255,6 +255,7 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
         assert "OLD REVIEW SNAPSHOT" in captured["payload"].get("prompt", captured["payload"].get("context", ""))
         if asset_type == "image":
             validated = ImageRunRequest.model_validate(captured["payload"])
+            RevisionRequest.model_validate({**captured["payload"], "reject_reason": "quality"})
             assert validated.company_id == "co-1"
             assert saved_assets[-1].metadata["task_type"] == "image_generation"
             assert saved_assets[-1].metadata["provider"] == "provider"

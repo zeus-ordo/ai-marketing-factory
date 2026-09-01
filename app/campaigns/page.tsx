@@ -31,6 +31,8 @@ import {
   ApiRequestError,
 } from "@/lib/api/campaigns";
 import { ReviewAssetPreviewModal } from "@/components/review/review-asset-preview-modal";
+import { ProvenanceList } from "@/components/diagnostics/provenance-list";
+import { canRetryTask, sanitizeDiagnosticText } from "@/lib/campaign-diagnostics";
 import { useI18n } from "@/lib/i18n/context";
 import { formatCurrencyUSD, formatDateTime } from "@/lib/i18n/format";
 import type { TranslationKey } from "@/lib/i18n/translations";
@@ -1119,17 +1121,15 @@ export default function CampaignCenterPage() {
             <Metric label={t("review.diagnostics.selectedReferences")} value={activeCampaignRecord.source_summary.selected_reference_ids.join(", ") || t("common.notAvailable")} />
           </div>
           <div className="flex flex-wrap gap-2 text-xs text-slate-500">
-            {activeCampaignRecord.source_summary.provenance.map((source) => (
-              <span key={`${source.source_type}-${source.source_id}`} className="rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800">{source.source_type}: {source.label}</span>
-            ))}
+            <ProvenanceList sources={activeCampaignRecord.source_summary.provenance} />
           </div>
           {activeCampaignRecord.tasks?.length ? (
             <div className="grid gap-2 lg:grid-cols-2">
               {activeCampaignRecord.tasks.map((task) => (
                 <div key={task.task_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800">
                   <span><strong>{task.task_type}</strong> <span className="text-slate-500">{task.status}</span></span>
-                  <span className="text-xs text-slate-500">{task.error_class || task.blocked_reason || ""} · {t("review.diagnostics.retryable")}: {(task.retryable ?? (task.status === "failed")) ? t("common.yes") : t("common.no")} {task.retry_count ? `· ${t("review.diagnostics.attempts")}: ${task.retry_count}` : ""} {task.next_retry_at ? `· ${task.next_retry_at}` : ""}</span>
-                  {task.status === "failed" ? <button type="button" onClick={() => handleRetryTask(activeCampaignRecord.campaign_id, task.task_id)} disabled={retryingTaskId !== null} className="rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50">{retryingTaskId === task.task_id ? t("review.diagnostics.retrying") : t("review.diagnostics.retry")}</button> : null}
+                  <span className="text-xs text-slate-500">{task.provider || "—"}/{task.model || "—"} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason)} · {t("review.diagnostics.retryable")}: {task.retryable === true ? t("common.yes") : t("common.no")} {task.retry_count ? `· ${t("review.diagnostics.attempts")}: ${task.retry_count}` : ""} {task.next_retry_at ? `· ${task.next_retry_at}` : ""}</span>
+                  {canRetryTask(task) ? <button type="button" onClick={() => handleRetryTask(activeCampaignRecord.campaign_id, task.task_id)} disabled={retryingTaskId !== null} className="rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50">{retryingTaskId === task.task_id ? t("review.diagnostics.retrying") : t("review.diagnostics.retry")}</button> : null}
                 </div>
               ))}
             </div>

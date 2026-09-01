@@ -7185,6 +7185,7 @@ def submit_revision_request(payload: RevisionRequestPayload, req: Request) -> di
     revision_payload = {
         "task_id": payload.task_id,
         "campaign_id": payload.campaign_id,
+        "company_id": campaign.company_id,
         "prompt": getattr(payload, "prompt", ""),
         "reject_reason": payload.reject_reason,
     }

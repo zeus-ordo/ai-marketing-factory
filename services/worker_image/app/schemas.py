@@ -28,6 +28,7 @@ class ImageRunResponse(BaseModel):
 class RevisionRequest(BaseModel):
     task_id: str
     campaign_id: str
+    company_id: str
     prompt: str
     reject_reason: str
     sizes: list[str]
