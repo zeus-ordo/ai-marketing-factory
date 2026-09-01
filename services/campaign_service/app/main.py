@@ -974,6 +974,62 @@ def _classify_worker_error(message: str) -> str:
     return "WORKER_UNKNOWN_ERROR"
 
 
+def classify_worker_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "429" in text or "quota" in text or "rate limit" in text:
+        return "quota" if "quota" in text or "429" in text else "rate_limit"
+    if isinstance(exc, TimeoutError) or "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "422" in text or "validation" in text:
+        return "validation"
+    if any(value in text for value in ("provider", "upstream", "502", "503", "http error")):
+        return "provider_error"
+    return "unknown"
+
+
+def sanitize_worker_error_detail(message: str) -> str:
+    text = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", (message or "").strip())
+    for secret in (CHATBOT_INTERNAL_API_KEY, EXTERNAL_SEARCH_API_KEY):
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return text[:2000]
+
+
+def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dict[str, Any]) -> list[TaskRecord]:
+    """Apply one worker result while isolating dependent branches."""
+    by_id = {task.task_id: task for task in tasks}
+    current = by_id.get(task_id)
+    if current is None:
+        return tasks
+    status = str(result.get("status", "passed"))
+    if status in {"failed", "error"} or result.get("error"):
+        current = current.model_copy(update={
+            "status": "failed",
+            "error_class": classify_worker_error(RuntimeError(str(result.get("error", "worker failure")))),
+            "error_detail": sanitize_worker_error_detail(str(result.get("error", "worker failure"))),
+        })
+        by_id[task_id] = current
+        changed = True
+        while changed:
+            changed = False
+            for candidate in by_id.values():
+                if candidate.status != "pending" or not any(by_id.get(dep) and by_id[dep].status in {"failed", "blocked"} for dep in candidate.depends_on):
+                    continue
+                blocker = next(dep for dep in candidate.depends_on if by_id.get(dep) and by_id[dep].status in {"failed", "blocked"})
+                by_id[candidate.task_id] = candidate.model_copy(update={
+                    "status": "blocked", "blocked_by_task_id": blocker,
+                    "blocked_reason": f"blocked by failed task {blocker}",
+                })
+                changed = True
+    elif status in {"retrying", "retry"}:
+        for candidate in by_id.values():
+            if candidate.task_id == task_id or (candidate.status == "blocked" and any(dep == task_id or (by_id.get(dep) and by_id[dep].status == "blocked") for dep in candidate.depends_on)):
+                by_id[candidate.task_id] = candidate.model_copy(update={"status": "retrying" if candidate.task_id == task_id else "pending", "blocked_by_task_id": None, "blocked_reason": None})
+    else:
+        by_id[task_id] = current.model_copy(update={"status": "passed", "error_class": None, "error_detail": None})
+    return [by_id[task.task_id] for task in tasks]
+
+
 def _extract_worker_error_detail(message: str) -> str:
     text = (message or "").strip()
     # common format: "... HTTP Error 422: Unprocessable Entity"
@@ -992,8 +1048,8 @@ def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaig
             last_exc = exc
             metrics.inc("worker_dispatch_failed_total")
             error_text = str(exc)
-            error_code = _classify_worker_error(error_text)
-            error_detail = _extract_worker_error_detail(error_text)
+            error_code = classify_worker_error(exc)
+            error_detail = sanitize_worker_error_detail(_extract_worker_error_detail(error_text))
             append_trace_event(
                 campaign_id=campaign_id,
                 event_type="worker_dispatch_retrying" if attempt < WORKER_RETRY_MAX_ATTEMPTS else "worker_dispatch_failed",
@@ -1005,7 +1061,7 @@ def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaig
                     "task_type": task_type,
                     "attempt": attempt,
                     "error_code": error_code,
-                    "error": error_text,
+                    "error": error_detail,
                     "error_detail": error_detail,
                     "worker_url": url,
                     "worker_payload": payload,
@@ -1013,9 +1069,11 @@ def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaig
                 source="workers",
                 company_id=company_id,
             )
+            if error_code not in {"quota", "rate_limit", "timeout", "provider_error"}:
+                break
             if attempt < WORKER_RETRY_MAX_ATTEMPTS and WORKER_RETRY_BACKOFF_SECONDS > 0:
-                time.sleep(WORKER_RETRY_BACKOFF_SECONDS)
-    raise RuntimeError(str(last_exc) if last_exc else "unknown worker failure")
+                time.sleep(min(300.0, max(5.0, 5.0 * (2 ** (attempt - 1)))))
+    raise RuntimeError(sanitize_worker_error_detail(str(last_exc)) if last_exc else "unknown worker failure")
 
 
 TaskType = Literal["copywriting", "image_generation", "video_generation", "ads_strategy"]
@@ -1063,6 +1121,11 @@ def normalize_task_payload(payload: dict[str, Any], campaign_id: str) -> TaskRec
         priority=priority,
         depends_on=depends_on,
         acceptance=acceptance,
+        retry_count=int(payload.get("retry_count", 0) or 0),
+        error_class=payload.get("error_class"),
+        error_detail=payload.get("error_detail"),
+        blocked_by_task_id=payload.get("blocked_by_task_id"),
+        blocked_reason=payload.get("blocked_reason"),
     )
 
 
@@ -6772,9 +6835,16 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    retried = task.model_copy(update={"status": "retrying"})
-    existing_tasks = [retried if item.task_id == payload.task_id else item for item in store.get_tasks(campaign_id)]
+    if task.status != "failed":
+        raise HTTPException(status_code=409, detail="Only failed tasks can be retried")
+    if persistence is not None:
+        try:
+            persistence.record_task_attempt(task)
+        except Exception:
+            logger.warning("Failed to preserve worker task attempt", exc_info=True)
+    existing_tasks = apply_worker_result_state(store.get_tasks(campaign_id), payload.task_id, {"status": "retrying"})
     store.set_tasks(campaign_id, existing_tasks)
+    retried = next(item for item in existing_tasks if item.task_id == payload.task_id)
 
     try:
         assets, validations = _dispatch_worker_for_task(campaign, retried)
@@ -6782,7 +6852,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
         _notify_webhook(
             event_type="worker_retry_failed",
             campaign_id=campaign_id,
-            payload={"task_id": payload.task_id, "task_type": task.task_type, "error": str(exc)},
+            payload={"task_id": payload.task_id, "task_type": task.task_type, "error": sanitize_worker_error_detail(str(exc))},
             company_id=campaign.company_id,
         )
         append_trace_event(
@@ -6795,13 +6865,13 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
             source="workers",
             company_id=campaign.company_id,
         )
-        raise HTTPException(status_code=502, detail=f"Worker retry failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Worker retry failed: {sanitize_worker_error_detail(str(exc))}") from exc
 
     if assets and validations:
         save_assets_and_validations(assets, validations)
 
-    patched = retried.model_copy(update={"status": "passed" if assets else "failed"})
-    final_tasks = [patched if item.task_id == payload.task_id else item for item in store.get_tasks(campaign_id)]
+    patched_result = {"status": "passed" if assets else "failed", "error": None if assets else "worker returned no assets"}
+    final_tasks = apply_worker_result_state(store.get_tasks(campaign_id), payload.task_id, patched_result)
     store.set_tasks(campaign_id, final_tasks)
 
     append_trace_event(
@@ -7438,15 +7508,24 @@ def ingest_worker_result(payload: WorkerResultRequest, req: Request) -> dict[str
     now = now_utc()
 
     if task_type == "copywriting":
-        return _save_copy_worker_result(result, now)
+        response = _save_copy_worker_result(result, now)
     elif task_type == "image_generation":
-        return _save_image_worker_result(result, now)
+        response = _save_image_worker_result(result, now)
     elif task_type == "video_generation":
-        return _save_video_worker_result(result, now)
+        response = _save_video_worker_result(result, now)
     elif task_type == "ads_strategy":
-        return _save_ads_worker_result(result, now)
+        response = _save_ads_worker_result(result, now)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown task type: {task_type}")
+
+    campaign_id = str(result.get("campaign_id", ""))
+    task_id = str(result.get("task_id", ""))
+    if campaign_id and task_id:
+        current_tasks = store.get_tasks(campaign_id)
+        updated_tasks = apply_worker_result_state(current_tasks, task_id, result)
+        if updated_tasks != current_tasks:
+            store.set_tasks(campaign_id, updated_tasks)
+    return response
 
 
 def _save_copy_worker_result(result: dict[str, Any], now: datetime) -> dict[str, str]:

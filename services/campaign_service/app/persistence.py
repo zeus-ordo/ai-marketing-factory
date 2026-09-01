@@ -111,6 +111,19 @@ class PostgresPersistence:
                     cur.execute(statement)
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS campaign_task_attempts (
+                        attempt_id BIGSERIAL PRIMARY KEY,
+                        task_id TEXT NOT NULL,
+                        campaign_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        error_class TEXT,
+                        error_detail TEXT,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS campaign_tasks (
                         task_id TEXT PRIMARY KEY,
                         campaign_id TEXT NOT NULL,
@@ -120,6 +133,11 @@ class PostgresPersistence:
                         priority INTEGER NOT NULL,
                         depends_on_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         acceptance_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        error_class TEXT,
+                        error_detail TEXT,
+                        blocked_by_task_id TEXT,
+                        blocked_reason TEXT,
                         created_at TIMESTAMP NOT NULL DEFAULT NOW()
                     );
                     """
@@ -130,6 +148,14 @@ class PostgresPersistence:
                     ON campaign_tasks (campaign_id, priority ASC, created_at ASC);
                     """
                 )
+                for statement in (
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS error_class TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS error_detail TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS blocked_by_task_id TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS blocked_reason TEXT;",
+                ):
+                    cur.execute(statement)
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS campaign_runs (
@@ -661,8 +687,9 @@ class PostgresPersistence:
                     cur.execute(
                         """
                         INSERT INTO campaign_tasks
-                            (task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                            (task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
+                        ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, retry_count = EXCLUDED.retry_count, error_class = EXCLUDED.error_class, error_detail = EXCLUDED.error_detail, blocked_by_task_id = EXCLUDED.blocked_by_task_id, blocked_reason = EXCLUDED.blocked_reason
                         """,
                         (
                             item.task_id,
@@ -673,6 +700,8 @@ class PostgresPersistence:
                             item.priority,
                             json.dumps(item.depends_on),
                             json.dumps(item.acceptance),
+                            item.retry_count, item.error_class, item.error_detail,
+                            item.blocked_by_task_id, item.blocked_reason,
                         ),
                     )
             conn.commit()
@@ -682,7 +711,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json
+                    SELECT task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason
                     FROM campaign_tasks
                     WHERE campaign_id = %s
                     ORDER BY priority ASC, created_at ASC;
@@ -700,9 +729,24 @@ class PostgresPersistence:
                 priority=row[5],
                 depends_on=list(row[6] or []),
                 acceptance=list(row[7] or []),
+                retry_count=int(row[8] or 0), error_class=row[9], error_detail=row[10],
+                blocked_by_task_id=row[11], blocked_reason=row[12],
             )
             for row in rows
         ]
+
+    def record_task_attempt(self, task: TaskRecord) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO campaign_task_attempts
+                        (task_id, campaign_id, status, error_class, error_detail)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (task.task_id, task.campaign_id, task.status, task.error_class, task.error_detail),
+                )
+            conn.commit()
 
     def create_campaign_run(
         self,

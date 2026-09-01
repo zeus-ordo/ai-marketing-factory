@@ -49,10 +49,15 @@ class TaskRecord(BaseModel):
     task_id: str
     campaign_id: str
     task_type: Literal["copywriting", "image_generation", "video_generation", "ads_strategy"]
-    status: Literal["pending", "planned", "running", "validating", "passed", "failed", "retrying"]
+    status: Literal["pending", "planned", "running", "validating", "passed", "failed", "blocked", "retrying"]
     priority: int
     depends_on: list[str] = []
     acceptance: list[str] = []
+    retry_count: int = 0
+    error_class: str | None = None
+    error_detail: str | None = None
+    blocked_by_task_id: str | None = None
+    blocked_reason: str | None = None
 
 
 class CampaignCreatedResponse(BaseModel):

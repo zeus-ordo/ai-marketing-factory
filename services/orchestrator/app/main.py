@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -244,6 +245,12 @@ class TaskStateStore:
                         depends_on_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         acceptance_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         worker_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        error_class TEXT,
+                        error_detail TEXT,
+                        blocked_by_task_id TEXT,
+                        blocked_reason TEXT,
+                        next_retry_at TIMESTAMPTZ,
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
                     """
@@ -251,6 +258,15 @@ class TaskStateStore:
                 cur.execute("ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS company_id TEXT NOT NULL DEFAULT '';")
                 cur.execute("ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT '';")
                 cur.execute("ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS worker_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb;")
+                for statement in (
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS error_class TEXT;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS error_detail TEXT;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS blocked_by_task_id TEXT;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS blocked_reason TEXT;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;",
+                ):
+                    cur.execute(statement)
                 cur.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_orchestrator_task_state_campaign_priority
@@ -267,8 +283,8 @@ class TaskStateStore:
                     cur.execute(
                         """
                         INSERT INTO orchestrator_task_state
-                            (task_id, campaign_id, task_type, status, priority, company_id, run_id, depends_on_json, acceptance_json, worker_payload_json, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW())
+                            (task_id, campaign_id, task_type, status, priority, company_id, run_id, depends_on_json, acceptance_json, worker_payload_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW())
                         ON CONFLICT (task_id) DO UPDATE SET
                             campaign_id = EXCLUDED.campaign_id,
                             task_type = EXCLUDED.task_type,
@@ -279,6 +295,12 @@ class TaskStateStore:
                             depends_on_json = EXCLUDED.depends_on_json,
                             acceptance_json = EXCLUDED.acceptance_json,
                             worker_payload_json = EXCLUDED.worker_payload_json,
+                            retry_count = EXCLUDED.retry_count,
+                            error_class = EXCLUDED.error_class,
+                            error_detail = EXCLUDED.error_detail,
+                            blocked_by_task_id = EXCLUDED.blocked_by_task_id,
+                            blocked_reason = EXCLUDED.blocked_reason,
+                            next_retry_at = EXCLUDED.next_retry_at,
                             updated_at = NOW();
                         """,
                         (
@@ -292,6 +314,8 @@ class TaskStateStore:
                             json.dumps(task.depends_on),
                             json.dumps(task.acceptance),
                             json.dumps(task.worker_payload),
+                            task.retry_count, task.error_class, task.error_detail,
+                            task.blocked_by_task_id, task.blocked_reason, task.next_retry_at,
                         ),
                     )
             conn.commit()
@@ -301,7 +325,7 @@ class TaskStateStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT task_id, task_type, status, priority, company_id, run_id, depends_on_json, acceptance_json, worker_payload_json
+                    SELECT task_id, task_type, status, priority, company_id, run_id, depends_on_json, acceptance_json, worker_payload_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at
                     FROM orchestrator_task_state
                     WHERE campaign_id = %s
                     ORDER BY priority ASC, updated_at ASC;
@@ -320,6 +344,9 @@ class TaskStateStore:
                 depends_on=list(row[6] or []),
                 acceptance=list(row[7] or []),
                 worker_payload=dict(row[8] or {}),
+                retry_count=int(row[9] or 0), error_class=row[10], error_detail=row[11],
+                blocked_by_task_id=row[12], blocked_reason=row[13],
+                next_retry_at=row[14].isoformat() if row[14] else None,
             )
             for row in rows
         ]
@@ -354,8 +381,14 @@ MAX_RETRY = 2
 OPS_RATE_LIMIT = 20
 OPS_WINDOW_SECONDS = 60
 
-redis_module = importlib.import_module("redis")
-redis_client = redis_module.Redis.from_url(REDIS_URL, decode_responses=True)
+try:
+    redis_module = importlib.import_module("redis")
+    redis_client = redis_module.Redis.from_url(REDIS_URL, decode_responses=True)
+except ModuleNotFoundError:
+    class _UnavailableRedis:
+        def __getattr__(self, name: str):
+            raise RuntimeError("redis package is required for orchestrator queue operations")
+    redis_client = _UnavailableRedis()
 
 audit_store: OperationAuditStore | None = None
 task_state_store: TaskStateStore | None = None
@@ -382,6 +415,49 @@ TASK_TOPIC_MAP: dict[str, str] = {
 
 TOPICS = list(TASK_TOPIC_MAP.values())
 DLQ_TOPIC = "task.dlq"
+
+
+def classify_worker_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    code = getattr(exc, "code", None)
+    if code == 429 or any(term in text for term in ("quota", "rate limit", "rate_limit", "too many requests")):
+        return "quota" if code == 429 or "quota" in text else "rate_limit"
+    if isinstance(exc, (TimeoutError,)) or "timeout" in text or "timed out" in text:
+        return "timeout"
+    if code in {400, 422} or "validation" in text or "unprocessable entity" in text:
+        return "validation"
+    if code is not None or any(term in text for term in ("provider", "upstream", "http error", "service unavailable", "503", "502")):
+        return "provider_error"
+    return "unknown"
+
+
+def sanitize_error_detail(detail: str) -> str:
+    sanitized = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", detail)
+    for secret in (INTERNAL_API_KEY,):
+        if secret:
+            sanitized = sanitized.replace(secret, "[REDACTED]")
+    return sanitized[:2000]
+
+
+def next_retry_delay(attempt: int, base_seconds: float = 5.0, max_seconds: float = 300.0) -> float:
+    return min(max_seconds, base_seconds * (2 ** max(0, attempt - 1)))
+
+
+def block_pending_descendants(campaign_tasks: dict[str, OrchestratorTask], failed_task_id: str) -> None:
+    changed = True
+    while changed:
+        changed = False
+        for candidate in campaign_tasks.values():
+            if candidate.status != "pending" or not any(
+                dep_id == failed_task_id or (campaign_tasks.get(dep_id) and campaign_tasks[dep_id].status == "blocked")
+                for dep_id in candidate.depends_on
+            ):
+                continue
+            blocker = next((dep_id for dep_id in candidate.depends_on if dep_id == failed_task_id or campaign_tasks.get(dep_id, candidate).status == "blocked"), failed_task_id)
+            candidate.status = "blocked"
+            candidate.blocked_by_task_id = blocker
+            candidate.blocked_reason = f"blocked by failed task {blocker}"
+            changed = True
 
 
 def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -659,7 +735,9 @@ def process_task(campaign_id: str, task_id: str) -> None:
         return
 
     task.status = "running"
-    campaign_tasks[task_id] = task
+    persist_campaign_task_state(campaign_id, campaign_tasks)
+    with task_state_lock:
+        task_state[campaign_id] = campaign_tasks
 
     retry_key = f"{campaign_id}:{task_id}"
 
@@ -673,21 +751,31 @@ def process_task(campaign_id: str, task_id: str) -> None:
             publish_task(TASK_TOPIC_MAP[next_task.task_type], campaign_id, next_task)
         with retry_state_lock:
             retry_state.pop(retry_key, None)
-    except RuntimeError as exc:
+    except Exception as exc:
+        error_class = classify_worker_error(exc)
         with retry_state_lock:
             current_retry = retry_state.get(retry_key, 0) + 1
             retry_state[retry_key] = current_retry
 
-        if current_retry <= MAX_RETRY:
+        retryable = error_class in {"quota", "rate_limit", "timeout", "provider_error"}
+        if retryable and current_retry <= MAX_RETRY:
             task.status = "retrying"
+            task.retry_count = current_retry
+            task.error_class = error_class
+            task.error_detail = sanitize_error_detail(str(exc))
             campaign_tasks[task_id] = task
+            time.sleep(next_retry_delay(current_retry))
             task.status = "planned"
             campaign_tasks[task_id] = task
             publish_task(TASK_TOPIC_MAP[task.task_type], campaign_id, task)
         else:
             task.status = "failed"
+            task.retry_count = current_retry
+            task.error_class = error_class
+            task.error_detail = sanitize_error_detail(str(exc))
             campaign_tasks[task_id] = task
-            publish_dlq(campaign_id, task, str(exc))
+            block_pending_descendants(campaign_tasks, task_id)
+            publish_dlq(campaign_id, task, task.error_detail or "worker failure")
 
     # Persist to Postgres FIRST, then update in-memory state.
     # This ensures that if we crash between persist and memory update,
@@ -758,9 +846,9 @@ def dispatch(payload: DispatchRequest) -> DispatchResponse:
         task.status = "planned" if len(task.depends_on) == 0 else "pending"
         campaign_tasks[task.task_id] = task
 
+    persist_campaign_task_state(payload.campaign_id, campaign_tasks)
     with task_state_lock:
         task_state[payload.campaign_id] = campaign_tasks
-    persist_campaign_task_state(payload.campaign_id, campaign_tasks)
 
     for task in campaign_tasks.values():
         if task.status == "planned":
@@ -796,9 +884,9 @@ def task_complete(payload: TaskCompleteRequest) -> TaskCompleteResponse:
         topic = TASK_TOPIC_MAP[task.task_type]
         publish_task(topic, payload.campaign_id, task)
 
+    persist_campaign_task_state(payload.campaign_id, campaign_tasks)
     with task_state_lock:
         task_state[payload.campaign_id] = campaign_tasks
-    persist_campaign_task_state(payload.campaign_id, campaign_tasks)
     return TaskCompleteResponse(
         campaign_id=payload.campaign_id,
         task_id=payload.task_id,
