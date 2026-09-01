@@ -6,6 +6,7 @@ export function safeExternalUrl(value: string | null | undefined): string | null
   if (!value) return null;
   try {
     const parsed = new URL(value);
+    if (parsed.username || parsed.password) return null;
     return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : null;
   } catch {
     return null;

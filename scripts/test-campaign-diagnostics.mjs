@@ -7,8 +7,10 @@ const provenance = fs.readFileSync("components/diagnostics/provenance-list.tsx",
 const campaigns = fs.readFileSync("app/campaigns/page.tsx", "utf8");
 const review = fs.readFileSync("components/review/review-queue-table.tsx", "utf8");
 const reviewPage = fs.readFileSync("app/review/page.tsx", "utf8");
+const workerState = fs.readFileSync("services/campaign_service/app/main.py", "utf8");
 
 assert.equal(safeExternalUrl("https://example.com/source?q=1"), "https://example.com/source?q=1");
+assert.equal(safeExternalUrl("https://user:password@example.com/source"), null);
 assert.equal(safeExternalUrl("javascript:alert(1)"), null);
 assert.equal(sanitizeDiagnosticText("provider token=secret"), "provider token=[REDACTED]");
 assert.equal(canRetryTask({ retryable: true, retry_count: 2 }), true);
@@ -16,6 +18,8 @@ assert.equal(canRetryTask({ retryable: true, retry_count: 3 }), false);
 assert.equal(canRetryTask({ retryable: false, retry_count: 0 }), false);
 assert.match(helper, /parsed\.protocol === "http:"/);
 assert.match(helper, /parsed\.protocol === "https:"/);
+assert.match(workerState, /displayable_assets/);
+assert.doesNotMatch(workerState, /displayable_asset_count[^\n]+return True/);
 assert.match(helper, /source\.folder/);
 assert.match(provenance, /target="_blank"/);
 assert.match(campaigns, /ProvenanceList/);
@@ -26,4 +30,6 @@ assert.match(reviewPage, /ProvenanceList/);
 assert.match(reviewPage, /canRetryTask\(task\)/);
 assert.match(reviewPage, /sanitizeDiagnosticText/);
 assert.doesNotMatch(reviewPage, /retryable \?\? \(task\.status === "failed"\)/);
+assert.match(reviewPage, /key=\{`\$\{diagnosticItem\.campaign_id\}/);
+assert.ok(reviewPage.indexOf("const summary = useMemo") < reviewPage.indexOf("if (authLoading)"));
 console.log("campaign diagnostics contract passed");

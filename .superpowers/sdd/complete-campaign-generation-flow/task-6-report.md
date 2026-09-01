@@ -30,6 +30,24 @@ Verification:
 - `node scripts/test-campaign-flow-contract.mjs`: passed
 - `git diff --check`: passed
 
+## Harden Final Diagnostics Validation
+
+- Worker success validation no longer trusts `displayable_asset_count`; it validates actual asset collections, URLs, and content, including retry reconciliation assets.
+- Added regression coverage for inconsistent positive counts with empty asset collections.
+- Review hooks now maintain stable order across auth/loading transitions, and diagnostics sections have stable React keys.
+- Provenance URL rendering rejects HTTP(S) credentials and only renders safe links.
+
+Verification:
+
+- Campaign service: 78 passed
+- Orchestrator: 25 passed
+- Worker tests: 3 passed
+- Diagnostics contract: passed
+- Campaign flow contract: passed
+- `npm run build`: passed
+- `git diff --check`: passed
+- `npm run lint`: failed on 81 pre-existing repository lint errors and 13 warnings, including existing hardcoded-text violations outside this change
+
 ## Complete Review Diagnostics Details
 
 - Review diagnostics now render provenance source type, label, folder, and sanitized clickable HTTP(S) URLs.

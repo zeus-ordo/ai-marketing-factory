@@ -163,6 +163,13 @@ export default function ReviewPage() {
     }
   }
 
+  const summary = useMemo(() => {
+    const pending = items.filter((item) => item.status === "review_pending").length;
+    const approved = items.filter((item) => item.status === "approved").length;
+    const rejected = items.filter((item) => item.status === "rejected").length;
+    return { pending, approved, rejected };
+  }, [items]);
+
   if (authLoading) {
     return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading...</section>;
   }
@@ -170,13 +177,6 @@ export default function ReviewPage() {
   if (!canReview) {
     return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">你沒有審核中心權限。</section>;
   }
-
-  const summary = useMemo(() => {
-    const pending = items.filter((item) => item.status === "review_pending").length;
-    const approved = items.filter((item) => item.status === "approved").length;
-    const rejected = items.filter((item) => item.status === "rejected").length;
-    return { pending, approved, rejected };
-  }, [items]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredItems = items.filter((item) => {
@@ -233,7 +233,7 @@ export default function ReviewPage() {
           (!summary.generation_context_id || task.generation_context_id === summary.generation_context_id)
         ) ?? [];
         return (
-          <section aria-label={t("review.diagnostics.title")} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <section key={`${diagnosticItem.campaign_id}:${diagnosticItem.run_id || summary.generation_context_id}`} aria-label={t("review.diagnostics.title")} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="text-sm font-semibold">{t("review.diagnostics.title")}</h2>
               <code className="break-all text-xs text-slate-500">{campaignNameMap[diagnosticItem.campaign_id] || diagnosticItem.campaign_id} · {summary.generation_context_id}</code>
@@ -246,7 +246,7 @@ export default function ReviewPage() {
             </div>
             <ProvenanceList sources={source_provenance} />
             {groupTasks.map((task) => (
-              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{task.task_type}: {task.provider || "—"}/{task.model || "—"} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
+              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{task.task_type}: {task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
             ))}
           </section>
         );

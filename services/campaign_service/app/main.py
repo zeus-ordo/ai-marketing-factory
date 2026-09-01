@@ -7128,6 +7128,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
         "status": "passed" if assets else "failed",
         "error": None if assets else "worker returned no assets",
         "displayable_asset_count": len(assets),
+        "displayable_assets": [asset.model_dump(mode="json") for asset in assets],
         "provider": diagnostics_metadata.get("provider") or diagnostics_metadata.get("provider_name"),
         "model": diagnostics_metadata.get("model") or diagnostics_metadata.get("model_name"),
     }
@@ -7764,8 +7765,14 @@ def require_internal_api_key_for_worker(req: Request) -> None:
 
 
 def worker_result_has_displayable_assets(task_type: str, result: dict[str, Any]) -> bool:
-    if isinstance(result.get("displayable_asset_count"), int) and result["displayable_asset_count"] > 0:
-        return True
+    persisted_assets = result.get("displayable_assets")
+    if isinstance(persisted_assets, list):
+        if task_type == "copywriting" and any(isinstance(item, dict) and str(item.get("metadata", {}).get("variant", {}).get("body", "")).strip() for item in persisted_assets):
+            return True
+        if task_type in {"image_generation", "video_generation"} and any(isinstance(item, dict) and is_openable_asset_url(str(item.get("url", ""))) for item in persisted_assets):
+            return True
+        if task_type == "ads_strategy" and any(isinstance(item, dict) and item.get("metadata", {}).get("ads_plan") for item in persisted_assets):
+            return True
     if task_type == "copywriting":
         return any(isinstance(item, dict) and isinstance(item.get("body"), str) and item["body"].strip() for item in result.get("variants", []))
     if task_type == "image_generation":

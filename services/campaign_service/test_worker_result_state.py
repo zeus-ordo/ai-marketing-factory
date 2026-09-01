@@ -140,6 +140,7 @@ def test_worker_result_preserves_provider_and_model_diagnostics():
     ("video_generation", {"status": "passed", "video_url": ""}),
     ("ads_strategy", {"status": "passed", "ads_plan": {}}),
     ("image_generation", {"status": "passed"}),
+    ("image_generation", {"status": "passed", "displayable_asset_count": 1, "image_assets": []}),
 ])
 def test_empty_worker_result_fails_without_unblocking_descendants(task_type, result):
     updated = apply_worker_result_state([
