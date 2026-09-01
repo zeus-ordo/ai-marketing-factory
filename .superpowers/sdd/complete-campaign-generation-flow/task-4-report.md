@@ -34,6 +34,17 @@ Verification:
 
 Concern: the existing project emits FastAPI `on_event` deprecation warnings during tests; this task does not alter that unrelated behavior.
 
+## Run-Specific Regeneration Fix
+
+- Review regeneration now resolves snapshots by the reviewed asset or review item's `run_id` instead of selecting the newest campaign snapshot.
+- Persisted snapshots are loaded by exact campaign/run pair and current-process snapshots retain a run-to-context index.
+- Assets without a run ID retain backward-compatible latest campaign snapshot fallback.
+- Added two-run review regeneration coverage for old-run context selection and no-run latest fallback.
+
+Verification:
+
+- `python -m pytest services/campaign_service/test_context_assembler.py::test_snapshot_for_campaign_uses_reviewed_run_and_latest_for_missing_run services/campaign_service/test_context_assembler.py::test_review_regeneration_uses_snapshot_for_image_and_ads -q`: 2 passed.
+
 ## Review Fix Report
 
 Fixed all requested Task 4 findings:

@@ -867,6 +867,7 @@ asset_cache: dict[str, list[AssetOutput]] = {}
 validation_cache: dict[str, list[ValidationResult]] = {}
 campaign_run_cache: dict[str, list[dict[str, Any]]] = {}
 generation_context_cache: dict[str, GenerationContextSnapshot] = {}
+generation_context_run_cache: dict[tuple[str, str], str] = {}
 review_status_overrides: dict[str, str] = {}
 review_audit_logs: list[ReviewAuditEntry] = []
 workflow_templates: dict[str, WorkflowTemplate] = {}
@@ -2175,13 +2176,25 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
     )
 
 
+def cache_generation_context(snapshot: GenerationContextSnapshot, run_id: str | None = None) -> None:
+    generation_context_cache[snapshot.generation_context_id] = snapshot
+    if run_id:
+        generation_context_run_cache[(snapshot.campaign_id, run_id)] = snapshot.generation_context_id
+
+
 def snapshot_for_campaign(campaign: CampaignRecord, run_id: str | None = None) -> GenerationContextSnapshot | None:
-    snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
-    if snapshot is None and persistence is not None and run_id:
-        snapshot = persistence.load_generation_context(campaign.campaign_id, run_id)
+    if run_id:
+        context_id = generation_context_run_cache.get((campaign.campaign_id, run_id))
+        snapshot = generation_context_cache.get(context_id) if context_id else None
         if snapshot is not None:
-            generation_context_cache[snapshot.generation_context_id] = snapshot
-    return snapshot
+            return snapshot
+        if persistence is not None:
+            snapshot = persistence.load_generation_context(campaign.campaign_id, run_id)
+            if snapshot is not None:
+                cache_generation_context(snapshot, run_id)
+            return snapshot
+        return None
+    return next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
 
 
 def snapshot_prompt_context(snapshot: GenerationContextSnapshot | None) -> str:
@@ -4335,7 +4348,7 @@ def run_campaign(req: Request, campaign_id: str) -> CampaignRunResponse:
 
     run_id, run_number = create_campaign_run_record(campaign, actor_id)
     generation_context = create_generation_context(campaign, run_id)
-    generation_context_cache[generation_context.generation_context_id] = generation_context
+    cache_generation_context(generation_context, run_id)
     if persistence is not None:
         persistence.save_generation_context(generation_context, run_id)
     finalize_campaign_workflow(
@@ -4717,8 +4730,9 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
     user_instruction = (payload.user_instruction if payload else None) or ""
     operator = (payload.operator if payload else None) or (actor_payload.sub if actor_payload is not None else "admin")
     regeneration_context = prepare_regeneration_naming(campaign, asset)
-    run_id = asset.run_id or latest_campaign_run_id(asset.campaign_id) or ""
-    snapshot = snapshot_for_campaign(campaign, run_id or None)
+    reviewed_run_id = asset.run_id or (review_item.get("run_id") if review_item else None)
+    run_id = reviewed_run_id or latest_campaign_run_id(asset.campaign_id) or ""
+    snapshot = snapshot_for_campaign(campaign, reviewed_run_id)
     snapshot_context = snapshot_prompt_context(snapshot)
     context_payload = {"generation_context_id": snapshot.generation_context_id} if snapshot else {}
     if persistence is not None:
@@ -5092,7 +5106,7 @@ def _generate_single_asset_background(campaign: CampaignRecord, payload: SingleA
         snapshot = snapshot_for_campaign(campaign, run_id or None)
         if snapshot is None:
             snapshot = create_generation_context(campaign, run_id or f"single_{task.task_id}")
-            generation_context_cache[snapshot.generation_context_id] = snapshot
+            cache_generation_context(snapshot, run_id or f"single_{task.task_id}")
             if persistence is not None:
                 persistence.save_generation_context(snapshot, run_id or f"single_{task.task_id}")
         assets, validations = generate_outputs_via_workers(

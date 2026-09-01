@@ -195,6 +195,24 @@ def test_retry_rehydrates_snapshot_from_persistence(monkeypatch):
     assert main.snapshot_for_campaign(campaign(), "run-1") is snapshot
 
 
+def test_snapshot_for_campaign_uses_reviewed_run_and_latest_for_missing_run(monkeypatch):
+    import importlib
+    main = importlib.import_module("app.main")
+    old_snapshot = assemble_generation_context(campaign(), [item("user_selected", "old", "OLD RUN")], [], [], 100)
+    new_snapshot = assemble_generation_context(campaign(), [item("user_selected", "new", "NEW RUN")], [], [], 100)
+    main.generation_context_cache.clear()
+    main.generation_context_cache[old_snapshot.generation_context_id] = old_snapshot
+    main.generation_context_cache[new_snapshot.generation_context_id] = new_snapshot
+
+    class Persistence:
+        def load_generation_context(self, campaign_id, run_id):
+            return {"run-old": old_snapshot, "run-new": new_snapshot}.get(run_id)
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    assert main.snapshot_for_campaign(campaign(), "run-old") is old_snapshot
+    assert main.snapshot_for_campaign(campaign(), None) is new_snapshot
+
+
 def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
     monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
     import importlib
@@ -202,13 +220,17 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
     from app.schemas import AssetOutput
     main = importlib.import_module("app.main")
     monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
-    snapshot = assemble_generation_context(campaign(), [item("user_selected", "ref", "REVIEW SNAPSHOT")], [], [], 100)
+    old_snapshot = assemble_generation_context(campaign(), [item("user_selected", "old", "OLD REVIEW SNAPSHOT")], [], [], 100)
+    new_snapshot = assemble_generation_context(campaign(), [item("user_selected", "new", "NEW REVIEW SNAPSHOT")], [], [], 100)
     main.generation_context_cache.clear()
-    main.generation_context_cache[snapshot.generation_context_id] = snapshot
+    main.generation_context_run_cache.clear()
+    main.cache_generation_context(old_snapshot, "run-1")
+    main.cache_generation_context(new_snapshot, "run-2")
     asset = AssetOutput(company_id="co-1", asset_id="asset", campaign_id="camp-1", task_id="task", asset_type="image", url="https://old", created_at=datetime.now(timezone.utc), run_id="run-1")
     class Persistence:
         def get_asset_output(self, asset_id): return asset
         def get_review_item_by_asset(self, asset_id): return None
+        def get_latest_campaign_run(self, campaign_id): return {"run_id": "run-2"}
         def list_asset_outputs(self, campaign_id): return [asset]
         def save_asset_outputs(self, assets): pass
     monkeypatch.setattr(main, "persistence", Persistence())
@@ -227,5 +249,10 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
     for asset_type in ("image", "ads"):
         asset.asset_type = asset_type
         main._perform_asset_regeneration(request, "asset")
-        assert captured["payload"]["generation_context_id"] == snapshot.generation_context_id
-        assert "REVIEW SNAPSHOT" in captured["payload"].get("prompt", captured["payload"].get("context", ""))
+        assert captured["payload"]["generation_context_id"] == old_snapshot.generation_context_id
+        assert "OLD REVIEW SNAPSHOT" in captured["payload"].get("prompt", captured["payload"].get("context", ""))
+    asset.run_id = None
+    asset.asset_type = "image"
+    main._perform_asset_regeneration(request, "asset")
+    assert captured["payload"]["generation_context_id"] == new_snapshot.generation_context_id
+    assert "NEW REVIEW SNAPSHOT" in captured["payload"]["prompt"]
