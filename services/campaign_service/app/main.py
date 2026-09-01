@@ -56,6 +56,7 @@ from .schemas import (
 )
 from .store import InMemoryStore
 from .validation import validate_campaign_brief
+from .industry_matching import match_industry_items
 
 
 class QueueHealthResponse(BaseModel):
@@ -2012,6 +2013,7 @@ def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 
                 "file_name": item.file_name,
                 "file_type": item.file_type,
                 "stored_path": campaign_reference_files.get(campaign.campaign_id, {}).get(item.reference_id),
+                "folder": item.folder,
             })
 
     lines: list[str] = []
@@ -2019,11 +2021,13 @@ def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 
         file_name = str(row.get("file_name") or "reference")
         file_type = str(row.get("file_type") or "")
         stored_path = str(row.get("stored_path") or "")
+        folder = str(row.get("folder") or "")
+        source_type = "immediate_upload" if "immediate" in folder.casefold() or "upload" in folder.casefold() else "campaign_reference"
         excerpt = safe_reference_excerpt(stored_path, file_type)
         if excerpt:
-            lines.append(f"- Manual/campaign reference: {file_name}\n  Excerpt: {excerpt}")
+            lines.append(f"- Manual/campaign reference: [source_type={source_type}] {file_name}\n  Excerpt: {excerpt}")
         else:
-            lines.append(f"- Manual/campaign reference: {file_name} ({file_type or 'unknown type'})")
+            lines.append(f"- Manual/campaign reference: [source_type={source_type}] {file_name} ({file_type or 'unknown type'})")
     return lines
 
 
@@ -2040,18 +2044,22 @@ def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 
     if not rows:
         rows = [item.model_dump(mode="python") for item in knowledge_items.get(campaign.company_id, [])]
 
-    matched: list[dict[str, Any]] = []
+    selected: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for row in rows:
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        category = str(metadata.get("category") or metadata.get("folder") or metadata.get("folder_name") or "")
-        searchable = " ".join([
-            str(row.get("title") or ""),
-            str(row.get("description") or ""),
-            category,
-            str(metadata.get("file_name") or ""),
-        ]).lower()
-        if industry in searchable or any(part and part in searchable for part in re.split(r"[\s,/，、|]+", industry)):
-            matched.append(row)
+        source_type = str(metadata.get("source_type") or "")
+        if source_type == "user_selected" or metadata.get("selected") is True:
+            selected.append({**row, "source_type": "user_selected"})
+        else:
+            candidates.append(row)
+    matched = [*selected, *match_industry_items(
+        campaign.brief.industry_category,
+        campaign.brief.product_name,
+        campaign.brief.objective,
+        candidates,
+        limit=max(0, limit - len(selected)),
+    )]
 
     lines: list[str] = []
     for row in matched[:limit]:
@@ -2060,7 +2068,8 @@ def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 
         file_name = str(metadata.get("file_name") or "")
         title = str(row.get("title") or file_name or "knowledge item")
         description = str(row.get("description") or "").strip()
-        detail = f"- Industry-matched knowledge folder/item: [{category}] {title}"
+        source_type = str(row.get("source_type") or "industry_matched")
+        detail = f"- Industry-matched knowledge folder/item: [source_type={source_type}] [{category}] {title}"
         if file_name and file_name != title:
             detail += f" / file: {file_name}"
         if description:

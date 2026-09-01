@@ -1,0 +1,90 @@
+from datetime import datetime, timezone
+
+from app.industry_matching import (
+    industry_terms,
+    match_industry_items,
+    normalize_industry,
+)
+from app.main import (
+    CampaignReferenceRecord,
+    KnowledgeItemRecord,
+    campaign_references,
+    campaign_reference_files,
+    list_campaign_reference_prompt_lines,
+    list_industry_knowledge_prompt_lines,
+    knowledge_items,
+)
+from app.schemas import CampaignBrief, CampaignRecord, Deliverables
+
+
+def campaign() -> CampaignRecord:
+    return CampaignRecord(
+        company_id="co_1",
+        campaign_id="ca_1",
+        created_at=datetime.now(timezone.utc),
+        brief=CampaignBrief(
+            campaign_name="Cocktail launch",
+            product_name="New cocktail",
+            objective="awareness",
+            industry_category="餐酒館",
+            target_audience={"age_range": "25-44", "gender": "all", "persona": "diners"},
+            platforms=["instagram"],
+            budget=1000,
+            brand_tone=["warm"],
+            deliverables=Deliverables(),
+            deadline=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        ),
+    )
+
+
+def test_normalizes_industry_and_expands_restaurant_bar_synonyms():
+    assert normalize_industry(" 餐酒館 ") == "餐酒館"
+    assert {"餐酒館", "酒吧", "調酒", "餐飲", "品酒", "夜生活", "餐廳"} <= industry_terms("餐酒館")
+
+
+def test_matches_cantonese_restaurant_synonyms():
+    items = [{"title": "調酒菜單", "description": "酒吧夜生活", "metadata": {"category": "餐酒館"}}]
+    matched = match_industry_items("餐酒館", "新品調酒", "awareness", items)
+    assert [item["title"] for item in matched] == ["調酒菜單"]
+    assert matched[0]["source_type"] == "industry_matched"
+
+
+def test_exact_industry_matches_rank_before_synonyms():
+    items = [
+        {"title": "酒吧靈感", "metadata": {"category": "酒吧"}},
+        {"title": "餐酒館品牌指南", "metadata": {"category": "餐酒館"}},
+    ]
+    matched = match_industry_items("餐酒館", "新品調酒", "awareness", items)
+    assert [item["title"] for item in matched] == ["餐酒館品牌指南", "酒吧靈感"]
+
+
+def test_does_not_match_unrelated_industry():
+    items = [{"title": "汽車保養", "description": "車輛維修", "metadata": {"category": "汽車"}}]
+    assert match_industry_items("餐酒館", "新品調酒", "awareness", items) == []
+
+
+def test_prompt_helpers_add_source_type_without_removing_existing_text(monkeypatch, tmp_path):
+    item = KnowledgeItemRecord(
+        item_id="ki_1", company_id="co_1", title="餐酒館指南", source="manual",
+        description="餐廳與調酒", metadata={"category": "餐酒館"}, created_at=datetime.now(timezone.utc)
+    )
+    reference = CampaignReferenceRecord(
+        reference_id="ref_1", campaign_id="ca_1", file_name="brief.txt", file_type="text/plain",
+        file_size=5, uploaded_at=datetime.now(timezone.utc).isoformat(), download_url="/brief.txt"
+    )
+    path = tmp_path / "brief.txt"
+    path.write_text("brand facts", encoding="utf-8")
+    monkeypatch.setattr("app.main.persistence", None)
+    knowledge_items["co_1"] = [item]
+    campaign_references["ca_1"] = [reference]
+    campaign_reference_files["ca_1"] = {"ref_1": str(path)}
+    try:
+        knowledge_lines = list_industry_knowledge_prompt_lines(campaign())
+        reference_lines = list_campaign_reference_prompt_lines(campaign())
+        assert "source_type=industry_matched" in knowledge_lines[0]
+        assert "source_type=campaign_reference" in reference_lines[0]
+        assert "brand facts" in reference_lines[0]
+    finally:
+        knowledge_items.pop("co_1", None)
+        campaign_references.pop("ca_1", None)
+        campaign_reference_files.pop("ca_1", None)
