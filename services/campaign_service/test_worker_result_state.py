@@ -66,7 +66,10 @@ def test_normalize_preserves_blocked_task_diagnostics():
 
 def test_retry_success_returns_passed_persisted_state():
     tasks = [task("image", "image_generation", status="retrying")]
-    updated = apply_worker_result_state(tasks, "image", {"status": "passed"})
+    updated = apply_worker_result_state(tasks, "image", {
+        "status": "passed",
+        "image_assets": [{"url": "https://example.com/image.png"}],
+    })
     assert updated[0].status == "passed"
 
 
@@ -136,6 +139,7 @@ def test_worker_result_preserves_provider_and_model_diagnostics():
     ("image_generation", {"status": "passed", "image_assets": []}),
     ("video_generation", {"status": "passed", "video_url": ""}),
     ("ads_strategy", {"status": "passed", "ads_plan": {}}),
+    ("image_generation", {"status": "passed"}),
 ])
 def test_empty_worker_result_fails_without_unblocking_descendants(task_type, result):
     updated = apply_worker_result_state([

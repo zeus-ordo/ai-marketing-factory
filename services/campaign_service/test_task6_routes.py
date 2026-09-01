@@ -172,6 +172,7 @@ def test_campaign_hydration_loads_persisted_snapshot_after_cold_cache(monkeypatc
     ("image_generation", {"task_id": "task-1", "campaign_id": "camp-empty", "company_id": "co-1", "image_assets": []}),
     ("video_generation", {"task_id": "task-1", "campaign_id": "camp-empty", "company_id": "co-1", "video_url": ""}),
     ("ads_strategy", {"task_id": "task-1", "campaign_id": "camp-empty", "company_id": "co-1", "ads_plan": {}}),
+    ("image_generation", {"task_id": "task-1", "campaign_id": "camp-empty", "company_id": "co-1", "status": "passed"}),
 ])
 def test_http_worker_empty_result_is_failed_not_passed(monkeypatch, task_type, result):
     item = campaign("camp-empty")

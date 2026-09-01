@@ -30,6 +30,24 @@ Verification:
 - `node scripts/test-campaign-flow-contract.mjs`: passed
 - `git diff --check`: passed
 
+## Asset Regeneration Safety Follow-up
+
+- Image asset regeneration payloads now include `company_id` and are validated against `ImageRunRequest` in the regression suite.
+- Successful image regeneration persists provider/model metadata alongside the regenerated asset.
+- The four supported asset-producing task types reject every successful result without displayable assets, including bare `{"status": "passed"}` results.
+- HTTP ingestion returns a failed response for empty results and rejects unknown task types; descendants remain blocked.
+- Retry reconciliation includes the validated displayable asset count so legitimate successful retries are not rejected.
+
+Verification:
+
+- Focused campaign tests: 48 passed
+- Campaign service: 77 passed
+- Orchestrator: 25 passed
+- Worker tests: 2 passed
+- Contract test: passed
+- `npm run build`: passed
+- `git diff --check`: passed
+
 ## Worker Result Diagnostics Follow-up
 
 - Image generation payloads now include required company identity and preserve retry routing metadata.

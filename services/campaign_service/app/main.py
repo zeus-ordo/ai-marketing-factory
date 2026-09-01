@@ -833,6 +833,7 @@ WORKER_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("WORKER_RETRY_MAX_ATTEMPTS", "2
 WORKER_RETRY_BACKOFF_SECONDS = max(0.0, float(os.getenv("WORKER_RETRY_BACKOFF_SECONDS", "0.5")))
 MANUAL_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("MANUAL_RETRY_MAX_ATTEMPTS", "3")))
 manual_retry_lock = threading.Lock()
+ASSET_WORKER_TASK_TYPES = {"copywriting", "image_generation", "video_generation", "ads_strategy"}
 WORKER_REQUEST_TIMEOUT_SECONDS = max(15.0, float(os.getenv("WORKER_REQUEST_TIMEOUT_SECONDS", "180")))
 WORKER_COPY_URL = os.getenv("WORKER_COPY_URL", "http://worker-copy:8091").strip()
 WORKER_IMAGE_URL = os.getenv("WORKER_IMAGE_URL", "http://worker-image:8092").strip()
@@ -1032,11 +1033,7 @@ def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dic
     if current is None:
         return tasks
     status = str(result.get("status", "passed"))
-    if status in {"passed", "accepted", "success"} and (
-        result.get("displayable_asset_count") == 0 or
-        any(key in result for key in ("variants", "image_assets", "video_url", "ads_plan"))
-        and not worker_result_has_displayable_assets(current.task_type, result)
-    ):
+    if status in {"passed", "accepted", "success"} and current.task_type in ASSET_WORKER_TASK_TYPES and not worker_result_has_displayable_assets(current.task_type, result):
         status = "failed"
         result = {**result, "status": status, "error": "worker returned no displayable assets"}
     if status in {"failed", "error"} or result.get("error"):
@@ -4980,6 +4977,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,
+            "company_id": company_id,
             "prompt": base_prompt,
             "reject_reason": reject_reason,
             "sizes": ["1024x1024"],
@@ -7049,6 +7047,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
                 raise HTTPException(status_code=400, detail="run_id does not match asset")
             target_task_id = asset.task_id
             target_run_id = target_run_id or asset.run_id
+        # Re-read under the lock so concurrent in-memory retries cannot both claim the same task.
         loaded_tasks = store.get_tasks(campaign_id)
         task = next((item for item in loaded_tasks if item.task_id == target_task_id and (not target_run_id or item.run_id == target_run_id)), None)
         if task is None:
@@ -7128,6 +7127,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     patched_result = {
         "status": "passed" if assets else "failed",
         "error": None if assets else "worker returned no assets",
+        "displayable_asset_count": len(assets),
         "provider": diagnostics_metadata.get("provider") or diagnostics_metadata.get("provider_name"),
         "model": diagnostics_metadata.get("model") or diagnostics_metadata.get("model_name"),
     }
@@ -7763,6 +7763,8 @@ def require_internal_api_key_for_worker(req: Request) -> None:
 
 
 def worker_result_has_displayable_assets(task_type: str, result: dict[str, Any]) -> bool:
+    if isinstance(result.get("displayable_asset_count"), int) and result["displayable_asset_count"] > 0:
+        return True
     if task_type == "copywriting":
         return any(isinstance(item, dict) and isinstance(item.get("body"), str) and item["body"].strip() for item in result.get("variants", []))
     if task_type == "image_generation":
@@ -7786,6 +7788,8 @@ def ingest_worker_result(payload: WorkerResultRequest, req: Request) -> dict[str
     result = payload.result
     now = now_utc()
 
+    if task_type not in ASSET_WORKER_TASK_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unknown task type: {task_type}")
     if not worker_result_has_displayable_assets(task_type, result):
         result = {**result, "status": "failed", "error": "worker returned no displayable assets", "displayable_asset_count": 0}
         response = {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": result["error"]}

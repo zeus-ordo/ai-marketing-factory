@@ -218,6 +218,7 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
     import importlib
     from starlette.requests import Request
     from app.schemas import AssetOutput
+    from services.worker_image.app.schemas import ImageRunRequest
     main = importlib.import_module("app.main")
     monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
     old_snapshot = assemble_generation_context(campaign(), [item("user_selected", "old", "OLD REVIEW SNAPSHOT")], [], [], 100)
@@ -235,14 +236,15 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
         def save_asset_outputs(self, assets): pass
     monkeypatch.setattr(main, "persistence", Persistence())
     monkeypatch.setattr(main.store, "get_campaign", lambda campaign_id: campaign())
-    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: None)
+    saved_assets = []
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: saved_assets.extend(assets))
     monkeypatch.setattr(main, "finalize_campaign_workflow", lambda *args, **kwargs: None)
     monkeypatch.setattr(main, "append_trace_event", lambda *args, **kwargs: None)
     captured = {}
     def post_json(url, payload):
         captured["payload"] = payload
         result = {"image_assets": [{"url": "https://new", "size": "1024x1024"}]} if asset.asset_type == "image" else {"ads_plan": {}}
-        result.update({"task_id": "task", "campaign_id": "camp-1", "company_id": "co-1"})
+        result.update({"task_id": "task", "campaign_id": "camp-1", "company_id": "co-1", "provider": "provider", "model_name": "model"})
         return result
     monkeypatch.setattr(main, "post_json", post_json)
     request = Request({"type": "http", "headers": [(b"x-internal-api-key", b"test-key")]})
@@ -251,6 +253,12 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
         main._perform_asset_regeneration(request, "asset")
         assert captured["payload"]["generation_context_id"] == old_snapshot.generation_context_id
         assert "OLD REVIEW SNAPSHOT" in captured["payload"].get("prompt", captured["payload"].get("context", ""))
+        if asset_type == "image":
+            validated = ImageRunRequest.model_validate(captured["payload"])
+            assert validated.company_id == "co-1"
+            assert saved_assets[-1].metadata["task_type"] == "image_generation"
+            assert saved_assets[-1].metadata["provider"] == "provider"
+            assert saved_assets[-1].metadata["model_name"] == "model"
     asset.run_id = None
     asset.asset_type = "image"
     main._perform_asset_regeneration(request, "asset")
