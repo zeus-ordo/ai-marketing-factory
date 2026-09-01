@@ -97,7 +97,7 @@ export function ReviewQueueTable({
                 <code className="break-all text-slate-500">{item.generation_context_id || t("common.notAvailable")}</code>
                 {item.source_summary ? <div className="mt-1 text-slate-500">{item.source_summary.internal_source_count}/{item.source_summary.external_source_count} {t("review.diagnostics.sources")} · {(item.source_summary.internal_ratio * 100).toFixed(1)}%/{(item.source_summary.external_ratio * 100).toFixed(1)}%</div> : null}
                 {item.source_provenance?.length ? <div className="mt-1"><ProvenanceList sources={item.source_provenance} /></div> : null}
-                {campaignTaskMap[item.campaign_id]?.filter((task) => task.task_type === ({ copy: "copywriting", image: "image_generation", video: "video_generation", ads: "ads_strategy" } as Record<string, string>)[item.asset_type || ""] && (!item.generation_context_id || task.generation_context_id === item.generation_context_id)).map((task) => <div key={task.task_id} className="mt-1 text-slate-500">{task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)}</div>) }
+                {campaignTaskMap[item.campaign_id]?.filter((task) => task.task_type === ({ copy: "copywriting", image: "image_generation", video: "video_generation", ads: "ads_strategy" } as Record<string, string>)[item.asset_type || ""] && (!item.generation_context_id || task.generation_context_id === item.generation_context_id)).map((task) => <div key={task.task_id} className="mt-1 text-slate-500">{task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || diagnosticTaskStatusLabel(task.status, t))}</div>) }
               </td>
               <td className="min-w-[96px] px-4 py-3 whitespace-nowrap">
                 {assetTypeLabel(item, t)}
@@ -150,6 +150,18 @@ function statusLabel(status: ReviewItem["status"], t: ReturnType<typeof useI18n>
   if (status === "approved") return t("review.status.passed");
   if (status === "rejected") return t("review.status.rejected");
   return t("review.status.inReview");
+}
+
+function diagnosticTaskStatusLabel(status: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (status === "pending") return t("status.pending");
+  if (status === "planned") return t("status.planned");
+  if (status === "running") return t("status.running");
+  if (status === "validating") return t("status.validating");
+  if (status === "passed") return t("status.passed");
+  if (status === "retrying") return t("status.retrying");
+  if (status === "failed") return t("status.failed");
+  if (status === "blocked") return t("status.blocked");
+  return t("common.notAvailable");
 }
 
 function assetName(item: ReviewItem, campaignNameMap: Record<string, string>) {

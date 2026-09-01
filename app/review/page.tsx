@@ -29,6 +29,18 @@ function diagnosticTaskTypeLabel(taskType: string, t: ReturnType<typeof useI18n>
   return taskType;
 }
 
+function diagnosticTaskStatusLabel(status: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (status === "pending") return t("status.pending");
+  if (status === "planned") return t("status.planned");
+  if (status === "running") return t("status.running");
+  if (status === "validating") return t("status.validating");
+  if (status === "passed") return t("status.passed");
+  if (status === "retrying") return t("status.retrying");
+  if (status === "failed") return t("status.failed");
+  if (status === "blocked") return t("status.blocked");
+  return t("common.notAvailable");
+}
+
 export default function ReviewPage() {
   const { t } = useI18n();
   const { user, isLoading: authLoading } = useAuth();
@@ -254,7 +266,7 @@ export default function ReviewPage() {
             </div>
             <ProvenanceList sources={source_provenance} />
             {groupTasks.map((task) => (
-              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{diagnosticTaskTypeLabel(task.task_type, t)}: {task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
+              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{diagnosticTaskTypeLabel(task.task_type, t)}: {task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || diagnosticTaskStatusLabel(task.status, t))} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
             ))}
           </section>
         );

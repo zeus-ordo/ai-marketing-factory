@@ -67,6 +67,27 @@ Verification:
 - `npm run build`: passed
 
 Concern: existing FastAPI, Pydantic, Node module-type, and Next.js workspace-root warnings remain unrelated to this follow-up.
+
+## Final Diagnostic Translation Fix
+
+- Translated task status values, including `blocked`, through the shared `status.*` locale keys in Campaigns, Review, and the review queue.
+- Translated known provenance source types through the shared `ProvenanceList` using `review.diagnostics.sourceTypes.*` keys for English, Traditional Chinese, and Japanese.
+- Unknown task statuses and source types safely fall back to the localized `common.notAvailable` value.
+- Added contract checks preventing raw diagnostic status/source-type rendering from regressing.
+
+Verification:
+
+- `node scripts/test-campaign-diagnostics.mjs`: passed
+- `node scripts/test-campaign-flow-contract.mjs`: passed
+- `npm run check:i18n`: only pre-existing Campaigns form/modal and Content Studio findings
+- `python -m pytest services/campaign_service -q`: 78 passed
+- `python -m pytest services/orchestrator -q`: 25 passed
+- `python -m pytest services/worker_image/test_prompt.py -q`: 3 passed
+- Touched-file ESLint: only pre-existing Campaigns form/modal, Review loading/permission, and review preview hardcoded-text errors
+- `git diff --check`: passed
+- `npm run build`: passed
+
+Concern: existing repository lint findings and framework/module warnings remain unrelated and were not changed.
 - `npm run lint`: failed on 81 pre-existing repository lint errors and 13 warnings, including existing hardcoded-text violations outside this change
 
 ## Complete Review Diagnostics Details

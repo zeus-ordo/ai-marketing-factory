@@ -190,6 +190,18 @@ function diagnosticTaskTypeLabel(taskType: string, t: ReturnType<typeof useI18n>
   return taskType;
 }
 
+function diagnosticTaskStatusLabel(status: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (status === "pending") return t("status.pending");
+  if (status === "planned") return t("status.planned");
+  if (status === "running") return t("status.running");
+  if (status === "validating") return t("status.validating");
+  if (status === "passed") return t("status.passed");
+  if (status === "retrying") return t("status.retrying");
+  if (status === "failed") return t("status.failed");
+  if (status === "blocked") return t("status.blocked");
+  return t("common.notAvailable");
+}
+
 function formatCampaignApiError(error: unknown, fallback: string): string {
   if (!(error instanceof ApiRequestError)) return error instanceof Error ? error.message : fallback;
   if (Array.isArray(error.detail)) {
@@ -1135,7 +1147,7 @@ export default function CampaignCenterPage() {
             <div className="grid gap-2 lg:grid-cols-2">
               {activeCampaignRecord.tasks.map((task) => (
                 <div key={task.task_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800">
-                  <span><strong>{diagnosticTaskTypeLabel(task.task_type, t)}</strong> <span className="text-slate-500">{task.status}</span></span>
+                  <span><strong>{diagnosticTaskTypeLabel(task.task_type, t)}</strong> <span className="text-slate-500">{diagnosticTaskStatusLabel(task.status, t)}</span></span>
                   <span className="text-xs text-slate-500">{task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason)} · {t("review.diagnostics.retryable")}: {task.retryable === true ? t("common.yes") : t("common.no")} {task.retry_count ? `· ${t("review.diagnostics.attempts")}: ${task.retry_count}` : ""} {task.next_retry_at ? `· ${task.next_retry_at}` : ""}</span>
                   {canRetryTask(task) ? <button type="button" onClick={() => handleRetryTask(activeCampaignRecord.campaign_id, task.task_id)} disabled={retryingTaskId !== null} className="rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50">{retryingTaskId === task.task_id ? t("review.diagnostics.retrying") : t("review.diagnostics.retry")}</button> : null}
                 </div>
