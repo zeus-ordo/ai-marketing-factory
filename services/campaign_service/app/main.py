@@ -6964,32 +6964,68 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
 
     manual_retry_lock.acquire()
     try:
+        if not payload.task_id.strip():
+            raise HTTPException(status_code=400, detail="task_id is required")
         target_task_id = payload.task_id
         target_run_id = payload.run_id
-        if payload.review_id:
+        if payload.review_id is not None:
+            if not payload.review_id.strip():
+                raise HTTPException(status_code=400, detail="review_id must not be empty")
             review_item = find_review_item(payload.review_id)
-            if review_item is not None:
-                target_run_id = target_run_id or review_item.run_id
-                asset = get_asset_output_by_id(payload.asset_id or review_item.asset_id)
-                target_task_id = asset.task_id if asset is not None else target_task_id
-        elif payload.asset_id:
+            if review_item is None:
+                raise HTTPException(status_code=404, detail="Review item not found")
+            if review_item.campaign_id != campaign_id:
+                raise HTTPException(status_code=400, detail="Review item does not belong to this campaign")
+            if payload.asset_id is not None and payload.asset_id != review_item.asset_id:
+                raise HTTPException(status_code=400, detail="asset_id does not match review item")
+            asset = get_asset_output_by_id(review_item.asset_id)
+            if asset is None:
+                raise HTTPException(status_code=404, detail="Review asset not found")
+            if asset.campaign_id != campaign_id:
+                raise HTTPException(status_code=400, detail="Review asset does not belong to this campaign")
+            if review_item.run_id and asset.run_id != review_item.run_id:
+                raise HTTPException(status_code=400, detail="Review and asset belong to different runs")
+            if payload.task_id != asset.task_id:
+                raise HTTPException(status_code=400, detail="task_id does not match review asset")
+            target_task_id = asset.task_id
+            selected_run_id = review_item.run_id or asset.run_id
+            if target_run_id and selected_run_id and target_run_id != selected_run_id:
+                raise HTTPException(status_code=400, detail="run_id does not match review item")
+            target_run_id = target_run_id or selected_run_id
+        elif payload.asset_id is not None:
+            if not payload.asset_id.strip():
+                raise HTTPException(status_code=400, detail="asset_id must not be empty")
             asset = get_asset_output_by_id(payload.asset_id)
-            if asset is not None:
-                target_task_id = asset.task_id
-                target_run_id = target_run_id or asset.run_id
-        task = next((item for item in store.get_tasks(campaign_id) if item.task_id == target_task_id and (not target_run_id or not item.run_id or item.run_id == target_run_id)), None)
+            if asset is None:
+                raise HTTPException(status_code=404, detail="Asset not found")
+            if asset.campaign_id != campaign_id:
+                raise HTTPException(status_code=400, detail="Asset does not belong to this campaign")
+            if payload.task_id != asset.task_id:
+                raise HTTPException(status_code=400, detail="task_id does not match asset")
+            if target_run_id and asset.run_id and target_run_id != asset.run_id:
+                raise HTTPException(status_code=400, detail="run_id does not match asset")
+            target_task_id = asset.task_id
+            target_run_id = target_run_id or asset.run_id
+        task = next((item for item in store.get_tasks(campaign_id) if item.task_id == target_task_id and (not target_run_id or item.run_id == target_run_id)), None)
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         if not manual_retry_allowed(task, MANUAL_RETRY_MAX_ATTEMPTS):
             raise HTTPException(status_code=409, detail="Task is not retryable or has reached the maximum attempts")
+        claimed: TaskRecord | bool | None = None
         if persistence is not None:
-            if not persistence.claim_manual_task_retry(campaign_id, task.task_id, MANUAL_RETRY_MAX_ATTEMPTS):
+            claimed = persistence.claim_manual_task_retry(campaign_id, task.task_id, MANUAL_RETRY_MAX_ATTEMPTS)
+            if not claimed:
                 raise HTTPException(status_code=409, detail="Task is already being retried or has reached the maximum attempts")
+            task = claimed if isinstance(claimed, TaskRecord) else next(
+                (item for item in store.get_tasks(campaign_id) if item.task_id == task.task_id), task
+            )
             try:
                 persistence.record_task_attempt(task)
             except Exception:
                 logger.warning("Failed to preserve worker task attempt", exc_info=True)
-        retriable = task.model_copy(update={"retry_count": task.retry_count + 1, "retryable": True, "status": "retrying"})
+        retriable = task if isinstance(claimed, TaskRecord) else task.model_copy(
+            update={"retry_count": task.retry_count + 1, "retryable": True, "status": "retrying"}
+        )
         existing_tasks = [retriable if item.task_id == task.task_id else item for item in store.get_tasks(campaign_id)]
         existing_tasks = apply_worker_result_state(existing_tasks, task.task_id, {"status": "retrying"})
         try:
@@ -7006,10 +7042,21 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
         assets, validations = _dispatch_worker_for_task(campaign, retried)
     except Exception as exc:
         failed_tasks = apply_worker_result_state(
-            store.get_tasks(campaign_id), task.task_id,
+            [retried if item.task_id == task.task_id else item for item in store.get_tasks(campaign_id)], task.task_id,
             {"status": "failed", "error": sanitize_worker_error_detail(str(exc))},
         )
-        store.set_tasks(campaign_id, failed_tasks)
+        error_detail = sanitize_worker_error_detail(str(exc))
+        try:
+            store.set_tasks(campaign_id, failed_tasks)
+        except Exception:
+            if persistence is None:
+                logger.error("persistence_error: retry failure state could not be reconciled", exc_info=True)
+                raise HTTPException(status_code=503, detail="Retry failure state reconciliation is pending") from exc
+            try:
+                persistence.fail_manual_task_retry(campaign_id, task.task_id, classify_worker_error(exc), error_detail)
+            except Exception:
+                logger.error("persistence_error: retry failure reconciliation failed", exc_info=True)
+                raise HTTPException(status_code=503, detail="Retry failure state reconciliation is pending") from exc
         _notify_webhook(
             event_type="worker_retry_failed",
             campaign_id=campaign_id,
@@ -7032,7 +7079,11 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
         save_assets_and_validations(assets, validations)
 
     patched_result = {"status": "passed" if assets else "failed", "error": None if assets else "worker returned no assets"}
-    final_tasks = apply_worker_result_state(store.get_tasks(campaign_id), task.task_id, patched_result)
+    final_tasks = apply_worker_result_state(
+        [retried if item.task_id == task.task_id else item for item in store.get_tasks(campaign_id)],
+        task.task_id,
+        patched_result,
+    )
     dispatched_descendants = dispatch_ready_retry_descendants(campaign, final_tasks, task.task_id, task.run_id or target_run_id)
     if dispatched_descendants:
         final_by_id = {item.task_id: item for item in final_tasks}

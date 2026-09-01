@@ -751,8 +751,8 @@ class PostgresPersistence:
             for row in rows
         ]
 
-    def claim_manual_task_retry(self, campaign_id: str, task_id: str, max_attempts: int) -> bool:
-        """Atomically claim one retry across service replicas."""
+    def claim_manual_task_retry(self, campaign_id: str, task_id: str, max_attempts: int) -> TaskRecord | None:
+        """Atomically claim one retry and return the authoritative row."""
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -763,13 +763,38 @@ class PostgresPersistence:
                     WHERE campaign_id = %s AND task_id = %s
                       AND status = 'failed' AND COALESCE(retryable, TRUE) = TRUE
                       AND retry_count < %s
-                    RETURNING task_id
+                    RETURNING task_id, campaign_id, company_id, task_type, status, priority,
+                              depends_on_json, acceptance_json, retry_count, error_class,
+                              error_detail, blocked_by_task_id, blocked_reason, next_retry_at,
+                              generation_context_id, provider, model, retryable, run_id
                     """,
                     (campaign_id, task_id, max_attempts),
                 )
-                claimed = cur.fetchone() is not None
+                row = cur.fetchone()
             conn.commit()
-        return claimed
+        if row is None:
+            return None
+        return TaskRecord(
+            task_id=row[0], campaign_id=row[1], company_id=row[2], task_type=row[3], status=row[4],
+            priority=row[5], depends_on=list(row[6] or []), acceptance=list(row[7] or []),
+            retry_count=int(row[8] or 0), error_class=row[9], error_detail=row[10],
+            blocked_by_task_id=row[11], blocked_reason=row[12], next_retry_at=row[13],
+            generation_context_id=row[14], provider=row[15], model=row[16], retryable=row[17],
+            run_id=row[18],
+        )
+
+    def fail_manual_task_retry(self, campaign_id: str, task_id: str, error_class: str, error_detail: str) -> None:
+        """Durably reconcile a claimed retry after worker dispatch fails."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE campaign_tasks
+                       SET status = 'failed', retryable = TRUE, error_class = %s, error_detail = %s,
+                           next_retry_at = NULL
+                       WHERE campaign_id = %s AND task_id = %s AND status = 'retrying'""",
+                    (error_class, error_detail, campaign_id, task_id),
+                )
+            conn.commit()
 
     def release_manual_task_retry(self, campaign_id: str, task_id: str) -> None:
         with self._connect() as conn:

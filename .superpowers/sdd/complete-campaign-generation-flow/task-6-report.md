@@ -42,6 +42,21 @@ Verification:
 
 The build retains existing warnings about FastAPI `on_event` deprecation and multiple lockfiles/workspace-root inference.
 
+## Authoritative Retry Review Fixes
+
+- Manual retry claims now atomically return the authoritative incremented task row, including retry count and run ID, so stale replica records cannot overwrite the claimed state or double-increment attempts.
+- Review and asset selectors are now required to resolve, campaign-scoped, task-scoped, and run-scoped; mismatched caller IDs and old/new run combinations return clear 400/404 responses instead of falling back to `task_id`.
+- Worker dispatch failures now reconcile a claimed retry through a durable terminal-failure update when the normal task-store write fails; unreconciled failures return an explicit recovery-pending 503.
+- Added replica-style claim interleaving, authoritative run/count, invalid selector, campaign/run mismatch, and failure-reconciliation regression tests.
+
+Verification:
+
+- `python -m pytest services/campaign_service -q`: 59 passed
+- `python -m pytest services/orchestrator -q`: 25 passed
+- `node scripts/test-campaign-flow-contract.mjs`: passed
+- `git diff --check`: passed
+- `npm run build`: passed
+
 ## Review Follow-up
 
 - Hydrated latest persisted generation snapshots into Campaign and Review responses, including backward-compatible task diagnostic columns.
