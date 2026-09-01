@@ -30,6 +30,23 @@ Verification:
 - `node scripts/test-campaign-flow-contract.mjs`: passed
 - `git diff --check`: passed
 
+## Complete Review Diagnostics Details
+
+- Review diagnostics now render provenance source type, label, folder, and sanitized clickable HTTP(S) URLs.
+- Review task diagnostics now render provider, model, sanitized error details, status, blocked reason, and strict retryability.
+- Review retryability never falls back to task status; it requires `retryable === true` and fewer than three attempts.
+- Added Review rendering/filtering and retry-gating contract assertions while preserving responsive table/panel layouts and accessible controls.
+
+Verification:
+
+- Campaign service: 77 passed
+- Orchestrator: 25 passed
+- Worker tests: 3 passed
+- Review diagnostics contract: passed
+- Campaign flow contract: passed
+- `npm run build`: passed
+- `git diff --check`: passed
+
 ## Complete Diagnostics Presentation Follow-up
 
 - Image `RevisionRequest` now requires `company_id`; both asset regeneration and the review revision caller supply it.

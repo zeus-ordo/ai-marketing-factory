@@ -5,6 +5,8 @@ import { ReviewActionModal } from "@/components/review/review-action-modal";
 import { ReviewAssetPreviewModal } from "@/components/review/review-asset-preview-modal";
 import { ReviewAuditLog } from "@/components/review/review-audit-log";
 import { ReviewQueueTable } from "@/components/review/review-queue-table";
+import { ProvenanceList } from "@/components/diagnostics/provenance-list";
+import { canRetryTask, sanitizeDiagnosticText } from "@/lib/campaign-diagnostics";
 import {
   approveReviewItem,
   listCampaigns,
@@ -242,11 +244,9 @@ export default function ReviewPage() {
               <div><p className="text-slate-500">{t("review.diagnostics.ratios")}</p><p className="font-medium">{(summary.internal_ratio * 100).toFixed(1)}% / {(summary.external_ratio * 100).toFixed(1)}%</p></div>
               <div><p className="text-slate-500">{t("review.diagnostics.selectedReferences")}</p><p className="break-words font-medium">{summary.selected_reference_ids.join(", ") || t("common.notAvailable")}</p></div>
             </div>
-            <div className="flex flex-wrap gap-2 text-xs text-slate-500">
-              {source_provenance.map((source) => <span key={`${source.source_type}-${source.source_id}`} className="rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800">{source.source_type}: {source.label}</span>)}
-            </div>
+            <ProvenanceList sources={source_provenance} />
             {groupTasks.map((task) => (
-              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{task.task_type}: {task.error_class || task.blocked_reason || task.status} · {t("review.diagnostics.retryable")}: {(task.retryable ?? (task.status === "failed")) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
+              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{task.task_type}: {task.provider || "—"}/{task.model || "—"} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
             ))}
           </section>
         );

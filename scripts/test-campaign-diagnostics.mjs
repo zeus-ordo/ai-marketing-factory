@@ -6,6 +6,7 @@ const helper = fs.readFileSync("lib/campaign-diagnostics.ts", "utf8");
 const provenance = fs.readFileSync("components/diagnostics/provenance-list.tsx", "utf8");
 const campaigns = fs.readFileSync("app/campaigns/page.tsx", "utf8");
 const review = fs.readFileSync("components/review/review-queue-table.tsx", "utf8");
+const reviewPage = fs.readFileSync("app/review/page.tsx", "utf8");
 
 assert.equal(safeExternalUrl("https://example.com/source?q=1"), "https://example.com/source?q=1");
 assert.equal(safeExternalUrl("javascript:alert(1)"), null);
@@ -21,4 +22,8 @@ assert.match(campaigns, /ProvenanceList/);
 assert.match(campaigns, /sanitizeDiagnosticText/);
 assert.match(review, /ProvenanceList/);
 assert.match(review, /sanitizeDiagnosticText/);
+assert.match(reviewPage, /ProvenanceList/);
+assert.match(reviewPage, /canRetryTask\(task\)/);
+assert.match(reviewPage, /sanitizeDiagnosticText/);
+assert.doesNotMatch(reviewPage, /retryable \?\? \(task\.status === "failed"\)/);
 console.log("campaign diagnostics contract passed");
