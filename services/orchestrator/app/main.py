@@ -751,14 +751,14 @@ def _report_worker_result_to_campaign_service(task_type: str, result: dict[str, 
         logger.error("Orchestrator: failed to report worker result to campaign_service: %s", sanitize_error_detail(str(exc)))
 
 
-def process_task(campaign_id: str, task_id: str) -> None:
+def process_task(campaign_id: str, task_id: str) -> bool:
     campaign_tasks = get_or_hydrate_campaign_tasks(campaign_id)
     if campaign_tasks is None:
-        return
+        return True
 
     task = campaign_tasks.get(task_id)
     if task is None:
-        return
+        return True
 
     task.status = "running"
     if not persist_campaign_task_state(campaign_id, campaign_tasks):
@@ -769,11 +769,12 @@ def process_task(campaign_id: str, task_id: str) -> None:
         campaign_tasks[task_id] = task
         with task_state_lock:
             task_state[campaign_id] = campaign_tasks
-        return
+        return False
     with task_state_lock:
         task_state[campaign_id] = campaign_tasks
 
     retry_key = f"{campaign_id}:{task_id}"
+    durable = True
 
     try:
         run_worker(task, campaign_id)
@@ -782,6 +783,7 @@ def process_task(campaign_id: str, task_id: str) -> None:
 
         next_tasks = mark_ready_tasks_as_planned(campaign_tasks)
         if not persist_campaign_task_state(campaign_id, campaign_tasks):
+            durable = False
             logger.error("persistence_error: successful task %s is kept retryable and descendants were not published", task_id)
             task.status = "retrying"
             task.error_class = "persistence_error"
@@ -811,6 +813,7 @@ def process_task(campaign_id: str, task_id: str) -> None:
             campaign_tasks[task_id] = task
             time.sleep(next_retry_delay(current_retry))
             if not persist_campaign_task_state(campaign_id, campaign_tasks):
+                durable = False
                 logger.error("persistence_error: retry for task %s remains retryable and was not published", task_id)
                 task.status = "retrying"
                 task.error_class = "persistence_error"
@@ -828,11 +831,26 @@ def process_task(campaign_id: str, task_id: str) -> None:
             campaign_tasks[task_id] = task
             block_pending_descendants(campaign_tasks, task_id)
             if not persist_campaign_task_state(campaign_id, campaign_tasks):
+                durable = False
                 logger.error("persistence_error: terminal failure for task %s is not durable", task_id)
             publish_dlq(campaign_id, task, task.error_detail or "worker failure")
     # Persistence is attempted before publishing or updating the shared state.
     with task_state_lock:
         task_state[campaign_id] = campaign_tasks
+    return durable
+
+
+def process_queue_message(stream_name: str, message_id: str, fields: dict[str, str]) -> bool:
+    campaign_id = fields.get("campaign_id")
+    task_id = fields.get("task_id")
+    if not campaign_id or not task_id:
+        redis_client.xack(stream_name, GROUP_NAME, message_id)
+        return True
+    if not process_task(campaign_id, task_id):
+        logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)
+        return False
+    redis_client.xack(stream_name, GROUP_NAME, message_id)
+    return True
 
 
 def ensure_groups() -> None:
@@ -871,11 +889,7 @@ def consumer_loop() -> None:
 
         for stream_name, stream_messages in messages:
             for message_id, fields in stream_messages:
-                campaign_id = fields.get("campaign_id")
-                task_id = fields.get("task_id")
-                if campaign_id and task_id:
-                    process_task(campaign_id, task_id)
-                redis_client.xack(stream_name, GROUP_NAME, message_id)
+                process_queue_message(stream_name, message_id, fields)
 
 
 @app.on_event("startup")
@@ -926,6 +940,7 @@ def task_complete(payload: TaskCompleteRequest) -> TaskCompleteResponse:
     if campaign_tasks is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
+    previous_state = {task_id: task.model_copy(deep=True) for task_id, task in campaign_tasks.items()}
     current = campaign_tasks.get(payload.task_id)
     if current is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -936,6 +951,8 @@ def task_complete(payload: TaskCompleteRequest) -> TaskCompleteResponse:
     next_tasks = mark_ready_tasks_as_planned(campaign_tasks)
     if not persist_campaign_task_state(payload.campaign_id, campaign_tasks):
         logger.error("persistence_error: completion for task %s was not durable; ready descendants were not published", payload.task_id)
+        campaign_tasks.clear()
+        campaign_tasks.update(previous_state)
         with task_state_lock:
             task_state[payload.campaign_id] = campaign_tasks
         raise HTTPException(status_code=503, detail="Task state persistence unavailable")

@@ -1,10 +1,11 @@
 import os
+import pytest
 from urllib.error import HTTPError
 
 os.environ.setdefault("POSTGRES_DSN", "")
 
 from app.main import MAX_RETRY, classify_worker_error, next_retry_delay, process_task, dispatch
-from app.schemas import DispatchRequest, OrchestratorTask
+from app.schemas import DispatchRequest, OrchestratorTask, TaskCompleteRequest
 import app.main as orchestrator
 
 
@@ -101,3 +102,23 @@ def test_process_task_logs_final_persistence_failure(monkeypatch, caplog):
     process_task(campaign_id, "copy")
     assert orchestrator.task_state[campaign_id]["copy"].status == "retrying"
     assert "persistence_error" in caplog.text
+
+
+def test_queue_message_is_not_acknowledged_when_task_persistence_fails(monkeypatch):
+    acknowledged = []
+    monkeypatch.setattr(orchestrator, "process_task", lambda *_: False)
+    monkeypatch.setattr(orchestrator, "redis_client", type("Redis", (), {"xack": lambda *_args: acknowledged.append(_args)})())
+    assert orchestrator.process_queue_message("task.image", "1-0", {"campaign_id": "camp", "task_id": "image"}) is False
+    assert acknowledged == []
+
+
+def test_task_complete_rolls_back_when_persistence_fails(monkeypatch):
+    campaign_id = "camp-rollback"
+    original = {"copy": task("copy", "copywriting", status="passed"), "video": task("video", "video_generation", ["copy"])}
+    orchestrator.task_state[campaign_id] = original
+    monkeypatch.setattr(orchestrator, "persist_campaign_task_state", lambda *_: False)
+    with pytest.raises(orchestrator.HTTPException) as exc:
+        orchestrator.task_complete(TaskCompleteRequest(campaign_id=campaign_id, task_id="copy", result="passed"))
+    assert exc.value.status_code == 503
+    assert orchestrator.task_state[campaign_id]["copy"].status == "passed"
+    assert orchestrator.task_state[campaign_id]["video"].status == "pending"

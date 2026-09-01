@@ -35,3 +35,9 @@ Known non-blocking warnings are the existing FastAPI `on_event` deprecations and
 - All orchestrator persistence callers now inspect the result, gate task publication, log classified durability failures, and leave affected tasks retryable or terminal without claiming durable success.
 - Structured redaction now handles nested credential maps, complete sensitive field values, and full Bearer tokens without malformed suffixes.
 - Added caller-level tests for dispatch and completion durability behavior, plus nested credential and Bearer redaction coverage.
+
+## Final Review Fixes
+
+- Queue processing now ACKs only when `process_task` reports durable success; persistence failures leave messages pending and retryable.
+- `task_complete` snapshots task state before mutation and restores it on persistence failure without publishing descendants.
+- Added regression coverage for no-ACK queue handling and rollback of prior task states.
