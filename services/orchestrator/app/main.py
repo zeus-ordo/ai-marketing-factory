@@ -390,6 +390,7 @@ MAX_RETRY = 2
 PENDING_MESSAGE_IDLE_MS = max(1000, int(os.getenv("PENDING_MESSAGE_IDLE_MS", "300000")))
 PENDING_RECLAIM_BACKOFF_SECONDS = max(0.1, float(os.getenv("PENDING_RECLAIM_BACKOFF_SECONDS", "1")))
 MESSAGE_CLAIM_TTL_SECONDS = max(1, int(os.getenv("MESSAGE_CLAIM_TTL_SECONDS", "900")))
+LEASE_HEARTBEAT_INTERVAL_SECONDS = max(0.1, float(os.getenv("LEASE_HEARTBEAT_INTERVAL_SECONDS", str(MESSAGE_CLAIM_TTL_SECONDS / 3))))
 OPS_RATE_LIMIT = 20
 OPS_WINDOW_SECONDS = 60
 
@@ -881,26 +882,78 @@ def process_task(campaign_id: str, task_id: str) -> bool:
     return durable
 
 
+LEASE_RENEW_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end"
+LEASE_RELEASE_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+
+
+def _renew_lease(key: str, token: str) -> bool:
+    try:
+        return bool(redis_client.eval(LEASE_RENEW_SCRIPT, 1, key, token, MESSAGE_CLAIM_TTL_SECONDS * 1000))
+    except Exception:
+        logger.exception("Failed to renew lease %s", key)
+        return False
+
+
+def _release_lease(key: str, token: str) -> None:
+    try:
+        redis_client.eval(LEASE_RELEASE_SCRIPT, 1, key, token)
+    except Exception:
+        logger.warning("Failed to release lease %s", key)
+
+
 def process_queue_message(stream_name: str, message_id: str, fields: dict[str, str]) -> bool:
-    claim_key = f"orchestrator:message-claim:{stream_name}:{message_id}"
-    claim_token = uuid.uuid4().hex
+    message_key = f"orchestrator:message-claim:{stream_name}:{message_id}"
+    message_token = uuid.uuid4().hex
+    task_key: str | None = None
+    task_token: str | None = None
+    heartbeat_failed = threading.Event()
+    heartbeat_stop = threading.Event()
+    heartbeat_thread: threading.Thread | None = None
+    redis_set = getattr(redis_client, "set", None)
+    active_key = f"{stream_name}:{message_id}"
     with active_message_ids_lock:
-        if message_id in active_message_ids:
+        if active_key in active_message_ids:
             logger.info("Skipping duplicate delivery of active message %s", message_id)
             return False
-        active_message_ids.add(message_id)
+        active_message_ids.add(active_key)
 
-    redis_set = getattr(redis_client, "set", None)
     if callable(redis_set):
         try:
-            if not redis_set(claim_key, claim_token, nx=True, ex=MESSAGE_CLAIM_TTL_SECONDS):
+            if not redis_set(message_key, message_token, nx=True, ex=MESSAGE_CLAIM_TTL_SECONDS):
                 with active_message_ids_lock:
-                    active_message_ids.discard(message_id)
+                    active_message_ids.discard(active_key)
                 logger.info("Skipping duplicate distributed delivery of message %s", message_id)
                 return False
+
+            campaign_id = fields.get("campaign_id")
+            task_id = fields.get("task_id")
+            if campaign_id and task_id:
+                task_key = f"orchestrator:task-claim:{campaign_id}:{task_id}"
+                task_token = uuid.uuid4().hex
+                if not redis_set(task_key, task_token, nx=True, ex=MESSAGE_CLAIM_TTL_SECONDS):
+                    _release_lease(message_key, message_token)
+                    with active_message_ids_lock:
+                        active_message_ids.discard(active_key)
+                    logger.info("Task %s is already claimed; leaving message %s pending", task_id, message_id)
+                    return False
+
+            def heartbeat() -> None:
+                while not heartbeat_stop.wait(LEASE_HEARTBEAT_INTERVAL_SECONDS):
+                    if not _renew_lease(message_key, message_token):
+                        heartbeat_failed.set()
+                        return
+                    if task_key and task_token and not _renew_lease(task_key, task_token):
+                        heartbeat_failed.set()
+                        return
+
+            heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+            heartbeat_thread.start()
         except Exception:
+            if task_key and task_token:
+                _release_lease(task_key, task_token)
+            _release_lease(message_key, message_token)
             with active_message_ids_lock:
-                active_message_ids.discard(message_id)
+                active_message_ids.discard(active_key)
             logger.exception("Failed to acquire distributed claim for message %s", message_id)
             return False
     try:
@@ -909,24 +962,21 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
         if not campaign_id or not task_id:
             redis_client.xack(stream_name, GROUP_NAME, message_id)
             return True
-        if not process_task(campaign_id, task_id):
+        if not process_task(campaign_id, task_id) or heartbeat_failed.is_set():
             logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)
             return False
         redis_client.xack(stream_name, GROUP_NAME, message_id)
         return True
     finally:
+        heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join(timeout=LEASE_HEARTBEAT_INTERVAL_SECONDS + 1)
         with active_message_ids_lock:
-            active_message_ids.discard(message_id)
-        if callable(redis_set):
-            try:
-                redis_client.eval(
-                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
-                    1,
-                    claim_key,
-                    claim_token,
-                )
-            except Exception:
-                logger.warning("Failed to release distributed claim for message %s", message_id)
+            active_message_ids.discard(active_key)
+        if callable(redis_set) and not heartbeat_failed.is_set():
+            if task_key and task_token:
+                _release_lease(task_key, task_token)
+            _release_lease(message_key, message_token)
 
 
 def reclaim_pending_messages() -> int:
@@ -952,7 +1002,7 @@ def reclaim_pending_messages() -> int:
             messages = result[1] if len(result) > 1 else []
             for message_id, fields in messages:
                 with active_message_ids_lock:
-                    if message_id in active_message_ids:
+                    if f"{topic}:{message_id}" in active_message_ids:
                         logger.info("Skipping recovery of active message %s", message_id)
                         continue
                 reclaimed += 1

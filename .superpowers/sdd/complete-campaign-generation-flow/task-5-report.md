@@ -35,6 +35,20 @@ Verification:
 
 Known non-blocking warnings are the existing FastAPI `on_event` deprecations and Next.js multiple-lockfile workspace-root warning.
 
+## Duplicate Execution Review Fixes
+
+- Message leases now renew periodically during processing with owner-checked Redis Lua `PEXPIRE`; renewal loss conservatively leaves the message pending and does not ACK or release the lease.
+- In-process active-message tracking and distributed message lease keys are scoped by stream name and message ID.
+- Added an atomic campaign/task Redis claim before dispatch. Existing claims leave the stream entry pending, while unrelated tasks remain runnable; task and message claims renew and release with the processing lifecycle.
+- Added regression coverage for lease renewal and renewal loss, stream-qualified IDs, duplicate task entries, claim failure/no-ACK behavior, and byte/string pending cursors.
+
+Verification:
+
+- `python -m pytest services/orchestrator -q`: 22 passed
+- `python -m pytest services/campaign_service -q`: 47 passed
+- `git diff --check`: passed
+- `npm run build`: passed
+
 ## Review Fixes
 
 - Successful retry responses now read the status from the persisted final task.

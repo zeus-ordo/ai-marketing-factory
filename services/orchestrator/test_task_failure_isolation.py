@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 import pytest
 from urllib.error import HTTPError
 
@@ -113,6 +114,149 @@ def test_queue_message_is_not_acknowledged_when_task_persistence_fails(monkeypat
     assert acknowledged == []
 
 
+def test_message_lease_is_renewed_while_task_runs(monkeypatch):
+    acknowledged = []
+    renewals = []
+    started = threading.Event()
+    release = threading.Event()
+
+    class Redis:
+        def set(self, key, token, nx=False, ex=None):
+            return True
+
+        def eval(self, script, _keys, key, token, *_args):
+            if "pexpire" in script:
+                renewals.append((key, token))
+                return 1
+            return 1
+
+        def xack(self, *args):
+            acknowledged.append(args)
+
+    def process(*_args):
+        started.set()
+        assert release.wait(timeout=3)
+        return True
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", process)
+    monkeypatch.setattr(orchestrator, "MESSAGE_CLAIM_TTL_SECONDS", 3)
+    monkeypatch.setattr(orchestrator, "LEASE_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+
+    worker = threading.Thread(
+        target=orchestrator.process_queue_message,
+        args=("task.image", "1-0", {"campaign_id": "camp", "task_id": "image"}),
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+    time.sleep(0.05)
+    release.set()
+    worker.join(timeout=2)
+
+    assert renewals
+    assert acknowledged == [("task.image", orchestrator.GROUP_NAME, "1-0")]
+
+
+def test_message_lease_renewal_failure_does_not_ack(monkeypatch):
+    acknowledged = []
+
+    class Redis:
+        def set(self, *_args, **_kwargs):
+            return True
+
+        def eval(self, script, *_args):
+            return 0 if "pexpire" in script else 1
+
+        def xack(self, *args):
+            acknowledged.append(args)
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", lambda *_: (time.sleep(0.05), True)[1])
+    monkeypatch.setattr(orchestrator, "LEASE_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+
+    assert orchestrator.process_queue_message(
+        "task.image", "renewal-loss", {"campaign_id": "camp", "task_id": "image"}
+    ) is False
+    assert acknowledged == []
+
+
+def test_active_message_ids_are_scoped_by_stream(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    processed = []
+
+    class Redis:
+        def set(self, *_args, **_kwargs):
+            return True
+
+        def eval(self, *_args):
+            return 1
+
+        def xack(self, *_args):
+            pass
+
+    def process(*args):
+        processed.append(args)
+        entered.set()
+        assert release.wait(timeout=2)
+        return True
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", process)
+    first = threading.Thread(target=orchestrator.process_queue_message, args=("task.image", "1-0", {"campaign_id": "a", "task_id": "t"}))
+    second = threading.Thread(target=orchestrator.process_queue_message, args=("task.video", "1-0", {"campaign_id": "b", "task_id": "t"}))
+    first.start()
+    assert entered.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert len(processed) == 2
+
+
+def test_duplicate_task_entry_leaves_message_pending(monkeypatch):
+    acknowledged = []
+    sets = {}
+
+    class Redis:
+        def set(self, key, token, nx=False, ex=None):
+            if nx and key in sets:
+                return False
+            sets[key] = token
+            return True
+
+        def eval(self, *_args):
+            return 1
+
+        def xack(self, *args):
+            acknowledged.append(args)
+
+    calls = []
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", lambda *args: calls.append(args) or True)
+    assert orchestrator.process_queue_message("task.image", "1-0", {"campaign_id": "camp", "task_id": "image"}) is True
+    assert orchestrator.process_queue_message("task.image", "2-0", {"campaign_id": "camp", "task_id": "image"}) is False
+    assert calls == [("camp", "image")]
+    assert acknowledged == [("task.image", orchestrator.GROUP_NAME, "1-0")]
+
+
+def test_task_claim_failure_leaves_message_pending_without_ack(monkeypatch):
+    acknowledged = []
+
+    class Redis:
+        def set(self, key, *_args, **_kwargs):
+            return not key.startswith("orchestrator:task-claim:")
+
+        def xack(self, *args):
+            acknowledged.append(args)
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", lambda *_: (_ for _ in ()).throw(AssertionError("must not dispatch")))
+    assert orchestrator.process_queue_message("task.image", "1-0", {"campaign_id": "camp", "task_id": "image"}) is False
+    assert acknowledged == []
+
+
 def test_queue_message_is_not_acknowledged_when_task_load_fails(monkeypatch):
     acknowledged = []
     load_attempts = []
@@ -175,14 +319,15 @@ def test_pending_queue_message_is_not_reclaimed_while_active(monkeypatch):
             raise AssertionError("active message must not be acknowledged by recovery")
 
     monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "TOPICS", ["task.copy"])
     monkeypatch.setattr(orchestrator, "process_task", lambda *_: processed.append(1))
     with orchestrator.active_message_ids_lock:
-        orchestrator.active_message_ids.add("active-1")
+        orchestrator.active_message_ids.add("task.copy:active-1")
     try:
         assert orchestrator.reclaim_pending_messages() == 0
     finally:
         with orchestrator.active_message_ids_lock:
-            orchestrator.active_message_ids.discard("active-1")
+            orchestrator.active_message_ids.discard("task.copy:active-1")
     assert processed == []
 
 
@@ -208,6 +353,23 @@ def test_pending_queue_recovery_paginates_past_first_batch(monkeypatch):
     assert orchestrator.reclaim_pending_messages() == 11
     assert starts == ["0-0", "10-0"]
     assert len(processed) == 11
+
+
+def test_pending_queue_recovery_accepts_byte_cursor(monkeypatch):
+    starts = []
+
+    class Redis:
+        def xautoclaim(self, **kwargs):
+            starts.append(kwargs["start_id"])
+            if kwargs["start_id"] == "0-0":
+                return (b"10-0", [], [])
+            return (b"0-0", [("1-0", {"campaign_id": "camp", "task_id": "copy"})], [])
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "TOPICS", ["task.copy"])
+    monkeypatch.setattr(orchestrator, "process_queue_message", lambda *_: True)
+    assert orchestrator.reclaim_pending_messages() == 1
+    assert starts == ["0-0", b"10-0"]
 
 
 def test_hydration_does_not_hold_global_lock_during_database_io(monkeypatch):
