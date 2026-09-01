@@ -8,6 +8,22 @@ This script validates end-to-end behavior for:
 - Validation/bundle outputs
 - System operations and audit traceability
 
+## Automated Acceptance Gate
+Run the deterministic acceptance suite before the live-service UAT. It uses
+in-process fixtures and never calls Google, Gemini, PostgreSQL, Redis, or a
+worker provider:
+
+```bash
+pytest tests_e2e/test_complete_campaign_flow.py -q
+```
+
+The suite covers required and conditional validation, reference priority and
+75:25 context accounting, disabled/failed/redacted search, context restart
+hydration, isolated worker failures, bounded and single-task retry, review
+diagnostics/run filtering, empty-result rejection, provider/model metadata,
+and UI/OpenAPI contracts. The live company-isolation checks remain marked
+`e2e` and require the services described in `tests_e2e/conftest.py`.
+
 ## Test Environment
 - Base URL: ____________________
 - Tester: ____________________
@@ -153,6 +169,48 @@ Notes:
 - UI shows clear feedback
 
 Result: Pass / Fail  
+Notes:
+
+---
+
+## UAT-11: Generation Context and Failure Recovery
+**Steps**
+1. Create a temporary campaign with an immediate upload and an industry match.
+2. Run it with `EXTERNAL_SEARCH_PROVIDER=disabled` in environments without a
+   configured search secret.
+3. Verify the campaign diagnostics show source provenance, token counts, and
+   internal/external ratios without source content or secrets.
+4. Simulate a worker quota failure, then retry only the failed task.
+
+**Expected**
+- The failed task is terminal and retryable; descendants are `blocked` while
+  unrelated tasks continue.
+- Retry resets only the failed branch and preserves the same run context.
+- Repeated automatic failures stop at `WORKER_RETRY_MAX_ATTEMPTS`; no task
+  remains indefinitely pending.
+- Review diagnostics can be filtered by `run_id` and never mix runs.
+
+Result: Pass / Fail
+Notes:
+
+---
+
+## UAT-12: Restart and Reconciliation
+**Steps**
+1. Stop/restart campaign-service after a run snapshot has been persisted.
+2. Reload the campaign and review pages.
+3. If a manual retry dispatch fails, inspect task state and retry/reconciliation
+   logs before attempting another retry.
+
+**Expected**
+- The immutable generation context and its provenance are hydrated from storage
+  after a cold cache.
+- A failed manual retry is reconciled to a terminal, retryable state; if the
+  database reports zero affected rows, operations receives a recovery-pending
+  alert rather than a false success.
+- Previous task attempts remain available for audit.
+
+Result: Pass / Fail
 Notes:
 
 ---

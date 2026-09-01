@@ -16,6 +16,8 @@
 - [ ] `.env` values set for target environment
 - [ ] DB backup snapshot completed
 - [ ] Redis persistence/backup policy confirmed
+- [ ] Run deterministic acceptance coverage: `pytest tests_e2e/test_complete_campaign_flow.py -q`
+- [ ] Run service regression coverage: `pytest services/campaign_service -q` and `pytest services/orchestrator -q`
 
 ### Required environment keys
 - [ ] `POSTGRES_DSN`
@@ -27,6 +29,11 @@
 - [ ] `WORKER_VIDEO_URL`
 - [ ] `WORKER_ADS_URL`
 - [ ] `JWT_SECRET`
+- [ ] `EXTERNAL_SEARCH_PROVIDER` (`disabled` is the safe default)
+- [ ] `EXTERNAL_SEARCH_API_KEY` (Secret Manager/VM secret file only when Google search is enabled)
+- [ ] `EXTERNAL_SEARCH_ENGINE_ID` (configuration value; do not put the API key in Git)
+- [ ] `WORKER_RETRY_MAX_ATTEMPTS` and `WORKER_RETRY_BACKOFF_SECONDS`
+- [ ] `MANUAL_RETRY_MAX_ATTEMPTS`
 
 ---
 
@@ -47,6 +54,8 @@
 ### Production rollout
 - [ ] Deploy image set (immutable tags)
 - [ ] Run DB migration/init (if applicable)
+- [ ] Apply additive campaign-service migrations before traffic. Never drop or rewrite existing campaign/reference tables.
+- [ ] Confirm `generation_contexts`, `generation_context_items`, and task-attempt columns exist; snapshots are immutable and keyed by campaign run.
 - [ ] Verify orchestrator consumer loop active
 - [ ] Verify Redis stream group exists for:
   - [ ] `task.copy`
@@ -68,6 +77,7 @@
   - [ ] retry DLQ
 - [ ] Verify audit logs record operator/action/result
 - [ ] Verify audit CSV export works with filters
+- [ ] Verify diagnostics are scoped to the selected `run_id` and show provider/model names only
 
 ---
 
@@ -77,6 +87,8 @@
 - [ ] DLQ growth rate acceptable
 - [ ] API error rate within baseline
 - [ ] No critical security/auth errors
+- [ ] No `worker_dispatch_failed`, `persistence_error`, `recovery_pending`, or external-search error spike beyond the agreed baseline
+- [ ] Alert on growing blocked-task count, DLQ growth, retry exhaustion, or missing context hydration
 
 ---
 
@@ -96,6 +108,18 @@ Rollback actions:
 Data actions:
 - [ ] If schema changed, follow backward migration/restore snapshot playbook
 - [ ] Preserve failed release logs for incident review
+
+### Retry and reconciliation operations
+- Automatic worker retries are finite and exponentially delayed; the delay is
+  capped by the orchestrator and terminal failures are recorded before
+  descendants are blocked.
+- Use the single-task retry action for a failed task. Do not manually replay a
+  whole run unless the run itself is being regenerated.
+- If persistence fails after dispatch, leave the message pending for recovery;
+  do not acknowledge it manually. Check the reconciler and audit log before a
+  second action.
+- After restart, confirm consumer groups, pending-message reclamation, and
+  generation-context hydration before accepting new runs.
 
 ---
 
