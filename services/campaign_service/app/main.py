@@ -2027,15 +2027,18 @@ def list_campaign_reference_context(campaign: CampaignRecord, limit: int = 8) ->
 def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
     lines: list[str] = []
     for row in list_campaign_reference_context(campaign, limit):
+        reference_id = str(row.get("reference_id") or "")
         file_name = str(row.get("file_name") or "reference")
         file_type = str(row.get("file_type") or "")
         stored_path = str(row.get("stored_path") or "")
         source_type = str(row["source_type"])
+        folder = str(row.get("folder") or "General")
+        trace = f"[source_type={source_type}] [reference_id={reference_id}] [folder={folder}]"
         excerpt = safe_reference_excerpt(stored_path, file_type)
         if excerpt:
-            lines.append(f"- Manual/campaign reference: [source_type={source_type}] {file_name}\n  Excerpt: {excerpt}")
+            lines.append(f"- Manual/campaign reference: {trace} {file_name}\n  Excerpt: {excerpt}")
         else:
-            lines.append(f"- Manual/campaign reference: [source_type={source_type}] {file_name} ({file_type or 'unknown type'})")
+            lines.append(f"- Manual/campaign reference: {trace} {file_name} ({file_type or 'unknown type'})")
     return lines
 
 
@@ -2085,7 +2088,8 @@ def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 
         title = str(row.get("title") or file_name or "knowledge item")
         description = str(row.get("description") or "").strip()
         source_type = str(row["source_type"])
-        detail = f"- Industry-matched knowledge folder/item: [source_type={source_type}] [{category}] {title}"
+        item_id = str(row.get("item_id") or "")
+        detail = f"- Industry-matched knowledge folder/item: [source_type={source_type}] [item_id={item_id}] [folder={category}] {title}"
         if file_name and file_name != title:
             detail += f" / file: {file_name}"
         if description:

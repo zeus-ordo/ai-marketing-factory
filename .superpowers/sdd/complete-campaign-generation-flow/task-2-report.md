@@ -27,3 +27,12 @@
 ## Fix Verification
 
 - `python -m pytest services/campaign_service/test_industry_matching.py -q`: 7 passed.
+
+## Prompt Traceability Fix
+
+- Generation prompt lines now include `source_type`, `reference_id` or `item_id`, and folder/category names while retaining readable file names, titles, and excerpts.
+- Added an integration test proving `build_campaign_prompt_context()` carries campaign-reference and industry-knowledge traceability into actual generation context.
+
+## Prompt Fix Verification
+
+- `python -m pytest services/campaign_service/test_industry_matching.py -q`: 8 passed.

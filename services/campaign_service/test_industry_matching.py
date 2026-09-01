@@ -8,6 +8,7 @@ from app.industry_matching import (
 from app.main import (
     CampaignReferenceRecord,
     KnowledgeItemRecord,
+    build_campaign_prompt_context,
     campaign_references,
     campaign_reference_files,
     list_campaign_reference_prompt_lines,
@@ -111,3 +112,33 @@ def test_prompt_helpers_add_source_type_without_removing_existing_text(monkeypat
         knowledge_items.pop("co_1", None)
         campaign_references.pop("ca_1", None)
         campaign_reference_files.pop("ca_1", None)
+
+
+def test_generation_prompt_contains_structured_reference_traceability(monkeypatch, tmp_path):
+    reference = CampaignReferenceRecord(
+        reference_id="ref_prompt_1", campaign_id="ca_1", file_name="campaign-brief.txt", file_type="text/plain",
+        file_size=12, uploaded_at=datetime.now(timezone.utc).isoformat(), download_url="/brief.txt", folder="即時上傳"
+    )
+    path = tmp_path / "campaign-brief.txt"
+    path.write_text("preferred cocktail style", encoding="utf-8")
+    knowledge = KnowledgeItemRecord(
+        item_id="ki_prompt_1", company_id="co_1", title="餐酒館風格", source="manual",
+        description="餐酒館品牌語氣", metadata={"category": "餐酒館"}, created_at=datetime.now(timezone.utc)
+    )
+    monkeypatch.setattr("app.main.persistence", None)
+    campaign_references["ca_1"] = [reference]
+    campaign_reference_files["ca_1"] = {"ref_prompt_1": str(path)}
+    knowledge_items["co_1"] = [knowledge]
+    try:
+        prompt = build_campaign_prompt_context(campaign())
+        assert "source_type=immediate_upload" in prompt
+        assert "ref_prompt_1" in prompt
+        assert "即時上傳" in prompt
+        assert "source_type=industry_matched" in prompt
+        assert "ki_prompt_1" in prompt
+        assert "餐酒館" in prompt
+        assert "preferred cocktail style" in prompt
+    finally:
+        campaign_references.pop("ca_1", None)
+        campaign_reference_files.pop("ca_1", None)
+        knowledge_items.pop("co_1", None)
