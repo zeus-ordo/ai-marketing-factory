@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -370,6 +371,8 @@ retry_state: dict[str, int] = {}
 retry_state_lock = threading.Lock()
 operation_audit_logs: list[OperationAuditEntry] = []
 operation_rate_limit_state: dict[str, list[float]] = {}
+active_message_ids: set[str] = set()
+active_message_ids_lock = threading.Lock()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 POSTGRES_DSN = os.getenv("POSTGRES_DSN", "")
@@ -386,6 +389,7 @@ CONSUMER_NAME = "orchestrator-1"
 MAX_RETRY = 2
 PENDING_MESSAGE_IDLE_MS = max(1000, int(os.getenv("PENDING_MESSAGE_IDLE_MS", "300000")))
 PENDING_RECLAIM_BACKOFF_SECONDS = max(0.1, float(os.getenv("PENDING_RECLAIM_BACKOFF_SECONDS", "1")))
+MESSAGE_CLAIM_TTL_SECONDS = max(1, int(os.getenv("MESSAGE_CLAIM_TTL_SECONDS", "900")))
 OPS_RATE_LIMIT = 20
 OPS_WINDOW_SECONDS = 60
 
@@ -878,39 +882,85 @@ def process_task(campaign_id: str, task_id: str) -> bool:
 
 
 def process_queue_message(stream_name: str, message_id: str, fields: dict[str, str]) -> bool:
-    campaign_id = fields.get("campaign_id")
-    task_id = fields.get("task_id")
-    if not campaign_id or not task_id:
+    claim_key = f"orchestrator:message-claim:{stream_name}:{message_id}"
+    claim_token = uuid.uuid4().hex
+    with active_message_ids_lock:
+        if message_id in active_message_ids:
+            logger.info("Skipping duplicate delivery of active message %s", message_id)
+            return False
+        active_message_ids.add(message_id)
+
+    redis_set = getattr(redis_client, "set", None)
+    if callable(redis_set):
+        try:
+            if not redis_set(claim_key, claim_token, nx=True, ex=MESSAGE_CLAIM_TTL_SECONDS):
+                with active_message_ids_lock:
+                    active_message_ids.discard(message_id)
+                logger.info("Skipping duplicate distributed delivery of message %s", message_id)
+                return False
+        except Exception:
+            with active_message_ids_lock:
+                active_message_ids.discard(message_id)
+            logger.exception("Failed to acquire distributed claim for message %s", message_id)
+            return False
+    try:
+        campaign_id = fields.get("campaign_id")
+        task_id = fields.get("task_id")
+        if not campaign_id or not task_id:
+            redis_client.xack(stream_name, GROUP_NAME, message_id)
+            return True
+        if not process_task(campaign_id, task_id):
+            logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)
+            return False
         redis_client.xack(stream_name, GROUP_NAME, message_id)
         return True
-    if not process_task(campaign_id, task_id):
-        logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)
-        return False
-    redis_client.xack(stream_name, GROUP_NAME, message_id)
-    return True
+    finally:
+        with active_message_ids_lock:
+            active_message_ids.discard(message_id)
+        if callable(redis_set):
+            try:
+                redis_client.eval(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                    1,
+                    claim_key,
+                    claim_token,
+                )
+            except Exception:
+                logger.warning("Failed to release distributed claim for message %s", message_id)
 
 
 def reclaim_pending_messages() -> int:
     reclaimed = 0
     for topic in TOPICS:
-        try:
-            result = redis_client.xautoclaim(
-                name=topic,
-                groupname=GROUP_NAME,
-                consumername=CONSUMER_NAME,
-                min_idle_time=PENDING_MESSAGE_IDLE_MS,
-                start_id="0-0",
-                count=10,
-            )
-        except Exception as exc:
-            logger.warning("Consumer loop: xautoclaim failed for %s: %s", topic, exc)
-            continue
+        start_id = "0-0"
+        while True:
+            try:
+                result = redis_client.xautoclaim(
+                    name=topic,
+                    groupname=GROUP_NAME,
+                    consumername=CONSUMER_NAME,
+                    min_idle_time=PENDING_MESSAGE_IDLE_MS,
+                    start_id=start_id,
+                    count=10,
+                )
+            except Exception as exc:
+                logger.warning("Consumer loop: xautoclaim failed for %s: %s", topic, exc)
+                break
 
-        # redis-py returns (next_start_id, messages, deleted_ids).
-        messages = result[1] if len(result) > 1 else []
-        for message_id, fields in messages:
-            reclaimed += 1
-            process_queue_message(topic, message_id, fields)
+            # redis-py returns (next_start_id, messages, deleted_ids).
+            next_start_id = result[0] if result else "0-0"
+            messages = result[1] if len(result) > 1 else []
+            for message_id, fields in messages:
+                with active_message_ids_lock:
+                    if message_id in active_message_ids:
+                        logger.info("Skipping recovery of active message %s", message_id)
+                        continue
+                reclaimed += 1
+                process_queue_message(topic, message_id, fields)
+
+            if next_start_id in ("0-0", b"0-0") or next_start_id == start_id:
+                break
+            start_id = next_start_id
     return reclaimed
 
 

@@ -19,6 +19,20 @@ Verification:
 - `git diff --check`: passed
 - `npm run build`: passed
 
+## Safe Pending Message Recovery Coordination
+
+- Added an active message-id registry guarded by a process lock so recovery skips messages still being processed, with an atomic acquisition check closing the recovery/processing race.
+- Added a Redis distributed message lease using `SET NX EX` and owner-checked Lua release for multi-instance orchestrators. The default 900-second TTL covers the configured worker timeout and retry interval; it can be overridden with `MESSAGE_CLAIM_TTL_SECONDS`.
+- Fully paginated `XAUTOCLAIM` using its returned cursor until the terminal cursor, allowing recovery beyond the first ten pending entries per topic.
+- Added regression tests for active pending IDs and recovery of entries beyond the first batch.
+
+Verification:
+
+- `python -m pytest services/orchestrator -q`: 16 passed
+- `python -m pytest services/campaign_service -q`: 47 passed
+- `git diff --check`: passed
+- `npm run build`: passed
+
 Known non-blocking warnings are the existing FastAPI `on_event` deprecations and Next.js multiple-lockfile workspace-root warning.
 
 ## Review Fixes

@@ -164,6 +164,52 @@ def test_pending_queue_message_is_reclaimed_and_retried_after_storage_recovers(m
     assert len(attempts) == 2
 
 
+def test_pending_queue_message_is_not_reclaimed_while_active(monkeypatch):
+    processed = []
+
+    class Redis:
+        def xautoclaim(self, **kwargs):
+            return ("0-0", [("active-1", {"campaign_id": "camp", "task_id": "copy"})], [])
+
+        def xack(self, *args):
+            raise AssertionError("active message must not be acknowledged by recovery")
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "process_task", lambda *_: processed.append(1))
+    with orchestrator.active_message_ids_lock:
+        orchestrator.active_message_ids.add("active-1")
+    try:
+        assert orchestrator.reclaim_pending_messages() == 0
+    finally:
+        with orchestrator.active_message_ids_lock:
+            orchestrator.active_message_ids.discard("active-1")
+    assert processed == []
+
+
+def test_pending_queue_recovery_paginates_past_first_batch(monkeypatch):
+    starts = []
+    processed = []
+    first_batch = [(f"{index}-0", {"campaign_id": "camp", "task_id": "copy"}) for index in range(10)]
+    later_batch = [("11-0", {"campaign_id": "camp", "task_id": "copy"})]
+
+    class Redis:
+        def xautoclaim(self, **kwargs):
+            starts.append(kwargs["start_id"])
+            if kwargs["start_id"] == "0-0":
+                return ("10-0", first_batch, [])
+            return ("0-0", later_batch, [])
+
+        def xack(self, *_args):
+            pass
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "TOPICS", ["task.copy"])
+    monkeypatch.setattr(orchestrator, "process_task", lambda *_: processed.append(1) or True)
+    assert orchestrator.reclaim_pending_messages() == 11
+    assert starts == ["0-0", "10-0"]
+    assert len(processed) == 11
+
+
 def test_hydration_does_not_hold_global_lock_during_database_io(monkeypatch):
     campaign_id = "camp-lock-scope"
     entered = threading.Event()
