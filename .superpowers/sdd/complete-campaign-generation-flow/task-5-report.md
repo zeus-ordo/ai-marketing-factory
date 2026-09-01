@@ -41,3 +41,14 @@ Known non-blocking warnings are the existing FastAPI `on_event` deprecations and
 - Queue processing now ACKs only when `process_task` reports durable success; persistence failures leave messages pending and retryable.
 - `task_complete` snapshots task state before mutation and restores it on persistence failure without publishing descendants.
 - Added regression coverage for no-ACK queue handling and rollback of prior task states.
+
+## Storage Load Failure Fix
+
+- Task-state load exceptions now raise a dedicated `TaskStateLoadError` instead of being collapsed into missing task state.
+- `process_task` retries storage loads with bounded exponential backoff and returns failure after exhaustion.
+- Queue messages are therefore left pending without `XACK` during storage outages, while missing or invalid tasks retain their existing ACK behavior.
+- Added regression coverage that forces a load failure, verifies bounded retries and backoff, and asserts no queue ACK.
+
+Verification:
+
+- `python -m pytest services/orchestrator/test_task_failure_isolation.py services/campaign_service/test_worker_result_state.py -q`: passed

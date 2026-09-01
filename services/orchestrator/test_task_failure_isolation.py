@@ -112,6 +112,29 @@ def test_queue_message_is_not_acknowledged_when_task_persistence_fails(monkeypat
     assert acknowledged == []
 
 
+def test_queue_message_is_not_acknowledged_when_task_load_fails(monkeypatch):
+    acknowledged = []
+    load_attempts = []
+    delays = []
+
+    class BrokenStore:
+        def load_campaign_tasks(self, *_args):
+            load_attempts.append(1)
+            raise RuntimeError("database unavailable")
+
+    orchestrator.task_state.pop("camp-load-failure", None)
+    monkeypatch.setattr(orchestrator, "task_state_store", BrokenStore())
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda delay: delays.append(delay))
+    monkeypatch.setattr(orchestrator, "redis_client", type("Redis", (), {"xack": lambda *_args: acknowledged.append(_args)})())
+
+    assert orchestrator.process_queue_message(
+        "task.image", "1-0", {"campaign_id": "camp-load-failure", "task_id": "image"}
+    ) is False
+    assert len(load_attempts) == MAX_RETRY + 1
+    assert delays == [next_retry_delay(1), next_retry_delay(2)]
+    assert acknowledged == []
+
+
 def test_task_complete_rolls_back_when_persistence_fails(monkeypatch):
     campaign_id = "camp-rollback"
     original = {"copy": task("copy", "copywriting", status="passed"), "video": task("video", "video_generation", ["copy"])}

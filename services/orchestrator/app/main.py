@@ -353,6 +353,10 @@ class TaskStateStore:
         ]
 
 
+class TaskStateLoadError(RuntimeError):
+    """Raised when task state could not be loaded from durable storage."""
+
+
 app = FastAPI(
     title="Marketing AI Factory - Orchestrator",
     version="0.3.0",
@@ -567,8 +571,13 @@ def get_or_hydrate_campaign_tasks(campaign_id: str) -> dict[str, OrchestratorTas
             return None
         try:
             loaded = task_state_store.load_campaign_tasks(campaign_id)
-        except Exception:
-            return None
+        except Exception as exc:
+            logger.error(
+                "persistence_error: failed to load task state for %s: %s",
+                campaign_id,
+                sanitize_error_detail(str(exc)),
+            )
+            raise TaskStateLoadError(campaign_id) from exc
         if not loaded:
             return None
         hydrated = {task.task_id: task for task in loaded}
@@ -752,7 +761,16 @@ def _report_worker_result_to_campaign_service(task_type: str, result: dict[str, 
 
 
 def process_task(campaign_id: str, task_id: str) -> bool:
-    campaign_tasks = get_or_hydrate_campaign_tasks(campaign_id)
+    campaign_tasks = None
+    for attempt in range(1, MAX_RETRY + 2):
+        try:
+            campaign_tasks = get_or_hydrate_campaign_tasks(campaign_id)
+            break
+        except TaskStateLoadError:
+            if attempt == MAX_RETRY + 1:
+                logger.error("persistence_error: task %s could not be loaded after retries", task_id)
+                return False
+            time.sleep(next_retry_delay(attempt))
     if campaign_tasks is None:
         return True
 
