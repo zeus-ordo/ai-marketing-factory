@@ -38,6 +38,10 @@ services:
     build: ../services/campaign_service
     env_file:
       - ../.env.local
+    environment:
+      - EXTERNAL_SEARCH_PROVIDER=${EXTERNAL_SEARCH_PROVIDER:-google}
+      - EXTERNAL_SEARCH_API_KEY=${EXTERNAL_SEARCH_API_KEY:-}
+      - EXTERNAL_SEARCH_ENGINE_ID=${EXTERNAL_SEARCH_ENGINE_ID:-}
     volumes:
       - campaign_references:/app/campaign_references
       - generated_assets:/app/generated_assets

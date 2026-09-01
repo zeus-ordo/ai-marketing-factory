@@ -57,6 +57,7 @@ from .schemas import (
 from .store import InMemoryStore
 from .validation import validate_campaign_brief
 from .industry_matching import match_industry_items
+from .external_search import ExternalSearchResult, build_campaign_search_query, build_search_provider
 
 
 class QueueHealthResponse(BaseModel):
@@ -829,6 +830,16 @@ WORKER_IMAGE_URL = os.getenv("WORKER_IMAGE_URL", "http://worker-image:8092").str
 WORKER_VIDEO_URL = os.getenv("WORKER_VIDEO_URL", "http://worker-video:8093").strip()
 WORKER_ADS_URL = os.getenv("WORKER_ADS_URL", "http://worker-ads:8094").strip()
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0").strip()
+EXTERNAL_SEARCH_PROVIDER = os.getenv("EXTERNAL_SEARCH_PROVIDER", "google").strip()
+EXTERNAL_SEARCH_API_KEY = os.getenv("EXTERNAL_SEARCH_API_KEY", "").strip()
+EXTERNAL_SEARCH_ENGINE_ID = os.getenv("EXTERNAL_SEARCH_ENGINE_ID", "").strip()
+external_search_provider = build_search_provider(
+    {
+        "EXTERNAL_SEARCH_PROVIDER": EXTERNAL_SEARCH_PROVIDER,
+        "EXTERNAL_SEARCH_API_KEY": EXTERNAL_SEARCH_API_KEY,
+        "EXTERNAL_SEARCH_ENGINE_ID": EXTERNAL_SEARCH_ENGINE_ID,
+    }
+)
 _last_sla_scan_at: datetime | None = None
 
 if not CHATBOT_INTERNAL_API_KEY:
@@ -2096,6 +2107,21 @@ def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 
             detail += f"\n  Summary: {description[:600]}"
         lines.append(detail)
     return lines
+
+
+def build_external_search_query(campaign: CampaignRecord) -> str:
+    return build_campaign_search_query(
+        campaign.brief.product_name,
+        campaign.brief.industry_category,
+        campaign.brief.objective,
+    )
+
+
+def search_campaign_external_context(campaign: CampaignRecord, limit: int = 8) -> list[ExternalSearchResult]:
+    """Search the campaign context seam; Task 4 can add these results to its snapshot."""
+    if external_search_provider is None:
+        return []
+    return external_search_provider.search(build_external_search_query(campaign), limit)
 
 
 def build_campaign_prompt_context(campaign: CampaignRecord) -> str:
