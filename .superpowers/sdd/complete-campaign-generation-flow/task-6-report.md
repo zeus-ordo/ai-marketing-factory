@@ -46,6 +46,27 @@ Verification:
 - Campaign flow contract: passed
 - `npm run build`: passed
 - `git diff --check`: passed
+
+## P2 Translation Follow-up
+
+- Replaced newly added diagnostics literals in Campaigns, Review, and the review queue with existing `common.notAvailable` translations and scoped `review.diagnostics` keys.
+- Added translated diagnostics units and task-type labels for English, Traditional Chinese, and Japanese.
+- Added contract assertions preventing diagnostics `tokens`, `sources`, and em-dash fallback literals from regressing.
+
+Verification:
+
+- `node scripts/test-campaign-diagnostics.mjs`: passed
+- `node scripts/test-campaign-flow-contract.mjs`: passed
+- `npm run check:i18n`: reports only pre-existing hardcoded UI findings in Campaigns form/modals and Content Studio.
+- `npm run lint`: reports only pre-existing errors in untouched Campaigns form/modals, Review loading/permission text, review preview text, Content Studio, Members, and Roles; edited diagnostics lines have no new findings.
+- `python -m pytest services/campaign_service -q`: 78 passed
+- `python -m pytest services/orchestrator -q`: 25 passed
+- `python -m pytest services/worker_image/test_prompt.py -q`: 3 passed
+- `python -m pytest -q`: collection blocked by pre-existing cross-service imports (`MAX_RETRY` resolution and worker-image `app.prompt_utils` module path).
+- `git diff --check`: passed
+- `npm run build`: passed
+
+Concern: existing FastAPI, Pydantic, Node module-type, and Next.js workspace-root warnings remain unrelated to this follow-up.
 - `npm run lint`: failed on 81 pre-existing repository lint errors and 13 warnings, including existing hardcoded-text violations outside this change
 
 ## Complete Review Diagnostics Details

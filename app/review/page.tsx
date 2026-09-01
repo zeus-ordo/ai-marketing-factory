@@ -21,6 +21,14 @@ import {
 import { useAuth } from "@/lib/auth/context";
 import { useI18n } from "@/lib/i18n/context";
 
+function diagnosticTaskTypeLabel(taskType: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (taskType === "copywriting") return t("review.diagnostics.copywriting");
+  if (taskType === "image_generation") return t("review.diagnostics.imageGeneration");
+  if (taskType === "video_generation") return t("review.diagnostics.videoGeneration");
+  if (taskType === "ads_strategy") return t("review.diagnostics.adsStrategy");
+  return taskType;
+}
+
 export default function ReviewPage() {
   const { t } = useI18n();
   const { user, isLoading: authLoading } = useAuth();
@@ -239,14 +247,14 @@ export default function ReviewPage() {
               <code className="break-all text-xs text-slate-500">{campaignNameMap[diagnosticItem.campaign_id] || diagnosticItem.campaign_id} · {summary.generation_context_id}</code>
             </div>
             <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
-              <div><p className="text-slate-500">{t("review.diagnostics.internalSources")}</p><p className="font-medium">{summary.internal_source_count} · {summary.internal_token_count} tokens</p></div>
-              <div><p className="text-slate-500">{t("review.diagnostics.externalSources")}</p><p className="font-medium">{summary.external_source_count} · {summary.external_token_count} tokens</p></div>
+              <div><p className="text-slate-500">{t("review.diagnostics.internalSources")}</p><p className="font-medium">{summary.internal_source_count} · {summary.internal_token_count} {t("review.diagnostics.tokens")}</p></div>
+              <div><p className="text-slate-500">{t("review.diagnostics.externalSources")}</p><p className="font-medium">{summary.external_source_count} · {summary.external_token_count} {t("review.diagnostics.tokens")}</p></div>
               <div><p className="text-slate-500">{t("review.diagnostics.ratios")}</p><p className="font-medium">{(summary.internal_ratio * 100).toFixed(1)}% / {(summary.external_ratio * 100).toFixed(1)}%</p></div>
               <div><p className="text-slate-500">{t("review.diagnostics.selectedReferences")}</p><p className="break-words font-medium">{summary.selected_reference_ids.join(", ") || t("common.notAvailable")}</p></div>
             </div>
             <ProvenanceList sources={source_provenance} />
             {groupTasks.map((task) => (
-              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{task.task_type}: {task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
+              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{diagnosticTaskTypeLabel(task.task_type, t)}: {task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
             ))}
           </section>
         );

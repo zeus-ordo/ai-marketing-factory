@@ -182,6 +182,14 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <div><p className="text-slate-500">{label}</p><p className="break-words font-medium text-slate-800 dark:text-slate-100">{value}</p></div>;
 }
 
+function diagnosticTaskTypeLabel(taskType: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (taskType === "copywriting") return t("review.diagnostics.copywriting");
+  if (taskType === "image_generation") return t("review.diagnostics.imageGeneration");
+  if (taskType === "video_generation") return t("review.diagnostics.videoGeneration");
+  if (taskType === "ads_strategy") return t("review.diagnostics.adsStrategy");
+  return taskType;
+}
+
 function formatCampaignApiError(error: unknown, fallback: string): string {
   if (!(error instanceof ApiRequestError)) return error instanceof Error ? error.message : fallback;
   if (Array.isArray(error.detail)) {
@@ -1115,8 +1123,8 @@ export default function CampaignCenterPage() {
             <code className="break-all text-xs text-slate-500">{activeCampaignRecord.source_summary.generation_context_id}</code>
           </div>
           <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
-            <Metric label={t("review.diagnostics.internalSources")} value={`${activeCampaignRecord.source_summary.internal_source_count} · ${activeCampaignRecord.source_summary.internal_token_count} tokens`} />
-            <Metric label={t("review.diagnostics.externalSources")} value={`${activeCampaignRecord.source_summary.external_source_count} · ${activeCampaignRecord.source_summary.external_token_count} tokens`} />
+            <Metric label={t("review.diagnostics.internalSources")} value={`${activeCampaignRecord.source_summary.internal_source_count} · ${activeCampaignRecord.source_summary.internal_token_count} ${t("review.diagnostics.tokens")}`} />
+            <Metric label={t("review.diagnostics.externalSources")} value={`${activeCampaignRecord.source_summary.external_source_count} · ${activeCampaignRecord.source_summary.external_token_count} ${t("review.diagnostics.tokens")}`} />
             <Metric label={t("review.diagnostics.ratios")} value={`${(activeCampaignRecord.source_summary.internal_ratio * 100).toFixed(1)}% / ${(activeCampaignRecord.source_summary.external_ratio * 100).toFixed(1)}%`} />
             <Metric label={t("review.diagnostics.selectedReferences")} value={activeCampaignRecord.source_summary.selected_reference_ids.join(", ") || t("common.notAvailable")} />
           </div>
@@ -1127,8 +1135,8 @@ export default function CampaignCenterPage() {
             <div className="grid gap-2 lg:grid-cols-2">
               {activeCampaignRecord.tasks.map((task) => (
                 <div key={task.task_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800">
-                  <span><strong>{task.task_type}</strong> <span className="text-slate-500">{task.status}</span></span>
-                  <span className="text-xs text-slate-500">{task.provider || "—"}/{task.model || "—"} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason)} · {t("review.diagnostics.retryable")}: {task.retryable === true ? t("common.yes") : t("common.no")} {task.retry_count ? `· ${t("review.diagnostics.attempts")}: ${task.retry_count}` : ""} {task.next_retry_at ? `· ${task.next_retry_at}` : ""}</span>
+                  <span><strong>{diagnosticTaskTypeLabel(task.task_type, t)}</strong> <span className="text-slate-500">{task.status}</span></span>
+                  <span className="text-xs text-slate-500">{task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason)} · {t("review.diagnostics.retryable")}: {task.retryable === true ? t("common.yes") : t("common.no")} {task.retry_count ? `· ${t("review.diagnostics.attempts")}: ${task.retry_count}` : ""} {task.next_retry_at ? `· ${task.next_retry_at}` : ""}</span>
                   {canRetryTask(task) ? <button type="button" onClick={() => handleRetryTask(activeCampaignRecord.campaign_id, task.task_id)} disabled={retryingTaskId !== null} className="rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50">{retryingTaskId === task.task_id ? t("review.diagnostics.retrying") : t("review.diagnostics.retry")}</button> : null}
                 </div>
               ))}

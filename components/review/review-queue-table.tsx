@@ -94,10 +94,10 @@ export function ReviewQueueTable({
                 <div className="font-mono text-[11px] text-slate-400">{item.campaign_id}</div>
               </td>
               <td className="px-4 py-3 text-xs">
-                <code className="break-all text-slate-500">{item.generation_context_id || "—"}</code>
-                {item.source_summary ? <div className="mt-1 text-slate-500">{item.source_summary.internal_source_count}/{item.source_summary.external_source_count} sources · {(item.source_summary.internal_ratio * 100).toFixed(1)}%/{(item.source_summary.external_ratio * 100).toFixed(1)}%</div> : null}
+                <code className="break-all text-slate-500">{item.generation_context_id || t("common.notAvailable")}</code>
+                {item.source_summary ? <div className="mt-1 text-slate-500">{item.source_summary.internal_source_count}/{item.source_summary.external_source_count} {t("review.diagnostics.sources")} · {(item.source_summary.internal_ratio * 100).toFixed(1)}%/{(item.source_summary.external_ratio * 100).toFixed(1)}%</div> : null}
                 {item.source_provenance?.length ? <div className="mt-1"><ProvenanceList sources={item.source_provenance} /></div> : null}
-                {campaignTaskMap[item.campaign_id]?.filter((task) => task.task_type === ({ copy: "copywriting", image: "image_generation", video: "video_generation", ads: "ads_strategy" } as Record<string, string>)[item.asset_type || ""] && (!item.generation_context_id || task.generation_context_id === item.generation_context_id)).map((task) => <div key={task.task_id} className="mt-1 text-slate-500">{task.provider || "—"}/{task.model || "—"} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)}</div>) }
+                {campaignTaskMap[item.campaign_id]?.filter((task) => task.task_type === ({ copy: "copywriting", image: "image_generation", video: "video_generation", ads: "ads_strategy" } as Record<string, string>)[item.asset_type || ""] && (!item.generation_context_id || task.generation_context_id === item.generation_context_id)).map((task) => <div key={task.task_id} className="mt-1 text-slate-500">{task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || task.status)}</div>) }
               </td>
               <td className="min-w-[96px] px-4 py-3 whitespace-nowrap">
                 {assetTypeLabel(item, t)}
@@ -107,7 +107,7 @@ export function ReviewQueueTable({
                   {statusLabel(item.status, t)}
                 </span>
               </td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{rejectReason(item)}</td>
+              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{rejectReason(item, t)}</td>
               <td className="px-4 py-3 whitespace-nowrap">
                 <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap">
                   <button
@@ -176,9 +176,9 @@ function assetTypeLabel(item: ReviewItem, t: ReturnType<typeof useI18n>["t"]) {
   if (item.asset_id.startsWith("img_") || item.asset_id.startsWith("image_")) return t("assets.type.image");
   if (item.asset_id.startsWith("vid_") || item.asset_id.startsWith("video_")) return t("assets.type.video");
   if (item.asset_id.startsWith("ads_")) return t("assets.type.ads");
-  return "—";
+  return t("common.notAvailable");
 }
 
-function rejectReason(item: ReviewItem) {
-  return item.reject_reason || item.rejected_reason || item.reason || "—";
+function rejectReason(item: ReviewItem, t: ReturnType<typeof useI18n>["t"]) {
+  return item.reject_reason || item.rejected_reason || item.reason || t("common.notAvailable");
 }
