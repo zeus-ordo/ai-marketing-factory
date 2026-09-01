@@ -91,7 +91,7 @@ def test_retry_route_concurrent_requests_claim_one_attempt(monkeypatch):
     monkeypatch.setattr(main, "persistence", None)
     monkeypatch.setattr(main, "require_review_action_access", lambda req: None)
     monkeypatch.setattr(main, "require_campaign_access", lambda req, campaign: None)
-    monkeypatch.setattr(main, "_dispatch_worker_for_task", lambda campaign, task: ([object()], []))
+    monkeypatch.setattr(main, "_dispatch_worker_for_task", lambda campaign, task: ([AssetOutput(company_id="co-1", asset_id="asset-retry", campaign_id=campaign.campaign_id, task_id=task.task_id, asset_type="image", url="https://example.com/retry.png", created_at=datetime.utcnow())], []))
     monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: None)
     monkeypatch.setattr(main, "dispatch_ready_retry_descendants", lambda campaign, tasks, task_id, run_id=None: [])
     monkeypatch.setattr(main, "append_trace_event", lambda **kwargs: None)
