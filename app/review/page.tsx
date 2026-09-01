@@ -221,15 +221,15 @@ export default function ReviewPage() {
         <Metric title={t("review.status.rejected")} value={summary.rejected} tone="text-rose-500" />
       </div>
 
-      {items.find((item) => item.source_summary)?.source_summary ? (() => {
-        const summary = items.find((item) => item.source_summary)?.source_summary;
+      {Array.from(new Map(items.filter((item) => item.source_summary).map((item) => [`${item.campaign_id}:${item.run_id || item.generation_context_id}`, item] as const)).values()).map((diagnosticItem) => {
+        const summary = diagnosticItem.source_summary;
         if (!summary) return null;
-        const source_provenance = items.find((item) => item.source_provenance?.length)?.source_provenance ?? summary.provenance;
+        const source_provenance = diagnosticItem.source_provenance?.length ? diagnosticItem.source_provenance : summary.provenance;
         return (
           <section aria-label={t("review.diagnostics.title")} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h2 className="text-sm font-semibold">{t("review.diagnostics.title")}</h2>
-              <code className="break-all text-xs text-slate-500">{summary.generation_context_id}</code>
+              <code className="break-all text-xs text-slate-500">{campaignNameMap[diagnosticItem.campaign_id] || diagnosticItem.campaign_id} · {summary.generation_context_id}</code>
             </div>
             <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
               <div><p className="text-slate-500">{t("review.diagnostics.internalSources")}</p><p className="font-medium">{summary.internal_source_count} · {summary.internal_token_count} tokens</p></div>
@@ -240,12 +240,12 @@ export default function ReviewPage() {
             <div className="flex flex-wrap gap-2 text-xs text-slate-500">
               {source_provenance.map((source) => <span key={`${source.source_type}-${source.source_id}`} className="rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800">{source.source_type}: {source.label}</span>)}
             </div>
-            {Object.entries(campaignTaskMap).flatMap(([campaignId, tasks]) => tasks.filter((task) => task.status === "failed" || task.status === "blocked").map((task) => (
-              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{campaignNameMap[campaignId] || campaignId} / {task.task_type}: {task.error_class || task.blocked_reason || task.status} · {t("review.diagnostics.retryable")}: {(task.retryable ?? (task.status === "failed")) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
-            )))}
+            {campaignTaskMap[diagnosticItem.campaign_id]?.filter((task) => task.status === "failed" || task.status === "blocked").map((task) => (
+              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{task.task_type}: {task.error_class || task.blocked_reason || task.status} · {t("review.diagnostics.retryable")}: {(task.retryable ?? (task.status === "failed")) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
+            ))}
           </section>
         );
-      })() : null}
+      })}
 
       <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-2 dark:border-slate-800 dark:bg-slate-900">
         <input
@@ -288,6 +288,7 @@ export default function ReviewPage() {
       <ReviewQueueTable
         items={filteredItems}
         campaignNameMap={campaignNameMap}
+        campaignTaskMap={campaignTaskMap}
         loading={loading}
         busy={busy}
         selectedIds={selectedIds}

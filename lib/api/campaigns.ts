@@ -419,6 +419,24 @@ function getMembershipApiBase(): string {
 
 let refreshAccessTokenPromise: Promise<boolean> | null = null;
 
+export class ApiRequestError extends Error {
+  detail: unknown;
+
+  constructor(message: string, detail?: unknown) {
+    super(message);
+    this.name = "ApiRequestError";
+    if (detail !== undefined) {
+      this.detail = detail;
+    } else {
+      try {
+        this.detail = JSON.parse(message);
+      } catch {
+        this.detail = detail;
+      }
+    }
+  }
+}
+
 async function refreshAccessTokenOnce(): Promise<boolean> {
   if (typeof window === "undefined") return false;
   if (refreshAccessTokenPromise) return refreshAccessTokenPromise;
@@ -496,7 +514,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
             const errorText = await response.text();
             if (errorText.trim()) message = errorText;
           }
-          throw new Error(message);
+          throw new ApiRequestError(message, contentType.includes("application/json") ? undefined : undefined);
         }
         return (await response.json()) as T;
       }
@@ -525,7 +543,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
     }
 
-    throw new Error(message);
+    throw new ApiRequestError(message, undefined);
   }
 
   return (await response.json()) as T;

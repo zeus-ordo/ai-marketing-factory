@@ -28,6 +28,7 @@ import {
   type CampaignStatus,
   type ReviewItem,
   type ReviewStatus,
+  ApiRequestError,
 } from "@/lib/api/campaigns";
 import { ReviewAssetPreviewModal } from "@/components/review/review-asset-preview-modal";
 import { useI18n } from "@/lib/i18n/context";
@@ -177,6 +178,16 @@ function getBriefString(brief: CampaignBrief, snakeKey: keyof CampaignBrief, cam
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <div><p className="text-slate-500">{label}</p><p className="break-words font-medium text-slate-800 dark:text-slate-100">{value}</p></div>;
+}
+
+function formatCampaignApiError(error: unknown, fallback: string): string {
+  if (!(error instanceof ApiRequestError)) return error instanceof Error ? error.message : fallback;
+  if (error.detail && typeof error.detail === "object" && !Array.isArray(error.detail)) {
+    return Object.entries(error.detail as Record<string, unknown>)
+      .map(([field, detail]) => `${field}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`)
+      .join("\n");
+  }
+  return error.message || fallback;
 }
 
 export default function CampaignCenterPage() {
@@ -518,8 +529,8 @@ export default function CampaignCenterPage() {
       setCampaignRecords(rows);
       setCampaigns(rows.map(toUiCampaign));
       setApiMode(true);
-    } catch {
-      setMessage(t("campaigns.createFailed"));
+    } catch (error) {
+      setMessage(formatCampaignApiError(error, t("campaigns.createFailed")));
     }
   }
 
@@ -649,8 +660,8 @@ export default function CampaignCenterPage() {
         }
       }
       setMessage(createdMessage);
-    } catch {
-      setMessage(t("campaigns.createFailed"));
+    } catch (error) {
+      setMessage(formatCampaignApiError(error, t("campaigns.createFailed")));
     } finally {
       setCreatingCampaign(false);
     }
@@ -1082,7 +1093,7 @@ export default function CampaignCenterPage() {
       </header>
 
       {message ? (
-        <p className={`rounded-xl px-3 py-2 text-sm ${isFallback ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}>
+        <p role="alert" className={`whitespace-pre-line rounded-xl px-3 py-2 text-sm ${isFallback ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}>
           {message}
         </p>
       ) : null}

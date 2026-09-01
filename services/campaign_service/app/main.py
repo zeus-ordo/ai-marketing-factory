@@ -830,6 +830,7 @@ CAMPAIGN_RUNNING_TIMEOUT_SECONDS = max(300, int(os.getenv("CAMPAIGN_RUNNING_TIME
 WEBHOOK_NOTIFY_URL = os.getenv("WEBHOOK_NOTIFY_URL", "").strip()
 WORKER_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("WORKER_RETRY_MAX_ATTEMPTS", "2")))
 WORKER_RETRY_BACKOFF_SECONDS = max(0.0, float(os.getenv("WORKER_RETRY_BACKOFF_SECONDS", "0.5")))
+MANUAL_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("MANUAL_RETRY_MAX_ATTEMPTS", "3")))
 WORKER_REQUEST_TIMEOUT_SECONDS = max(15.0, float(os.getenv("WORKER_REQUEST_TIMEOUT_SECONDS", "180")))
 WORKER_COPY_URL = os.getenv("WORKER_COPY_URL", "http://worker-copy:8091").strip()
 WORKER_IMAGE_URL = os.getenv("WORKER_IMAGE_URL", "http://worker-image:8092").strip()
@@ -1055,6 +1056,10 @@ def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dic
     else:
         by_id[task_id] = current.model_copy(update={"status": "passed", "error_class": None, "error_detail": None})
     return [by_id[task.task_id] for task in tasks]
+
+
+def manual_retry_allowed(task: TaskRecord, max_attempts: int = 3) -> bool:
+    return task.status == "failed" and task.retryable is not False and task.retry_count < max_attempts
 
 
 def _extract_worker_error_detail(message: str) -> str:
@@ -2289,7 +2294,51 @@ def snapshot_for_campaign(campaign: CampaignRecord, run_id: str | None = None) -
                 cache_generation_context(snapshot, run_id)
             return snapshot
         return None
-    return next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
+    cached = next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
+    if cached is not None:
+        return cached
+    if persistence is not None:
+        try:
+            runs = persistence.list_campaign_runs(campaign.campaign_id)
+            for run in runs:
+                snapshot = persistence.load_generation_context(campaign.campaign_id, str(run["run_id"]))
+                if snapshot is not None:
+                    cache_generation_context(snapshot, str(run["run_id"]))
+                    return snapshot
+        except Exception:
+            logger.warning("Failed to hydrate generation diagnostics", exc_info=True)
+    return None
+
+
+def generation_diagnostics(campaign: CampaignRecord, run_id: str | None = None) -> dict[str, Any] | None:
+    snapshot = snapshot_for_campaign(campaign, run_id)
+    if snapshot is None:
+        return None
+    source_counts: dict[str, int] = {}
+    provenance: list[dict[str, Any]] = []
+    for item in snapshot.items:
+        source_counts[item.source_type] = source_counts.get(item.source_type, 0) + 1
+        metadata = dict(item.metadata)
+        provenance.append({"source_type": item.source_type, "source_id": item.source_id, "label": item.label,
+                          "folder": metadata.get("folder") or metadata.get("folder_name"), "url": metadata.get("url"),
+                          "provider": metadata.get("provider"), "query": metadata.get("query"), "retrieved_at": metadata.get("retrieved_at")})
+    internal_count = sum(source_counts.get(kind, 0) for kind in ("user_selected", "immediate_upload", "campaign_reference", "industry_matched"))
+    return {"generation_context_id": snapshot.generation_context_id, "internal_source_count": internal_count,
+            "external_source_count": source_counts.get("external_web", 0), "internal_token_count": snapshot.internal_token_count,
+            "external_token_count": snapshot.external_token_count, "internal_ratio": snapshot.internal_ratio,
+            "external_ratio": snapshot.external_ratio, "source_counts": source_counts,
+            "selected_reference_ids": list(snapshot.selected_reference_ids), "matched_folder_names": list(snapshot.matched_folder_names),
+            "external_source_urls": list(snapshot.external_source_urls), "external_search_status": snapshot.external_search_status,
+            "external_search_error": snapshot.external_search_error, "provenance": provenance}
+
+
+def enrich_campaign_diagnostics(campaign: CampaignRecord) -> CampaignRecord:
+    diagnostics = generation_diagnostics(campaign)
+    tasks = store.get_tasks(campaign.campaign_id)
+    context_id = diagnostics.get("generation_context_id") if diagnostics else None
+    if context_id:
+        tasks = [task.model_copy(update={"generation_context_id": task.generation_context_id or context_id}) for task in tasks]
+    return campaign.model_copy(update={"generation_context_id": context_id, "source_summary": diagnostics, "tasks": tasks or None})
 
 
 def snapshot_prompt_context(snapshot: GenerationContextSnapshot | None) -> str:
@@ -6864,6 +6913,34 @@ def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tup
     )
 
 
+def dispatch_ready_retry_descendants(campaign: CampaignRecord, tasks: list[TaskRecord], task_id: str) -> list[TaskRecord]:
+    snapshot = snapshot_for_campaign(campaign, latest_campaign_run_id(campaign.campaign_id))
+    descendants: set[str] = {task_id}
+    changed = True
+    while changed:
+        changed = False
+        for task in tasks:
+            if any(dep in descendants for dep in task.depends_on) and task.task_id not in descendants:
+                descendants.add(task.task_id)
+                changed = True
+    ready = [task for task in tasks if task.task_id in descendants and task.task_id != task_id and task.status == "pending" and all(
+        next((dependency for dependency in tasks if dependency.task_id == dep), None) is not None
+        and next(dependency for dependency in tasks if dependency.task_id == dep).status == "passed"
+        for dep in task.depends_on
+    )]
+    if not ready:
+        return []
+    payload = {
+        "campaign_id": campaign.campaign_id,
+        "tasks": [
+            {**task.model_dump(mode="json"), "worker_payload": build_worker_payload_for_task(campaign, task, snapshot)}
+            for task in ready
+        ],
+    }
+    response = post_json(f"{OPENCLAW_CONTROLLER_URL}/internal/orchestrator/dispatch", payload)
+    return [normalize_task_payload(item, campaign.campaign_id) for item in response.get("tasks", []) if isinstance(item, dict)]
+
+
 @app.post(
     "/api/v1/internal/campaigns/{campaign_id}/tasks/retry",
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
@@ -6879,14 +6956,16 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    if task.status != "failed":
-        raise HTTPException(status_code=409, detail="Only failed tasks can be retried")
+    if not manual_retry_allowed(task, MANUAL_RETRY_MAX_ATTEMPTS):
+        raise HTTPException(status_code=409, detail="Task is not retryable or has reached the maximum attempts")
     if persistence is not None:
         try:
             persistence.record_task_attempt(task)
         except Exception:
             logger.warning("Failed to preserve worker task attempt", exc_info=True)
-    existing_tasks = apply_worker_result_state(store.get_tasks(campaign_id), payload.task_id, {"status": "retrying"})
+    retriable = task.model_copy(update={"retry_count": task.retry_count + 1, "retryable": True})
+    existing_tasks = [retriable if item.task_id == task.task_id else item for item in store.get_tasks(campaign_id)]
+    existing_tasks = apply_worker_result_state(existing_tasks, payload.task_id, {"status": "retrying"})
     store.set_tasks(campaign_id, existing_tasks)
     retried = next(item for item in existing_tasks if item.task_id == payload.task_id)
 
@@ -6921,6 +7000,11 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
 
     patched_result = {"status": "passed" if assets else "failed", "error": None if assets else "worker returned no assets"}
     final_tasks = apply_worker_result_state(store.get_tasks(campaign_id), payload.task_id, patched_result)
+    dispatched_descendants = dispatch_ready_retry_descendants(campaign, final_tasks, payload.task_id)
+    if dispatched_descendants:
+        final_by_id = {item.task_id: item for item in final_tasks}
+        final_by_id.update({item.task_id: item for item in dispatched_descendants})
+        final_tasks = [final_by_id[item.task_id] for item in final_tasks]
     store.set_tasks(campaign_id, final_tasks)
     persisted_task = next(item for item in final_tasks if item.task_id == payload.task_id)
 
@@ -6947,6 +7031,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
         "status": persisted_task.status,
         "assets": len(assets),
         "validations": len(validations),
+        "dispatched_tasks": len(dispatched_descendants),
     }
 
 

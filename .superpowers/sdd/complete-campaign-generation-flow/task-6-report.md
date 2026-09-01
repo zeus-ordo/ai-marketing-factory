@@ -18,3 +18,19 @@ Verification:
 - `git diff --check`: passed
 
 The build retains existing warnings about FastAPI `on_event` deprecation and multiple lockfiles/workspace-root inference.
+
+## Review Follow-up
+
+- Hydrated latest persisted generation snapshots into Campaign and Review responses, including backward-compatible task diagnostic columns.
+- Preserved structured API error details and rendered field-level 422 messages without clearing the form.
+- Enforced manual retryability and finite attempts; successful retries dispatch only newly unblocked descendants.
+- Changed Review diagnostics to group by campaign/run and render per-item ratios, provenance, provider, model, and task failure details.
+- Added behavior coverage for diagnostics serialization and retry eligibility.
+
+Verification after review follow-up:
+
+- `python -m pytest services/campaign_service -q`: 49 passed
+- `python -m pytest services/orchestrator -q`: 25 passed
+- `node scripts/test-campaign-flow-contract.mjs`: passed
+- `npm run build`: passed
+- `git diff --check`: passed

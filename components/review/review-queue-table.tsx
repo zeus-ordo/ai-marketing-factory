@@ -1,11 +1,12 @@
 "use client";
 
-import type { ReviewItem } from "@/lib/api/campaigns";
+import type { CampaignTask, ReviewItem } from "@/lib/api/campaigns";
 import { useI18n } from "@/lib/i18n/context";
 
 type Props = {
   items: ReviewItem[];
   campaignNameMap: Record<string, string>;
+  campaignTaskMap: Record<string, CampaignTask[]>;
   loading: boolean;
   busy: boolean;
   selectedIds: string[];
@@ -19,6 +20,7 @@ type Props = {
 export function ReviewQueueTable({
   items,
   campaignNameMap,
+  campaignTaskMap,
   loading,
   busy,
   selectedIds,
@@ -91,7 +93,9 @@ export function ReviewQueueTable({
               </td>
               <td className="px-4 py-3 text-xs">
                 <code className="break-all text-slate-500">{item.generation_context_id || "—"}</code>
+                {item.source_summary ? <div className="mt-1 text-slate-500">{item.source_summary.internal_source_count}/{item.source_summary.external_source_count} sources · {(item.source_summary.internal_ratio * 100).toFixed(1)}%/{(item.source_summary.external_ratio * 100).toFixed(1)}%</div> : null}
                 {item.source_provenance?.length ? <div className="mt-1 text-slate-500">{item.source_provenance.map((source) => `${source.source_type}: ${source.label}`).join(" · ")}</div> : null}
+                {campaignTaskMap[item.campaign_id]?.filter((task) => task.task_type === ({ copy: "copywriting", image: "image_generation", video: "video_generation", ads: "ads_strategy" } as Record<string, string>)[item.asset_type || ""]).map((task) => <div key={task.task_id} className="mt-1 text-slate-500">{task.provider || "—"}/{task.model || "—"} · {task.error_class || task.blocked_reason || task.status}</div>) }
               </td>
               <td className="min-w-[96px] px-4 py-3 whitespace-nowrap">
                 {assetTypeLabel(item, t)}
