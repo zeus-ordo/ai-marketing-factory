@@ -66,6 +66,7 @@ class TaskRecord(BaseModel):
     provider: str | None = None
     model: str | None = None
     retryable: bool | None = None
+    run_id: str | None = None
 
 
 class CampaignCreatedResponse(BaseModel):

@@ -143,6 +143,7 @@ class PostgresPersistence:
                         provider TEXT,
                         model TEXT,
                         retryable BOOLEAN,
+                        run_id TEXT,
                         created_at TIMESTAMP NOT NULL DEFAULT NOW()
                     );
                     """
@@ -164,6 +165,7 @@ class PostgresPersistence:
                     "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS provider TEXT;",
                     "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS model TEXT;",
                     "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS retryable BOOLEAN;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS run_id TEXT;",
                 ):
                     cur.execute(statement)
                 cur.execute(
@@ -697,9 +699,9 @@ class PostgresPersistence:
                     cur.execute(
                         """
                         INSERT INTO campaign_tasks
-                            (task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at, generation_context_id, provider, model, retryable)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, retry_count = EXCLUDED.retry_count, error_class = EXCLUDED.error_class, error_detail = EXCLUDED.error_detail, blocked_by_task_id = EXCLUDED.blocked_by_task_id, blocked_reason = EXCLUDED.blocked_reason, next_retry_at = EXCLUDED.next_retry_at, generation_context_id = EXCLUDED.generation_context_id, provider = EXCLUDED.provider, model = EXCLUDED.model, retryable = EXCLUDED.retryable
+                            (task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at, generation_context_id, provider, model, retryable, run_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, retry_count = EXCLUDED.retry_count, error_class = EXCLUDED.error_class, error_detail = EXCLUDED.error_detail, blocked_by_task_id = EXCLUDED.blocked_by_task_id, blocked_reason = EXCLUDED.blocked_reason, next_retry_at = EXCLUDED.next_retry_at, generation_context_id = EXCLUDED.generation_context_id, provider = EXCLUDED.provider, model = EXCLUDED.model, retryable = EXCLUDED.retryable, run_id = EXCLUDED.run_id
                         """,
                         (
                             item.task_id,
@@ -713,6 +715,7 @@ class PostgresPersistence:
                             item.retry_count, item.error_class, item.error_detail,
                             item.blocked_by_task_id, item.blocked_reason, item.next_retry_at,
                             item.generation_context_id, item.provider, item.model, item.retryable,
+                            item.run_id,
                         ),
                     )
             conn.commit()
@@ -722,7 +725,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at, generation_context_id, provider, model, retryable
+                    SELECT task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at, generation_context_id, provider, model, retryable, run_id
                     FROM campaign_tasks
                     WHERE campaign_id = %s
                     ORDER BY priority ASC, created_at ASC;
@@ -743,9 +746,40 @@ class PostgresPersistence:
                 retry_count=int(row[8] or 0), error_class=row[9], error_detail=row[10],
                 blocked_by_task_id=row[11], blocked_reason=row[12], next_retry_at=row[13],
                 generation_context_id=row[14], provider=row[15], model=row[16], retryable=row[17],
+                run_id=row[18],
             )
             for row in rows
         ]
+
+    def claim_manual_task_retry(self, campaign_id: str, task_id: str, max_attempts: int) -> bool:
+        """Atomically claim one retry across service replicas."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE campaign_tasks
+                    SET status = 'retrying', retry_count = retry_count + 1,
+                        retryable = TRUE, next_retry_at = NULL
+                    WHERE campaign_id = %s AND task_id = %s
+                      AND status = 'failed' AND COALESCE(retryable, TRUE) = TRUE
+                      AND retry_count < %s
+                    RETURNING task_id
+                    """,
+                    (campaign_id, task_id, max_attempts),
+                )
+                claimed = cur.fetchone() is not None
+            conn.commit()
+        return claimed
+
+    def release_manual_task_retry(self, campaign_id: str, task_id: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE campaign_tasks SET status = 'failed', retry_count = GREATEST(0, retry_count - 1)
+                       WHERE campaign_id = %s AND task_id = %s AND status = 'retrying'""",
+                    (campaign_id, task_id),
+                )
+            conn.commit()
 
     def record_task_attempt(self, task: TaskRecord) -> None:
         with self._connect() as conn:

@@ -17,6 +17,21 @@ Verification:
 - `npm run build`: passed
 - `git diff --check`: passed
 
+## P1 Retry Follow-up
+
+- Added persisted task `run_id` and atomic conditional retry claims with a bounded attempt count; failed state persistence can safely release an unstarted claim.
+- Review/asset retry requests resolve the reviewed task and run, use that run's generation snapshot, and dispatch only same-run blocked descendants.
+- Added route regressions for Campaign GET/list hydration, Review run serialization, concurrent retry claims, provider/model diagnostics, and mixed-run descendant scope.
+
+Verification:
+
+- `python -m pytest services/campaign_service/test_task6_routes.py services/campaign_service/test_worker_result_state.py -q`: 14 passed
+- `python -m pytest services/campaign_service -q`: 54 passed
+- `python -m pytest services/orchestrator -q`: 25 passed
+- `node scripts/test-campaign-flow-contract.mjs`: passed
+- `npm run build`: passed
+- `git diff --check`: passed
+
 ## Endpoint Review Follow-up
 
 - Wired diagnostic enrichment into Campaign GET/list responses and added latest persisted-run hydration for restart compatibility.

@@ -85,7 +85,7 @@ def test_retry_route_concurrent_requests_claim_one_attempt(monkeypatch):
     monkeypatch.setattr(main, "require_campaign_access", lambda req, campaign: None)
     monkeypatch.setattr(main, "_dispatch_worker_for_task", lambda campaign, task: ([object()], []))
     monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: None)
-    monkeypatch.setattr(main, "dispatch_ready_retry_descendants", lambda campaign, tasks, task_id: [])
+    monkeypatch.setattr(main, "dispatch_ready_retry_descendants", lambda campaign, tasks, task_id, run_id=None: [])
     monkeypatch.setattr(main, "append_trace_event", lambda **kwargs: None)
     monkeypatch.setattr(main, "_notify_webhook", lambda **kwargs: None)
 
@@ -99,3 +99,17 @@ def test_retry_route_concurrent_requests_claim_one_attempt(monkeypatch):
         results = list(executor.map(lambda _: call(), range(2)))
     assert sum(isinstance(result, dict) for result in results) == 1
     assert sum(getattr(result, "status_code", None) == 409 for result in results) == 1
+
+
+def test_retry_descendant_dispatch_is_limited_to_review_run(monkeypatch):
+    item = campaign("camp-mixed")
+    selected = TaskRecord(company_id="co-1", campaign_id=item.campaign_id, task_id="image-old", task_type="image_generation", status="passed", priority=1, run_id="run-old", acceptance=[])
+    same_run = TaskRecord(company_id="co-1", campaign_id=item.campaign_id, task_id="video-old", task_type="video_generation", status="pending", priority=2, run_id="run-old", depends_on=["image-old"], acceptance=[])
+    other_run = TaskRecord(company_id="co-1", campaign_id=item.campaign_id, task_id="video-new", task_type="video_generation", status="pending", priority=2, run_id="run-new", depends_on=["image-old"], acceptance=[])
+    captured = {}
+    monkeypatch.setattr(main, "snapshot_for_campaign", lambda campaign, run_id=None: snapshot(campaign.campaign_id, run_id) if run_id == "run-old" else None)
+    monkeypatch.setattr(main, "post_json", lambda url, payload: captured.update(payload) or {"tasks": payload["tasks"]})
+
+    dispatched = main.dispatch_ready_retry_descendants(item, [selected, same_run, other_run], "image-old", "run-old")
+    assert [task["task_id"] for task in captured["tasks"]] == ["video-old"]
+    assert [task.task_id for task in dispatched] == ["video-old"]

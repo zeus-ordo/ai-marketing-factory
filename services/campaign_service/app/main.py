@@ -1169,6 +1169,7 @@ def normalize_task_payload(payload: dict[str, Any], campaign_id: str) -> TaskRec
         provider=payload.get("provider") or payload.get("worker_payload", {}).get("provider"),
         model=payload.get("model") or payload.get("model_name") or payload.get("worker_payload", {}).get("model"),
         retryable=payload.get("retryable", status == "failed"),
+        run_id=payload.get("run_id"),
     )
 
 
@@ -6907,10 +6908,13 @@ def get_webhook_logs(req: Request, sub_id: str, limit: int = 50) -> WebhookDeliv
 
 class RetryWorkerTaskRequest(BaseModel):
     task_id: str
+    run_id: str | None = None
+    review_id: str | None = None
+    asset_id: str | None = None
 
 
 def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tuple[list[AssetOutput], list[ValidationResult]]:
-    run_id = latest_campaign_run_id(campaign.campaign_id)
+    run_id = task.run_id or latest_campaign_run_id(campaign.campaign_id)
     snapshot = snapshot_for_campaign(campaign, run_id)
     return generate_outputs_via_workers(
         campaign.company_id, campaign.campaign_id, campaign, [task],
@@ -6919,17 +6923,17 @@ def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tup
     )
 
 
-def dispatch_ready_retry_descendants(campaign: CampaignRecord, tasks: list[TaskRecord], task_id: str) -> list[TaskRecord]:
-    snapshot = snapshot_for_campaign(campaign, latest_campaign_run_id(campaign.campaign_id))
+def dispatch_ready_retry_descendants(campaign: CampaignRecord, tasks: list[TaskRecord], task_id: str, run_id: str | None = None) -> list[TaskRecord]:
+    snapshot = snapshot_for_campaign(campaign, run_id or latest_campaign_run_id(campaign.campaign_id))
     descendants: set[str] = {task_id}
     changed = True
     while changed:
         changed = False
         for task in tasks:
-            if any(dep in descendants for dep in task.depends_on) and task.task_id not in descendants:
+            if task.run_id == run_id and any(dep in descendants for dep in task.depends_on) and task.task_id not in descendants:
                 descendants.add(task.task_id)
                 changed = True
-    ready = [task for task in tasks if task.task_id in descendants and task.task_id != task_id and task.status == "pending" and all(
+    ready = [task for task in tasks if task.run_id == run_id and task.task_id in descendants and task.task_id != task_id and task.status == "pending" and all(
         next((dependency for dependency in tasks if dependency.task_id == dep), None) is not None
         and next(dependency for dependency in tasks if dependency.task_id == dep).status == "passed"
         for dep in task.depends_on
@@ -6960,21 +6964,41 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
 
     manual_retry_lock.acquire()
     try:
-        task = next((item for item in store.get_tasks(campaign_id) if item.task_id == payload.task_id), None)
+        target_task_id = payload.task_id
+        target_run_id = payload.run_id
+        if payload.review_id:
+            review_item = find_review_item(payload.review_id)
+            if review_item is not None:
+                target_run_id = target_run_id or review_item.run_id
+                asset = get_asset_output_by_id(payload.asset_id or review_item.asset_id)
+                target_task_id = asset.task_id if asset is not None else target_task_id
+        elif payload.asset_id:
+            asset = get_asset_output_by_id(payload.asset_id)
+            if asset is not None:
+                target_task_id = asset.task_id
+                target_run_id = target_run_id or asset.run_id
+        task = next((item for item in store.get_tasks(campaign_id) if item.task_id == target_task_id and (not target_run_id or not item.run_id or item.run_id == target_run_id)), None)
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         if not manual_retry_allowed(task, MANUAL_RETRY_MAX_ATTEMPTS):
             raise HTTPException(status_code=409, detail="Task is not retryable or has reached the maximum attempts")
         if persistence is not None:
+            if not persistence.claim_manual_task_retry(campaign_id, task.task_id, MANUAL_RETRY_MAX_ATTEMPTS):
+                raise HTTPException(status_code=409, detail="Task is already being retried or has reached the maximum attempts")
             try:
                 persistence.record_task_attempt(task)
             except Exception:
                 logger.warning("Failed to preserve worker task attempt", exc_info=True)
         retriable = task.model_copy(update={"retry_count": task.retry_count + 1, "retryable": True, "status": "retrying"})
         existing_tasks = [retriable if item.task_id == task.task_id else item for item in store.get_tasks(campaign_id)]
-        existing_tasks = apply_worker_result_state(existing_tasks, payload.task_id, {"status": "retrying"})
-        store.set_tasks(campaign_id, existing_tasks)
-        retried = next(item for item in existing_tasks if item.task_id == payload.task_id)
+        existing_tasks = apply_worker_result_state(existing_tasks, task.task_id, {"status": "retrying"})
+        try:
+            store.set_tasks(campaign_id, existing_tasks)
+        except Exception:
+            if persistence is not None:
+                persistence.release_manual_task_retry(campaign_id, task.task_id)
+            raise
+        retried = next(item for item in existing_tasks if item.task_id == task.task_id)
     finally:
         manual_retry_lock.release()
 
@@ -6982,14 +7006,14 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
         assets, validations = _dispatch_worker_for_task(campaign, retried)
     except Exception as exc:
         failed_tasks = apply_worker_result_state(
-            store.get_tasks(campaign_id), payload.task_id,
+            store.get_tasks(campaign_id), task.task_id,
             {"status": "failed", "error": sanitize_worker_error_detail(str(exc))},
         )
         store.set_tasks(campaign_id, failed_tasks)
         _notify_webhook(
             event_type="worker_retry_failed",
             campaign_id=campaign_id,
-            payload={"task_id": payload.task_id, "task_type": task.task_type, "error": sanitize_worker_error_detail(str(exc))},
+            payload={"task_id": task.task_id, "task_type": task.task_type, "error": sanitize_worker_error_detail(str(exc))},
             company_id=campaign.company_id,
         )
         append_trace_event(
@@ -6997,7 +7021,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
             event_type="worker_retry_failed",
             actor_id="system",
             actor_role="system",
-            summary=f"Worker retry failed for task {payload.task_id}",
+            summary=f"Worker retry failed for task {task.task_id}",
             payload={"task_type": task.task_type, "error": sanitize_worker_error_detail(str(exc))},
             source="workers",
             company_id=campaign.company_id,
@@ -7008,21 +7032,21 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
         save_assets_and_validations(assets, validations)
 
     patched_result = {"status": "passed" if assets else "failed", "error": None if assets else "worker returned no assets"}
-    final_tasks = apply_worker_result_state(store.get_tasks(campaign_id), payload.task_id, patched_result)
-    dispatched_descendants = dispatch_ready_retry_descendants(campaign, final_tasks, payload.task_id)
+    final_tasks = apply_worker_result_state(store.get_tasks(campaign_id), task.task_id, patched_result)
+    dispatched_descendants = dispatch_ready_retry_descendants(campaign, final_tasks, task.task_id, task.run_id or target_run_id)
     if dispatched_descendants:
         final_by_id = {item.task_id: item for item in final_tasks}
         final_by_id.update({item.task_id: item for item in dispatched_descendants})
         final_tasks = [final_by_id[item.task_id] for item in final_tasks]
     store.set_tasks(campaign_id, final_tasks)
-    persisted_task = next(item for item in final_tasks if item.task_id == payload.task_id)
+    persisted_task = next(item for item in final_tasks if item.task_id == task.task_id)
 
     append_trace_event(
         campaign_id=campaign_id,
         event_type="worker_retry_succeeded",
         actor_id="system",
         actor_role="system",
-        summary=f"Worker retry succeeded for task {payload.task_id}",
+        summary=f"Worker retry succeeded for task {task.task_id}",
         payload={"task_type": task.task_type, "assets": len(assets), "validations": len(validations)},
         source="workers",
         company_id=campaign.company_id,
@@ -7030,13 +7054,13 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     _notify_webhook(
         event_type="worker_retry_succeeded",
         campaign_id=campaign_id,
-        payload={"task_id": payload.task_id, "task_type": task.task_type, "assets": len(assets)},
+        payload={"task_id": task.task_id, "task_type": task.task_type, "assets": len(assets)},
         company_id=campaign.company_id,
     )
 
     return {
         "campaign_id": campaign_id,
-        "task_id": payload.task_id,
+        "task_id": task.task_id,
         "status": persisted_task.status,
         "assets": len(assets),
         "validations": len(validations),
