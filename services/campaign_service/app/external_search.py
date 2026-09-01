@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
@@ -26,6 +25,7 @@ class SearchProvider(Protocol):
 class ExternalSearchError(RuntimeError):
     def __init__(self, category: Literal["quota", "rate_limit", "timeout", "provider_error", "not_configured"], message: str):
         self.category = category
+        self.code = category
         super().__init__(message)
 
 
@@ -58,12 +58,12 @@ class GoogleCustomSearchProvider:
             payload = response.json()
         except ExternalSearchError:
             raise
-        except httpx.TimeoutException as exc:
-            raise ExternalSearchError("timeout", "External search timed out") from exc
-        except httpx.HTTPStatusError as exc:
-            raise ExternalSearchError("provider_error", "External search provider failed") from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ExternalSearchError("provider_error", "External search provider returned an invalid response") from exc
+        except httpx.TimeoutException:
+            raise ExternalSearchError("timeout", "External search timed out") from None
+        except httpx.HTTPStatusError:
+            raise ExternalSearchError("provider_error", "External search provider failed") from None
+        except (httpx.HTTPError, ValueError):
+            raise ExternalSearchError("provider_error", "External search provider returned an invalid response") from None
 
         retrieved_at = datetime.now(timezone.utc)
         return [
@@ -91,6 +91,10 @@ def build_search_provider(settings: Any) -> SearchProvider | None:
     provider = _setting(settings, "EXTERNAL_SEARCH_PROVIDER").lower()
     api_key = _setting(settings, "EXTERNAL_SEARCH_API_KEY")
     engine_id = _setting(settings, "EXTERNAL_SEARCH_ENGINE_ID")
-    if provider != "google" or not api_key or not engine_id:
+    if provider in {"", "disabled", "none", "off"}:
+        return None
+    if provider == "google" and (not api_key or not engine_id):
+        raise ExternalSearchError("not_configured", "External search is not configured")
+    if provider != "google":
         return None
     return GoogleCustomSearchProvider(api_key=api_key, engine_id=engine_id)

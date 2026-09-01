@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import traceback
 
 import httpx
 import pytest
@@ -63,6 +64,9 @@ def test_http_failures_are_classified_without_secret_leak(response: httpx.Respon
 
     assert exc.value.category == category
     assert "secret-key" not in str(exc.value)
+    assert exc.value.__cause__ is None
+    assert "secret-key" not in repr(exc.value)
+    assert "secret-key" not in "".join(traceback.format_exception(exc.value))
 
 
 def test_timeout_is_classified_without_secret_leak():
@@ -80,16 +84,24 @@ def test_timeout_is_classified_without_secret_leak():
 
     assert exc.value.category == "timeout"
     assert "secret-key" not in str(exc.value)
+    assert exc.value.__cause__ is None
+    assert "secret-key" not in repr(exc.value)
+    assert "secret-key" not in "".join(traceback.format_exception(exc.value))
 
 
 def test_incomplete_configuration_is_not_configured():
-    assert build_search_provider({"EXTERNAL_SEARCH_PROVIDER": "google"}) is None
-    assert build_search_provider(
-        {
-            "EXTERNAL_SEARCH_PROVIDER": "google",
-            "EXTERNAL_SEARCH_API_KEY": "key",
-        }
-    ) is None
+    for settings in (
+        {"EXTERNAL_SEARCH_PROVIDER": "google"},
+        {"EXTERNAL_SEARCH_PROVIDER": "google", "EXTERNAL_SEARCH_API_KEY": "key"},
+    ):
+        with pytest.raises(ExternalSearchError) as exc:
+            build_search_provider(settings)
+        assert exc.value.category == "not_configured"
+        assert exc.value.code == "not_configured"
+
+
+def test_disabled_provider_is_explicit_and_backward_compatible():
+    assert build_search_provider({"EXTERNAL_SEARCH_PROVIDER": "disabled"}) is None
 
 
 def test_campaign_search_query_uses_only_campaign_fields():
