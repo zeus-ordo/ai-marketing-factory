@@ -58,6 +58,8 @@ from .store import InMemoryStore
 from .validation import validate_campaign_brief
 from .industry_matching import match_industry_items
 from .external_search import ExternalSearchResult, build_campaign_search_query, build_search_provider
+from .external_search import ExternalSearchError
+from .context_assembler import ContextSourceItem, GenerationContextSnapshot, assemble_generation_context
 
 
 class QueueHealthResponse(BaseModel):
@@ -829,6 +831,7 @@ WORKER_COPY_URL = os.getenv("WORKER_COPY_URL", "http://worker-copy:8091").strip(
 WORKER_IMAGE_URL = os.getenv("WORKER_IMAGE_URL", "http://worker-image:8092").strip()
 WORKER_VIDEO_URL = os.getenv("WORKER_VIDEO_URL", "http://worker-video:8093").strip()
 WORKER_ADS_URL = os.getenv("WORKER_ADS_URL", "http://worker-ads:8094").strip()
+GENERATION_CONTEXT_TOKEN_BUDGET = max(1, int(os.getenv("GENERATION_CONTEXT_TOKEN_BUDGET", "4000")))
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0").strip()
 EXTERNAL_SEARCH_PROVIDER = os.getenv("EXTERNAL_SEARCH_PROVIDER", "").strip()
 EXTERNAL_SEARCH_API_KEY = os.getenv("EXTERNAL_SEARCH_API_KEY", "").strip()
@@ -860,6 +863,7 @@ if REQUIRE_POSTGRES:
 asset_cache: dict[str, list[AssetOutput]] = {}
 validation_cache: dict[str, list[ValidationResult]] = {}
 campaign_run_cache: dict[str, list[dict[str, Any]]] = {}
+generation_context_cache: dict[str, GenerationContextSnapshot] = {}
 review_status_overrides: dict[str, str] = {}
 review_audit_logs: list[ReviewAuditEntry] = []
 workflow_templates: dict[str, WorkflowTemplate] = {}
@@ -1855,6 +1859,8 @@ def prepare_regeneration_naming(campaign: CampaignRecord, source_asset: AssetOut
 
 
 def apply_regeneration_metadata(metadata: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("generation_context_id"):
+        metadata["generation_context_id"] = result["generation_context_id"]
     context = result.get("regeneration_context")
     if isinstance(context, dict):
         for key in ("parent_asset_id", "root_asset_id", "asset_base_name", "asset_version", "asset_name", "is_regenerated"):
@@ -2124,6 +2130,45 @@ def search_campaign_external_context(campaign: CampaignRecord, limit: int = 8) -
     return external_search_provider.search(build_external_search_query(campaign), limit)
 
 
+def create_generation_context(campaign: CampaignRecord, run_id: str) -> GenerationContextSnapshot:
+    selected: list[ContextSourceItem] = []
+    for row in list_campaign_reference_context(campaign):
+        reference_id = str(row.get("reference_id") or "")
+        selected.append(ContextSourceItem(
+            str(row.get("source_type") or "campaign_reference"), reference_id,
+            str(row.get("file_name") or "reference"),
+            safe_reference_excerpt(str(row.get("stored_path") or ""), str(row.get("file_type") or "")),
+            {**row, "folder": str(row.get("folder") or "")},
+        ))
+    industry: list[ContextSourceItem] = []
+    for row in list_industry_knowledge_context(campaign):
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        item_id = str(row.get("item_id") or "")
+        industry.append(ContextSourceItem(
+            str(row.get("source_type") or "industry_matched"), item_id,
+            str(row.get("title") or row.get("file_name") or "knowledge item"),
+            str(row.get("description") or ""), {**metadata, "folder": row.get("folder")},
+        ))
+    external: list[ContextSourceItem] = []
+    search_status = "not_configured" if external_search_provider is None else "available"
+    if external_search_provider is not None:
+        try:
+            for result in search_campaign_external_context(campaign):
+                external.append(ContextSourceItem(
+                    result.source_type, result.url, result.title, result.summary,
+                    {"url": result.url, "provider": result.provider, "query": result.query, "retrieved_at": result.retrieved_at},
+                ))
+            search_status = "succeeded"
+        except ExternalSearchError as exc:
+            search_status = exc.category
+        except Exception:
+            search_status = "provider_error"
+    snapshot = assemble_generation_context(campaign, selected, industry, external, GENERATION_CONTEXT_TOKEN_BUDGET)
+    return GenerationContextSnapshot(
+        **{**snapshot.__dict__, "external_search_status": search_status}
+    )
+
+
 def build_campaign_prompt_context(campaign: CampaignRecord) -> str:
     brief = campaign.brief
     target = brief.target_audience
@@ -2210,12 +2255,23 @@ def build_video_generation_prompt(campaign: CampaignRecord) -> str:
     )
 
 
-def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any] | TaskRecord) -> dict[str, Any]:
+def build_worker_payload_for_task(
+    campaign: CampaignRecord,
+    task: dict[str, Any] | TaskRecord,
+    snapshot: GenerationContextSnapshot | None = None,
+) -> dict[str, Any]:
     """Build the exact worker payload from the campaign brief so orchestrator does not use generic English defaults."""
     task_id = task.get("task_id") if isinstance(task, dict) else task.task_id
     task_type = task.get("task_type") if isinstance(task, dict) else task.task_type
     company_id = campaign.company_id or ""
     campaign_id = campaign.campaign_id
+    context_payload = {
+        "generation_context_id": snapshot.generation_context_id,
+        "context_sources": [
+            {"source_type": item.source_type, "source_id": item.source_id, "label": item.label, "text": item.text}
+            for item in snapshot.items
+        ],
+    } if snapshot else {}
     if task_type == "copywriting":
         return {
             "task_id": task_id,
@@ -2235,6 +2291,7 @@ def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any]
                 "deadline": campaign.brief.deadline.isoformat() if hasattr(campaign.brief.deadline, "isoformat") else str(campaign.brief.deadline),
             },
             "variants": min(10, max(0, int(campaign.brief.deliverables.copy_variants or 0))),
+            **context_payload,
         }
     if task_type == "image_generation":
         image_prompt = build_image_generation_prompt(campaign)
@@ -2245,6 +2302,7 @@ def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any]
             "prompt": image_prompt,
             "sizes": image_sizes_for_count(campaign.brief.deliverables.image_assets),
             "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
+            **context_payload,
         }
     if task_type == "video_generation":
         return {
@@ -2254,6 +2312,7 @@ def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any]
             "prompt": build_video_generation_prompt(campaign),
             "duration": 6,
             "aspect_ratio": "9:16",
+            **context_payload,
         }
     if task_type == "ads_strategy":
         return {
@@ -2263,6 +2322,7 @@ def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any]
             "objective": campaign.brief.objective,
             "budget": float(campaign.brief.budget),
             "platforms": campaign.brief.platforms,
+            **context_payload,
         }
     return {}
 
@@ -2331,7 +2391,14 @@ def normalize_visual_only_deliverables(brief: CampaignBrief) -> CampaignBrief:
     return brief.model_copy(update={"deliverables": deliverables})
 
 
-def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: CampaignRecord, tasks: list[TaskRecord], run_id: str | None = None) -> tuple[list[AssetOutput], list[ValidationResult]]:
+def generate_outputs_via_workers(
+    company_id: str,
+    campaign_id: str,
+    campaign: CampaignRecord,
+    tasks: list[TaskRecord],
+    run_id: str | None = None,
+    generation_context_id: str | None = None,
+) -> tuple[list[AssetOutput], list[ValidationResult]]:
     company_id = company_id or ""
     now = now_utc()
     assets: list[AssetOutput] = []
@@ -2552,6 +2619,8 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                 company_id=company_id,
             )
 
+    if generation_context_id:
+        assets = [asset.model_copy(update={"metadata": {**asset.metadata, "generation_context_id": generation_context_id}}) for asset in assets]
     return assets, validations
 
 
@@ -4230,6 +4299,10 @@ def run_campaign(req: Request, campaign_id: str) -> CampaignRunResponse:
         campaign = store.update_campaign_brief(campaign_id, normalized_brief) or campaign
 
     run_id, run_number = create_campaign_run_record(campaign, actor_id)
+    generation_context = create_generation_context(campaign, run_id)
+    generation_context_cache[generation_context.generation_context_id] = generation_context
+    if persistence is not None:
+        persistence.save_generation_context(generation_context, run_id)
     finalize_campaign_workflow(
         campaign_id,
         run_id=run_id,
@@ -4265,7 +4338,8 @@ def run_campaign(req: Request, campaign_id: str) -> CampaignRunResponse:
             if isinstance(t, dict):
                 t["company_id"] = campaign.company_id
                 t["run_id"] = run_id
-                t["worker_payload"] = build_worker_payload_for_task(campaign, t)
+                t["generation_context_id"] = generation_context.generation_context_id
+                t["worker_payload"] = build_worker_payload_for_task(campaign, t, generation_context)
         dispatch = post_json(
             f"{OPENCLAW_CONTROLLER_URL}/internal/orchestrator/dispatch",
             {

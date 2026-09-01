@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from .schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord, ValidationResult
+from .context_assembler import GenerationContextSnapshot
 
 try:
     psycopg = importlib.import_module("psycopg")
@@ -42,6 +43,43 @@ class PostgresPersistence:
                     """
                     CREATE INDEX IF NOT EXISTS idx_campaigns_company_created
                     ON campaigns (company_id, created_at DESC) WHERE deleted_at IS NULL;
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS generation_contexts (
+                        generation_context_id TEXT PRIMARY KEY,
+                        campaign_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        internal_token_count INTEGER NOT NULL,
+                        external_token_count INTEGER NOT NULL,
+                        internal_ratio NUMERIC(8,6) NOT NULL,
+                        external_ratio NUMERIC(8,6) NOT NULL,
+                        external_source_urls_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        external_search_status TEXT NOT NULL DEFAULT 'not_requested',
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        UNIQUE (campaign_id, run_id)
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS generation_context_items (
+                        generation_context_item_id TEXT PRIMARY KEY,
+                        generation_context_id TEXT NOT NULL,
+                        position INTEGER NOT NULL,
+                        source_type TEXT NOT NULL,
+                        source_id TEXT NOT NULL,
+                        label TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        folder TEXT,
+                        url TEXT,
+                        provider TEXT,
+                        query TEXT,
+                        token_count INTEGER NOT NULL,
+                        retrieved_at TIMESTAMP,
+                        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+                    );
                     """
                 )
                 cur.execute(
@@ -500,6 +538,44 @@ class PostgresPersistence:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("UPDATE campaigns SET status = %s WHERE campaign_id = %s", (status, campaign_id))
+            conn.commit()
+
+    def save_generation_context(self, snapshot: GenerationContextSnapshot, run_id: str) -> None:
+        """Insert an immutable context snapshot and its included source rows."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO generation_contexts
+                        (generation_context_id, campaign_id, run_id, internal_token_count,
+                         external_token_count, internal_ratio, external_ratio,
+                         external_source_urls_json, external_search_status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                    ON CONFLICT (generation_context_id) DO NOTHING;
+                    """,
+                    (snapshot.generation_context_id, snapshot.campaign_id, run_id,
+                     snapshot.internal_token_count, snapshot.external_token_count,
+                     snapshot.internal_ratio, snapshot.external_ratio,
+                     json.dumps(snapshot.external_source_urls), snapshot.external_search_status),
+                )
+                for position, item in enumerate(snapshot.items):
+                    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+                    cur.execute(
+                        """
+                        INSERT INTO generation_context_items
+                            (generation_context_item_id, generation_context_id, position,
+                             source_type, source_id, label, text, folder, url, provider,
+                             query, token_count, retrieved_at, metadata_json)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                        ON CONFLICT (generation_context_item_id) DO NOTHING;
+                        """,
+                        (f"{snapshot.generation_context_id}_{position}", snapshot.generation_context_id,
+                         position, item.source_type, item.source_id, item.label, item.text,
+                         metadata.get("folder") or metadata.get("folder_name"), metadata.get("url"),
+                         metadata.get("provider"), metadata.get("query"),
+                         max(1, (len(item.text.encode("utf-8")) + 3) // 4), metadata.get("retrieved_at"),
+                         json.dumps(metadata)),
+                    )
             conn.commit()
 
     def update_campaign_brief(self, campaign_id: str, brief: CampaignBrief) -> None:
