@@ -55,6 +55,7 @@ from .schemas import (
     WorkerResultRequest,
 )
 from .store import InMemoryStore
+from .validation import validate_campaign_brief
 
 
 class QueueHealthResponse(BaseModel):
@@ -3973,6 +3974,7 @@ def create_campaign(req: Request, brief: CampaignBrief) -> CampaignCreatedRespon
         actor_company_id = payload.company_id or ""
         actor_id = payload.sub
         actor_role = "member"
+    validate_campaign_brief(brief)
     brief = normalize_visual_only_deliverables(brief)
     campaign = store.create_campaign(actor_company_id, brief)
     metrics.inc("campaign_created_total")
