@@ -29,6 +29,22 @@ Verification:
 - `python -m pytest services/orchestrator -q`: 25 passed
 - `node scripts/test-campaign-flow-contract.mjs`: passed
 - `git diff --check`: passed
+
+## Review Run Diagnostics Follow-up
+
+- Retry dispatch now propagates authoritative task/provider/model context and persists provider/model diagnostics from worker output when available.
+- In-memory review fallback preserves the source asset/task run ID, including mixed-run campaigns.
+- Review diagnostics and task failures are filtered by the diagnostic item's run/context rather than leaking campaign-wide state.
+- Added route-level regressions for fallback run identity, mixed-run dispatch scope, and concurrent retry behavior.
+
+Verification:
+
+- `python -m pytest services/campaign_service/test_task6_routes.py services/campaign_service/test_worker_result_state.py -q`: 23 passed
+- `python -m pytest services/campaign_service -q`: 63 passed
+- `python -m pytest services/orchestrator -q`: 25 passed
+- `node scripts/test-campaign-flow-contract.mjs`: passed
+- `npm run build`: passed
+- `git diff --check`: passed
 - `npm run build`: passed
 - `git diff --check`: passed
 

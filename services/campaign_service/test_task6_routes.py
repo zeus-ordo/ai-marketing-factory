@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from app import main
 from app.context_assembler import ContextSourceItem, GenerationContextSnapshot
 from app.main import ReviewItem, RetryWorkerTaskRequest
-from app.schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord
+from app.schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord, ValidationResult
 
 
 def campaign(campaign_id="camp-route"):
@@ -118,6 +118,20 @@ def test_retry_descendant_dispatch_is_limited_to_review_run(monkeypatch):
     dispatched = main.dispatch_ready_retry_descendants(item, [selected, same_run, other_run], "image-old", "run-old")
     assert [task["task_id"] for task in captured["tasks"]] == ["video-old"]
     assert [task.task_id for task in dispatched] == ["video-old"]
+
+
+def test_in_memory_review_fallback_retains_asset_task_run_id(monkeypatch):
+    item = campaign("camp-fallback-runs")
+    asset = AssetOutput(company_id="co-1", asset_id="asset-old", campaign_id=item.campaign_id, task_id="task-old", asset_type="image", url="https://asset", created_at=datetime.utcnow(), run_id="run-old")
+    validation = ValidationResult(company_id="co-1", validation_id="validation-old", campaign_id=item.campaign_id, asset_id=asset.asset_id, validator="visual", score=0.9, result="passed", created_at=datetime.utcnow(), run_id="run-old")
+    store = Store(item)
+    store.get_tasks = lambda _campaign_id: [TaskRecord(company_id="co-1", campaign_id=item.campaign_id, task_id="task-old", task_type="image_generation", status="passed", priority=1, run_id="run-old", acceptance=[])]
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "list_assets", lambda _campaign_id: [asset])
+    monkeypatch.setattr(main, "list_validation", lambda _campaign_id: [validation])
+    result = main.build_review_items()
+    assert result[0].run_id == "run-old"
 
 
 def test_retry_uses_authoritative_claimed_retry_count_and_run(monkeypatch):

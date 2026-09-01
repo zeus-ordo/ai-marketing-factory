@@ -2589,12 +2589,15 @@ def generate_outputs_via_workers(
     tasks: list[TaskRecord],
     run_id: str | None = None,
     generation_context_id: str | None = None,
+    task_context: dict[str, Any] | None = None,
 ) -> tuple[list[AssetOutput], list[ValidationResult]]:
     company_id = company_id or ""
     now = now_utc()
     assets: list[AssetOutput] = []
     validations: list[ValidationResult] = []
     worker_context = {"generation_context_id": generation_context_id} if generation_context_id else {}
+    if task_context:
+        worker_context.update({key: value for key, value in task_context.items() if value is not None})
     snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.generation_context_id == generation_context_id), None) if generation_context_id else snapshot_for_campaign(campaign, run_id)
     prompt_context = snapshot_prompt_context(snapshot)
 
@@ -2938,10 +2941,13 @@ def build_review_items() -> list[ReviewItem]:
 
     for campaign in store.list_campaigns():
         asset_map = {asset.asset_id: asset for asset in list_assets(campaign.campaign_id) if is_displayable_asset(asset)}
+        task_map = {task.task_id: task for task in store.get_tasks(campaign.campaign_id)}
         validations = list_validation(campaign.campaign_id)
         for validation in validations:
             if validation.asset_id not in asset_map:
                 continue
+            asset = asset_map[validation.asset_id]
+            source_task = task_map.get(asset.task_id)
             review_id = f"rev_{validation.validation_id}"
             status = review_status_overrides.get(review_id, "review_pending")
             items.append(
@@ -2956,7 +2962,7 @@ def build_review_items() -> list[ReviewItem]:
                     status=status,
                     submitted_at=validation.created_at.isoformat(),
                     assignee=None,
-                    run_id=None,
+                    run_id=asset.run_id or (source_task.run_id if source_task else None),
                 )
             )
 
@@ -6916,10 +6922,16 @@ class RetryWorkerTaskRequest(BaseModel):
 def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tuple[list[AssetOutput], list[ValidationResult]]:
     run_id = task.run_id or latest_campaign_run_id(campaign.campaign_id)
     snapshot = snapshot_for_campaign(campaign, run_id)
+    task_context = {"run_id": run_id, "generation_context_id": snapshot.generation_context_id if snapshot else task.generation_context_id}
+    if task.provider:
+        task_context["provider"] = task.provider
+    if task.model:
+        task_context["model"] = task.model
     return generate_outputs_via_workers(
         campaign.company_id, campaign.campaign_id, campaign, [task],
         run_id=run_id,
         generation_context_id=snapshot.generation_context_id if snapshot else None,
+        task_context=task_context,
     )
 
 
@@ -7084,7 +7096,14 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     if assets and validations:
         save_assets_and_validations(assets, validations)
 
-    patched_result = {"status": "passed" if assets else "failed", "error": None if assets else "worker returned no assets"}
+    diagnostics_asset = next((asset for asset in assets if getattr(asset, "metadata", None)), None)
+    diagnostics_metadata = getattr(diagnostics_asset, "metadata", {}) if diagnostics_asset else {}
+    patched_result = {
+        "status": "passed" if assets else "failed",
+        "error": None if assets else "worker returned no assets",
+        "provider": diagnostics_metadata.get("provider") or diagnostics_metadata.get("provider_name"),
+        "model": diagnostics_metadata.get("model") or diagnostics_metadata.get("model_name"),
+    }
     final_tasks = apply_worker_result_state(existing_tasks, task.task_id, patched_result)
     dispatched_descendants = dispatch_ready_retry_descendants(campaign, final_tasks, task.task_id, task.run_id or target_run_id)
     if dispatched_descendants:
