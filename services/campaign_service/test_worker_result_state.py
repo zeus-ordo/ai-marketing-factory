@@ -120,3 +120,11 @@ def test_manual_retry_rejects_non_retryable_or_exhausted_tasks():
     assert not manual_retry_allowed(task("blocked", "video_generation", status="blocked"), max_attempts=3)
     exhausted = task("exhausted", "image_generation", status="failed").model_copy(update={"retry_count": 3})
     assert not manual_retry_allowed(exhausted, max_attempts=3)
+
+
+def test_worker_result_preserves_provider_and_model_diagnostics():
+    updated = apply_worker_result_state([task("image", "image_generation", status="running")], "image", {
+        "status": "passed", "provider": "vertex", "model_name": "imagen-3",
+    })
+    assert updated[0].provider == "vertex"
+    assert updated[0].model == "imagen-3"

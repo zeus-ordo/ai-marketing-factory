@@ -6,6 +6,7 @@ import mimetypes
 import os
 import re
 import shutil
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -831,6 +832,7 @@ WEBHOOK_NOTIFY_URL = os.getenv("WEBHOOK_NOTIFY_URL", "").strip()
 WORKER_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("WORKER_RETRY_MAX_ATTEMPTS", "2")))
 WORKER_RETRY_BACKOFF_SECONDS = max(0.0, float(os.getenv("WORKER_RETRY_BACKOFF_SECONDS", "0.5")))
 MANUAL_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("MANUAL_RETRY_MAX_ATTEMPTS", "3")))
+manual_retry_lock = threading.Lock()
 WORKER_REQUEST_TIMEOUT_SECONDS = max(15.0, float(os.getenv("WORKER_REQUEST_TIMEOUT_SECONDS", "180")))
 WORKER_COPY_URL = os.getenv("WORKER_COPY_URL", "http://worker-copy:8091").strip()
 WORKER_IMAGE_URL = os.getenv("WORKER_IMAGE_URL", "http://worker-image:8092").strip()
@@ -1035,6 +1037,8 @@ def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dic
             "status": "failed",
             "error_class": classify_worker_error(RuntimeError(str(result.get("error", "worker failure")))),
             "error_detail": sanitize_worker_error_detail(str(result.get("error", "worker failure"))),
+            "provider": result.get("provider") or current.provider,
+            "model": result.get("model") or result.get("model_name") or current.model,
         })
         by_id[task_id] = current
         changed = True
@@ -1054,7 +1058,9 @@ def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dic
             if candidate.task_id == task_id or (candidate.status == "blocked" and any(dep == task_id or (by_id.get(dep) and by_id[dep].status == "blocked") for dep in candidate.depends_on)):
                 by_id[candidate.task_id] = candidate.model_copy(update={"status": "retrying" if candidate.task_id == task_id else "pending", "blocked_by_task_id": None, "blocked_reason": None})
     else:
-        by_id[task_id] = current.model_copy(update={"status": "passed", "error_class": None, "error_detail": None})
+        by_id[task_id] = current.model_copy(update={"status": "passed", "error_class": None, "error_detail": None,
+                                                    "provider": result.get("provider") or current.provider,
+                                                    "model": result.get("model") or result.get("model_name") or current.model})
     return [by_id[task.task_id] for task in tasks]
 
 
@@ -4333,14 +4339,14 @@ def get_campaign(req: Request, campaign_id: str) -> CampaignRecord:
 
     # Platform admin bypass
     if is_platform_admin_request(req):
-        return normalize_campaign_status(campaign)
+        return enrich_campaign_diagnostics(normalize_campaign_status(campaign))
 
     # Verify company_id matches
     payload = require_jwt(req)
     actor_company_id = payload.company_id or ""
     if campaign.company_id != actor_company_id:
         raise HTTPException(status_code=403, detail="Not authorized to access this campaign")
-    return normalize_campaign_status(campaign)
+    return enrich_campaign_diagnostics(normalize_campaign_status(campaign))
 
 
 @app.patch(
@@ -4468,7 +4474,7 @@ def list_campaigns(req: Request, company_id: str | None = None) -> CampaignListR
         payload = require_jwt(req)
         actor_company_id = payload.company_id or ""
         items = store.list_campaigns(company_id=actor_company_id)
-    normalized_items = [normalize_campaign_status(item) for item in items]
+    normalized_items = [enrich_campaign_diagnostics(normalize_campaign_status(item)) for item in items]
     return CampaignListResponse(items=normalized_items, total=len(normalized_items))
 
 
@@ -6952,22 +6958,25 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     require_review_action_access(req)
     require_campaign_access(req, campaign)
 
-    task = next((item for item in store.get_tasks(campaign_id) if item.task_id == payload.task_id), None)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    if not manual_retry_allowed(task, MANUAL_RETRY_MAX_ATTEMPTS):
-        raise HTTPException(status_code=409, detail="Task is not retryable or has reached the maximum attempts")
-    if persistence is not None:
-        try:
-            persistence.record_task_attempt(task)
-        except Exception:
-            logger.warning("Failed to preserve worker task attempt", exc_info=True)
-    retriable = task.model_copy(update={"retry_count": task.retry_count + 1, "retryable": True})
-    existing_tasks = [retriable if item.task_id == task.task_id else item for item in store.get_tasks(campaign_id)]
-    existing_tasks = apply_worker_result_state(existing_tasks, payload.task_id, {"status": "retrying"})
-    store.set_tasks(campaign_id, existing_tasks)
-    retried = next(item for item in existing_tasks if item.task_id == payload.task_id)
+    manual_retry_lock.acquire()
+    try:
+        task = next((item for item in store.get_tasks(campaign_id) if item.task_id == payload.task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if not manual_retry_allowed(task, MANUAL_RETRY_MAX_ATTEMPTS):
+            raise HTTPException(status_code=409, detail="Task is not retryable or has reached the maximum attempts")
+        if persistence is not None:
+            try:
+                persistence.record_task_attempt(task)
+            except Exception:
+                logger.warning("Failed to preserve worker task attempt", exc_info=True)
+        retriable = task.model_copy(update={"retry_count": task.retry_count + 1, "retryable": True, "status": "retrying"})
+        existing_tasks = [retriable if item.task_id == task.task_id else item for item in store.get_tasks(campaign_id)]
+        existing_tasks = apply_worker_result_state(existing_tasks, payload.task_id, {"status": "retrying"})
+        store.set_tasks(campaign_id, existing_tasks)
+        retried = next(item for item in existing_tasks if item.task_id == payload.task_id)
+    finally:
+        manual_retry_lock.release()
 
     try:
         assets, validations = _dispatch_worker_for_task(campaign, retried)

@@ -507,14 +507,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         if (!response.ok) {
           const contentType = response.headers.get("content-type") ?? "";
           let message = `Request failed: ${response.status}`;
+          let detail: unknown;
           if (contentType.includes("application/json")) {
             const payload = (await response.json()) as { detail?: unknown };
+            detail = payload.detail;
             if (typeof payload.detail === "string" && payload.detail.trim()) message = payload.detail;
+            else if (payload.detail !== undefined) message = JSON.stringify(payload.detail);
           } else {
             const errorText = await response.text();
             if (errorText.trim()) message = errorText;
           }
-          throw new ApiRequestError(message, contentType.includes("application/json") ? undefined : undefined);
+          throw new ApiRequestError(message, detail);
         }
         return (await response.json()) as T;
       }
@@ -530,11 +533,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const contentType = response.headers.get("content-type") ?? "";
     let message = `Request failed: ${response.status}`;
+    let detail: unknown;
 
     if (contentType.includes("application/json")) {
       const payload = (await response.json()) as { detail?: unknown };
+      detail = payload.detail;
       if (typeof payload.detail === "string" && payload.detail.trim()) {
         message = payload.detail;
+      } else if (payload.detail !== undefined) {
+        message = JSON.stringify(payload.detail);
       }
     } else {
       const errorText = await response.text();
@@ -543,7 +550,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
     }
 
-    throw new ApiRequestError(message, undefined);
+    throw new ApiRequestError(message, detail);
   }
 
   return (await response.json()) as T;

@@ -17,6 +17,14 @@ Verification:
 - `npm run build`: passed
 - `git diff --check`: passed
 
+## Endpoint Review Follow-up
+
+- Wired diagnostic enrichment into Campaign GET/list responses and added latest persisted-run hydration for restart compatibility.
+- Preserved FastAPI string, array, and object details in `ApiRequestError`; Campaign creation renders useful field-level validation messages.
+- Added serialized provider/model fields and endpoint tests for diagnostics, Review run association, and concurrent retry claims.
+- Scoped Review task diagnostics to the matching asset task and generation context/run instead of campaign-wide task state.
+- Added bounded, locked manual retry claims and descendant-only dispatch coverage.
+
 The build retains existing warnings about FastAPI `on_event` deprecation and multiple lockfiles/workspace-root inference.
 
 ## Review Follow-up
