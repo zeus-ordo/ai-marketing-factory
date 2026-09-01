@@ -64,6 +64,7 @@ export function ReviewQueueTable({
             <th className="px-4 py-3 whitespace-nowrap">{t("review.table.assetName")}</th>
             <th className="px-4 py-3">{t("review.table.asset")}</th>
             <th className="px-4 py-3">{t("review.table.campaign")}</th>
+            <th className="min-w-[180px] px-4 py-3">{t("review.table.generation")}</th>
             <th className="min-w-[96px] px-4 py-3 whitespace-nowrap">{t("review.table.type")}</th>
             <th className="min-w-[110px] px-4 py-3 whitespace-nowrap">{t("review.table.status")}</th>
             <th className="px-4 py-3 whitespace-nowrap">{t("review.table.rejectReason")}</th>
@@ -87,6 +88,10 @@ export function ReviewQueueTable({
               <td className="px-4 py-3">
                 <div className="font-medium">{campaignNameMap[item.campaign_id] || item.campaign_id}</div>
                 <div className="font-mono text-[11px] text-slate-400">{item.campaign_id}</div>
+              </td>
+              <td className="px-4 py-3 text-xs">
+                <code className="break-all text-slate-500">{item.generation_context_id || "—"}</code>
+                {item.source_provenance?.length ? <div className="mt-1 text-slate-500">{item.source_provenance.map((source) => `${source.source_type}: ${source.label}`).join(" · ")}</div> : null}
               </td>
               <td className="min-w-[96px] px-4 py-3 whitespace-nowrap">
                 {assetTypeLabel(item, t)}

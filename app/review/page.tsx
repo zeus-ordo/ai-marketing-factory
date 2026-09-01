@@ -14,6 +14,7 @@ import {
   type ReviewAuditEntry,
   type ReviewItem,
   type ReviewStatus,
+  type CampaignTask,
 } from "@/lib/api/campaigns";
 import { useAuth } from "@/lib/auth/context";
 import { useI18n } from "@/lib/i18n/context";
@@ -24,6 +25,7 @@ export default function ReviewPage() {
   const canReview = user?.permissions.some((permission) => ["*", "admin", "platform:admin", "review:approve", "review:reject", "review:revision"].includes(permission)) ?? false;
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [campaignNameMap, setCampaignNameMap] = useState<Record<string, string>>({});
+  const [campaignTaskMap, setCampaignTaskMap] = useState<Record<string, CampaignTask[]>>({});
   const [logs, setLogs] = useState<ReviewAuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<"" | ReviewStatus>("");
@@ -76,6 +78,7 @@ export default function ReviewPage() {
       setItems(queueItems);
       setLogs(audit.items);
       setCampaignNameMap(Object.fromEntries(campaigns.map((campaign) => [campaign.campaign_id, campaign.brief.campaign_name])));
+      setCampaignTaskMap(Object.fromEntries(campaigns.map((campaign) => [campaign.campaign_id, campaign.tasks ?? []])));
       setSelectedIds((prev) => prev.filter((id) => queueItems.some((item) => item.review_id === id)));
     } catch {
       if (requestId === latestRequestId.current) {
@@ -217,6 +220,32 @@ export default function ReviewPage() {
         <Metric title={t("review.status.passed")} value={summary.approved} tone="text-emerald-500" />
         <Metric title={t("review.status.rejected")} value={summary.rejected} tone="text-rose-500" />
       </div>
+
+      {items.find((item) => item.source_summary)?.source_summary ? (() => {
+        const summary = items.find((item) => item.source_summary)?.source_summary;
+        if (!summary) return null;
+        const source_provenance = items.find((item) => item.source_provenance?.length)?.source_provenance ?? summary.provenance;
+        return (
+          <section aria-label={t("review.diagnostics.title")} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-sm font-semibold">{t("review.diagnostics.title")}</h2>
+              <code className="break-all text-xs text-slate-500">{summary.generation_context_id}</code>
+            </div>
+            <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+              <div><p className="text-slate-500">{t("review.diagnostics.internalSources")}</p><p className="font-medium">{summary.internal_source_count} · {summary.internal_token_count} tokens</p></div>
+              <div><p className="text-slate-500">{t("review.diagnostics.externalSources")}</p><p className="font-medium">{summary.external_source_count} · {summary.external_token_count} tokens</p></div>
+              <div><p className="text-slate-500">{t("review.diagnostics.ratios")}</p><p className="font-medium">{(summary.internal_ratio * 100).toFixed(1)}% / {(summary.external_ratio * 100).toFixed(1)}%</p></div>
+              <div><p className="text-slate-500">{t("review.diagnostics.selectedReferences")}</p><p className="break-words font-medium">{summary.selected_reference_ids.join(", ") || t("common.notAvailable")}</p></div>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs text-slate-500">
+              {source_provenance.map((source) => <span key={`${source.source_type}-${source.source_id}`} className="rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800">{source.source_type}: {source.label}</span>)}
+            </div>
+            {Object.entries(campaignTaskMap).flatMap(([campaignId, tasks]) => tasks.filter((task) => task.status === "failed" || task.status === "blocked").map((task) => (
+              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{campaignNameMap[campaignId] || campaignId} / {task.task_type}: {task.error_class || task.blocked_reason || task.status} · {t("review.diagnostics.retryable")}: {(task.retryable ?? (task.status === "failed")) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
+            )))}
+          </section>
+        );
+      })() : null}
 
       <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-2 dark:border-slate-800 dark:bg-slate-900">
         <input

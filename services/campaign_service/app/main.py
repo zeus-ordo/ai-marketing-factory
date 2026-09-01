@@ -203,6 +203,9 @@ class ReviewItem(BaseModel):
     submitted_at: str
     assignee: str | None = None
     run_id: str | None = None
+    generation_context_id: str | None = None
+    source_summary: dict[str, Any] | None = None
+    source_provenance: list[dict[str, Any]] = []
 
 
 class ReviewQueueResponse(BaseModel):
@@ -1150,6 +1153,11 @@ def normalize_task_payload(payload: dict[str, Any], campaign_id: str) -> TaskRec
         error_detail=payload.get("error_detail"),
         blocked_by_task_id=payload.get("blocked_by_task_id"),
         blocked_reason=payload.get("blocked_reason"),
+        next_retry_at=payload.get("next_retry_at"),
+        generation_context_id=payload.get("generation_context_id") or payload.get("worker_payload", {}).get("generation_context_id"),
+        provider=payload.get("provider") or payload.get("worker_payload", {}).get("provider"),
+        model=payload.get("model") or payload.get("model_name") or payload.get("worker_payload", {}).get("model"),
+        retryable=payload.get("retryable", status == "failed"),
     )
 
 
@@ -2907,7 +2915,19 @@ def list_review_items_filtered(status: str | None = None, campaign_id: str | Non
         items = [item for item in items if item.campaign_id == campaign_id]
     if run_id:
         items = [item for item in items if item.run_id == run_id]
-    return items
+    enriched: list[ReviewItem] = []
+    for item in items:
+        campaign = store.get_campaign(item.campaign_id)
+        diagnostics = generation_diagnostics(campaign, item.run_id) if campaign else None
+        if diagnostics:
+            enriched.append(item.model_copy(update={
+                "generation_context_id": diagnostics["generation_context_id"],
+                "source_summary": diagnostics,
+                "source_provenance": diagnostics["provenance"],
+            }))
+        else:
+            enriched.append(item)
+    return enriched
 
 
 def find_review_item(review_id: str) -> ReviewItem | None:
@@ -6849,11 +6869,11 @@ def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tup
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
 )
 def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Request) -> dict[str, Any]:
-    require_internal_api_key(req)
-
     campaign = store.get_campaign(campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    require_review_action_access(req)
+    require_campaign_access(req, campaign)
 
     task = next((item for item in store.get_tasks(campaign_id) if item.task_id == payload.task_id), None)
     if task is None:

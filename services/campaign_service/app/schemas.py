@@ -42,6 +42,9 @@ class CampaignRecord(BaseModel):
     created_at: datetime
     brief: CampaignBrief
     deleted_at: datetime | None = None
+    generation_context_id: str | None = None
+    source_summary: dict[str, Any] | None = None
+    tasks: list["TaskRecord"] | None = None
 
 
 class TaskRecord(BaseModel):
@@ -58,6 +61,11 @@ class TaskRecord(BaseModel):
     error_detail: str | None = None
     blocked_by_task_id: str | None = None
     blocked_reason: str | None = None
+    next_retry_at: datetime | None = None
+    generation_context_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    retryable: bool | None = None
 
 
 class CampaignCreatedResponse(BaseModel):

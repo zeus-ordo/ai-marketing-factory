@@ -14,6 +14,7 @@ import {
   listCampaignReferences,
   listReviewQueue,
   regenerateAsset,
+  retryCampaignTask,
   runCampaign,
   updateCampaign,
   updateCampaignReference,
@@ -174,6 +175,10 @@ function getBriefString(brief: CampaignBrief, snakeKey: keyof CampaignBrief, cam
   return typeof value === "string" ? value : "";
 }
 
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div><p className="text-slate-500">{label}</p><p className="break-words font-medium text-slate-800 dark:text-slate-100">{value}</p></div>;
+}
+
 export default function CampaignCenterPage() {
   const { t, locale } = useI18n();
   const actorToken = typeof document === "undefined" ? "" : getCookieValue("chat_actor_token");
@@ -265,6 +270,7 @@ export default function CampaignCenterPage() {
   const [creatingCampaign, setCreatingCampaign] = useState(false);
   const [pendingRunWorkOrder, setPendingRunWorkOrder] = useState<PendingRunWorkOrder | null>(null);
   const [runningCampaign, setRunningCampaign] = useState(false);
+  const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!editTarget) return;
@@ -389,6 +395,7 @@ export default function CampaignCenterPage() {
     }
     return realCampaigns[0].id;
   }, [realCampaigns, selectedReferenceCampaignId]);
+  const activeCampaignRecord = campaignRecords.find((record) => record.campaign_id === activeCampaignId) ?? null;
 
   const knowledgeCategories = useMemo(() => {
     const categories = knowledgeItems.map((item) => getKnowledgeFolder(item)).filter(Boolean);
@@ -708,6 +715,21 @@ export default function CampaignCenterPage() {
       setMessage(t("campaigns.runFailed"));
     } finally {
       setRunningCampaign(false);
+    }
+  }
+
+  async function handleRetryTask(campaignId: string, taskId: string) {
+    setRetryingTaskId(taskId);
+    try {
+      const result = await retryCampaignTask(campaignId, taskId);
+      setMessage(`${t("review.diagnostics.retry")}: ${result.status}`);
+      const rows = await listCampaigns();
+      setCampaignRecords(rows);
+      setCampaigns(rows.map(toUiCampaign));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : t("review.diagnostics.retryFailed"));
+    } finally {
+      setRetryingTaskId(null);
     }
   }
 
@@ -1063,6 +1085,37 @@ export default function CampaignCenterPage() {
         <p className={`rounded-xl px-3 py-2 text-sm ${isFallback ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}>
           {message}
         </p>
+      ) : null}
+
+      {activeCampaignRecord?.source_summary ? (
+        <section aria-label={t("review.diagnostics.title")} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold">{t("review.diagnostics.title")}</h2>
+            <code className="break-all text-xs text-slate-500">{activeCampaignRecord.source_summary.generation_context_id}</code>
+          </div>
+          <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            <Metric label={t("review.diagnostics.internalSources")} value={`${activeCampaignRecord.source_summary.internal_source_count} · ${activeCampaignRecord.source_summary.internal_token_count} tokens`} />
+            <Metric label={t("review.diagnostics.externalSources")} value={`${activeCampaignRecord.source_summary.external_source_count} · ${activeCampaignRecord.source_summary.external_token_count} tokens`} />
+            <Metric label={t("review.diagnostics.ratios")} value={`${(activeCampaignRecord.source_summary.internal_ratio * 100).toFixed(1)}% / ${(activeCampaignRecord.source_summary.external_ratio * 100).toFixed(1)}%`} />
+            <Metric label={t("review.diagnostics.selectedReferences")} value={activeCampaignRecord.source_summary.selected_reference_ids.join(", ") || t("common.notAvailable")} />
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs text-slate-500">
+            {activeCampaignRecord.source_summary.provenance.map((source) => (
+              <span key={`${source.source_type}-${source.source_id}`} className="rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800">{source.source_type}: {source.label}</span>
+            ))}
+          </div>
+          {activeCampaignRecord.tasks?.length ? (
+            <div className="grid gap-2 lg:grid-cols-2">
+              {activeCampaignRecord.tasks.map((task) => (
+                <div key={task.task_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800">
+                  <span><strong>{task.task_type}</strong> <span className="text-slate-500">{task.status}</span></span>
+                  <span className="text-xs text-slate-500">{task.error_class || task.blocked_reason || ""} · {t("review.diagnostics.retryable")}: {(task.retryable ?? (task.status === "failed")) ? t("common.yes") : t("common.no")} {task.retry_count ? `· ${t("review.diagnostics.attempts")}: ${task.retry_count}` : ""} {task.next_retry_at ? `· ${task.next_retry_at}` : ""}</span>
+                  {task.status === "failed" ? <button type="button" onClick={() => handleRetryTask(activeCampaignRecord.campaign_id, task.task_id)} disabled={retryingTaskId !== null} className="rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50">{retryingTaskId === task.task_id ? t("review.diagnostics.retrying") : t("review.diagnostics.retry")}</button> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       <form id="create-campaign" onSubmit={handleCreateFromForm} noValidate className="scroll-mt-24 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">

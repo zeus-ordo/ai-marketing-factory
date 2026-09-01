@@ -5,10 +5,48 @@ export type CampaignTask = {
   task_id: string;
   campaign_id: string;
   task_type: "copywriting" | "image_generation" | "video_generation" | "ads_strategy";
-  status: "pending" | "planned" | "running" | "validating" | "passed" | "failed" | "retrying";
+  status: "pending" | "planned" | "running" | "validating" | "passed" | "failed" | "blocked" | "retrying";
   priority: number;
   depends_on: string[];
   acceptance: string[];
+  retry_count?: number;
+  error_class?: string | null;
+  error_detail?: string | null;
+  blocked_by_task_id?: string | null;
+  blocked_reason?: string | null;
+  next_retry_at?: string | null;
+  generation_context_id?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  retryable?: boolean | null;
+};
+
+export type GenerationSourceProvenance = {
+  source_type: string;
+  source_id: string;
+  label: string;
+  folder?: string | null;
+  url?: string | null;
+  provider?: string | null;
+  query?: string | null;
+  retrieved_at?: string | null;
+};
+
+export type GenerationSourceSummary = {
+  generation_context_id: string;
+  internal_source_count: number;
+  external_source_count: number;
+  internal_token_count: number;
+  external_token_count: number;
+  internal_ratio: number;
+  external_ratio: number;
+  source_counts: Record<string, number>;
+  selected_reference_ids: string[];
+  matched_folder_names: string[];
+  external_source_urls: string[];
+  external_search_status?: string;
+  external_search_error?: string | null;
+  provenance: GenerationSourceProvenance[];
 };
 
 export type CampaignBrief = {
@@ -44,6 +82,9 @@ export type CampaignRecord = {
   status: CampaignStatus;
   created_at: string;
   brief: CampaignBrief;
+  generation_context_id?: string | null;
+  source_summary?: GenerationSourceSummary | null;
+  tasks?: CampaignTask[] | null;
 };
 
 export type ValidationResultRecord = {
@@ -183,6 +224,14 @@ type CampaignRunResponse = {
   message: string;
   run_id?: string;
   run_number?: number;
+};
+
+export type RetryTaskResponse = {
+  campaign_id: string;
+  task_id: string;
+  status: string;
+  assets: number;
+  validations: number;
 };
 
 export type CampaignRunSummary = {
@@ -543,6 +592,13 @@ export async function listCampaignTasks(campaignId: string): Promise<CampaignTas
   return data.tasks;
 }
 
+export async function retryCampaignTask(campaignId: string, taskId: string): Promise<RetryTaskResponse> {
+  return request<RetryTaskResponse>(`/api/v1/internal/campaigns/${campaignId}/tasks/retry`, {
+    method: "POST",
+    body: JSON.stringify({ task_id: taskId }),
+  });
+}
+
 export async function listValidationResults(campaignId: string): Promise<ValidationResultRecord[]> {
   const data = await request<ValidationListResponse>(`/api/v1/campaigns/${campaignId}/validation-results`);
   return data.items;
@@ -809,6 +865,9 @@ export type ReviewItem = {
   reject_reason?: string | null;
   rejected_reason?: string | null;
   reason?: string | null;
+  generation_context_id?: string | null;
+  source_summary?: GenerationSourceSummary | null;
+  source_provenance?: GenerationSourceProvenance[];
 };
 
 export type ReviewQueueResponse = {
