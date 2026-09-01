@@ -67,3 +67,15 @@ def test_quota_failure_does_not_retry_forever(monkeypatch):
         process_task(campaign_id, "image")
     assert orchestrator.task_state[campaign_id]["image"].status == "failed"
     assert len(attempts) == MAX_RETRY + 1
+
+
+def test_persistence_failure_is_reported(monkeypatch, caplog):
+    monkeypatch.setattr(orchestrator, "task_state_store", type("BrokenStore", (), {"save_campaign_tasks": lambda *_: (_ for _ in ()).throw(RuntimeError("database unavailable"))})())
+    assert orchestrator.persist_campaign_task_state("camp", {}) is False
+    assert "persistence_error" in caplog.text
+
+
+def test_structured_orchestrator_secret_fields_are_redacted():
+    detail = orchestrator.sanitize_error_detail('{"api_key":"provider-key", "token":"abc"}')
+    assert "provider-key" not in detail
+    assert "abc" not in detail

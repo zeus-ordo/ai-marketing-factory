@@ -13,7 +13,7 @@ if loaded_app_main is None or "campaign_service" not in str(getattr(loaded_app_m
             del sys.modules[module_name]
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app.main import apply_worker_result_state, classify_worker_error, sanitize_worker_error_detail
+from app.main import apply_worker_result_state, classify_worker_error, normalize_task_payload, sanitize_worker_error_detail
 from app.schemas import TaskRecord
 
 
@@ -48,3 +48,38 @@ def test_error_detail_redacts_secrets():
     assert "secret-token" not in detail
     assert "hunter2" not in detail
     assert classify_worker_error(RuntimeError("HTTP 429 quota exceeded")) == "quota"
+
+
+def test_normalize_preserves_blocked_task_diagnostics():
+    normalized = normalize_task_payload({
+        "task_id": "video", "task_type": "video_generation", "status": "blocked",
+        "blocked_by_task_id": "image", "blocked_reason": "blocked by failed task image",
+    }, "camp-1")
+    assert normalized.status == "blocked"
+    assert normalized.blocked_by_task_id == "image"
+    assert normalized.blocked_reason == "blocked by failed task image"
+
+
+def test_retry_success_returns_passed_persisted_state():
+    tasks = [task("image", "image_generation", status="retrying")]
+    updated = apply_worker_result_state(tasks, "image", {"status": "passed"})
+    assert updated[0].status == "passed"
+
+
+def test_retry_dispatch_failure_is_terminal_but_retryable():
+    failed = apply_worker_result_state(
+        [task("image", "image_generation", status="retrying"), task("video", "video_generation", ["image"], "pending")],
+        "image", {"status": "failed", "error": "provider secret=do-not-leak"}
+    )
+    assert failed[0].status == "failed"
+    assert failed[1].status == "blocked"
+    retried = apply_worker_result_state(failed, "image", {"status": "retrying"})
+    assert retried[0].status == "retrying"
+    assert retried[1].status == "pending"
+
+
+def test_structured_secret_fields_are_redacted():
+    detail = sanitize_worker_error_detail('{"api_key":"provider-key", "credentials":{"token":"abc", "password":"pw"}}')
+    assert "provider-key" not in detail
+    assert "abc" not in detail
+    assert "pw" not in detail

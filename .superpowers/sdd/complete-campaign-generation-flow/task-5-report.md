@@ -20,3 +20,12 @@ Verification:
 - `npm run build`: passed
 
 Known non-blocking warnings are the existing FastAPI `on_event` deprecations and Next.js multiple-lockfile workspace-root warning.
+
+## Review Fixes
+
+- Successful retry responses now read the status from the persisted final task.
+- Retry dispatch failures are classified, redacted, persisted as terminal failures, and re-block descendants so the same task remains retryable.
+- Orchestrator task synchronization now preserves `blocked` status and blocker diagnostics.
+- Persistence failures are returned as failure results and logged with a classified `persistence_error` instead of being swallowed.
+- Redaction now handles query parameters and structured JSON-style API key, token, password, credential, and authorization fields.
+- Added regression tests for retry success, retry failure and retryability, blocked synchronization, persistence failures, and structured secret redaction.

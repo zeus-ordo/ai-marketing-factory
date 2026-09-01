@@ -988,7 +988,13 @@ def classify_worker_error(exc: Exception) -> str:
 
 
 def sanitize_worker_error_detail(message: str) -> str:
-    text = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", (message or "").strip())
+    text = (message or "").strip()
+    text = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", text)
+    text = re.sub(
+        r"(?i)([\"']?(?:api[_-]?key|token|password|secret|credentials?|authorization)[\"']?\s*[:=]\s*[\"']?)([^\"',}\s]+)",
+        r"\1[REDACTED]",
+        text,
+    )
     for secret in (CHATBOT_INTERNAL_API_KEY, EXTERNAL_SEARCH_API_KEY):
         if secret:
             text = text.replace(secret, "[REDACTED]")
@@ -1077,7 +1083,7 @@ def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaig
 
 
 TaskType = Literal["copywriting", "image_generation", "video_generation", "ads_strategy"]
-TaskStatus = Literal["pending", "planned", "running", "validating", "passed", "failed", "retrying"]
+TaskStatus = Literal["pending", "planned", "running", "validating", "passed", "failed", "blocked", "retrying"]
 
 
 def normalize_task_payload(payload: dict[str, Any], campaign_id: str) -> TaskRecord:
@@ -1090,7 +1096,7 @@ def normalize_task_payload(payload: dict[str, Any], campaign_id: str) -> TaskRec
     task_type = cast(TaskType, raw_task_type)
 
     raw_status = str(payload.get("status", "pending"))
-    if raw_status not in {"pending", "planned", "running", "validating", "passed", "failed", "retrying"}:
+    if raw_status not in {"pending", "planned", "running", "validating", "passed", "failed", "blocked", "retrying"}:
         raw_status = "pending"
     status = cast(TaskStatus, raw_status)
 
@@ -6848,7 +6854,12 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
 
     try:
         assets, validations = _dispatch_worker_for_task(campaign, retried)
-    except RuntimeError as exc:
+    except Exception as exc:
+        failed_tasks = apply_worker_result_state(
+            store.get_tasks(campaign_id), payload.task_id,
+            {"status": "failed", "error": sanitize_worker_error_detail(str(exc))},
+        )
+        store.set_tasks(campaign_id, failed_tasks)
         _notify_webhook(
             event_type="worker_retry_failed",
             campaign_id=campaign_id,
@@ -6861,7 +6872,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
             actor_id="system",
             actor_role="system",
             summary=f"Worker retry failed for task {payload.task_id}",
-            payload={"task_type": task.task_type, "error": str(exc)},
+            payload={"task_type": task.task_type, "error": sanitize_worker_error_detail(str(exc))},
             source="workers",
             company_id=campaign.company_id,
         )
@@ -6873,6 +6884,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     patched_result = {"status": "passed" if assets else "failed", "error": None if assets else "worker returned no assets"}
     final_tasks = apply_worker_result_state(store.get_tasks(campaign_id), payload.task_id, patched_result)
     store.set_tasks(campaign_id, final_tasks)
+    persisted_task = next(item for item in final_tasks if item.task_id == payload.task_id)
 
     append_trace_event(
         campaign_id=campaign_id,
@@ -6894,7 +6906,7 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     return {
         "campaign_id": campaign_id,
         "task_id": payload.task_id,
-        "status": patched.status,
+        "status": persisted_task.status,
         "assets": len(assets),
         "validations": len(validations),
     }

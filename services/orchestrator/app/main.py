@@ -433,6 +433,11 @@ def classify_worker_error(exc: Exception) -> str:
 
 def sanitize_error_detail(detail: str) -> str:
     sanitized = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", detail)
+    sanitized = re.sub(
+        r"(?i)([\"']?(?:api[_-]?key|token|password|secret|credentials?|authorization)[\"']?\s*[:=]\s*[\"']?)([^\"',}\s]+)",
+        r"\1[REDACTED]",
+        sanitized,
+    )
     for secret in (INTERNAL_API_KEY,):
         if secret:
             sanitized = sanitized.replace(secret, "[REDACTED]")
@@ -523,13 +528,15 @@ def append_operation_audit(operator: str, operation: str, target: str, result: s
             logger.warning(f"Failed to append audit log: {exc}")
 
 
-def persist_campaign_task_state(campaign_id: str, campaign_tasks: dict[str, OrchestratorTask]) -> None:
+def persist_campaign_task_state(campaign_id: str, campaign_tasks: dict[str, OrchestratorTask]) -> bool:
     if task_state_store is None:
-        return
+        return True
     try:
         task_state_store.save_campaign_tasks(campaign_id, list(campaign_tasks.values()))
-    except Exception:
-        pass
+        return True
+    except Exception as exc:
+        logger.error("persistence_error: failed to save task state for %s: %s", campaign_id, sanitize_error_detail(str(exc)))
+        return False
 
 
 def get_or_hydrate_campaign_tasks(campaign_id: str) -> dict[str, OrchestratorTask] | None:
