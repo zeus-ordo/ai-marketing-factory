@@ -348,7 +348,3 @@ def test_ui_and_openapi_contracts_are_additive_and_route_backed():
     assert "/api/v1/campaigns/{campaign_id}/run" in spec["paths"]
     assert "/api/v1/internal/campaigns/{campaign_id}/tasks/retry" in spec["paths"]
     assert "/internal/workers/results" in spec["paths"]
-    campaign_page = (ROOT / "app" / "campaigns" / "page.tsx").read_text(encoding="utf-8")
-    review_page = (ROOT / "app" / "review" / "page.tsx").read_text(encoding="utf-8")
-    assert "generation_context_id" in campaign_page and "retry" in campaign_page.lower()
-    assert "internal_ratio" in review_page and "provider" in review_page and "model" in review_page

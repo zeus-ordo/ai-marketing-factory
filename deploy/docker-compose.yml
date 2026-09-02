@@ -6,7 +6,7 @@ services:
     env_file:
       - ../.env.local
     environment:
-      - JWT_SECRET=mf_jwt_2026_5a9f8c4d71b24f0ab1c9d2e3f4a6b8c1
+      - JWT_SECRET=${JWT_SECRET:-change_me}
       - MEMBERSHIP_DB_DSN=postgresql://app:password@postgres:5432/membership
     depends_on:
       postgres:
@@ -54,7 +54,7 @@ services:
       - ../.env.example
       - ../.env.local
     environment:
-      - JWT_SECRET=mf_jwt_2026_5a9f8c4d71b24f0ab1c9d2e3f4a6b8c1
+      - JWT_SECRET=${JWT_SECRET:-change_me}
     depends_on:
       postgres:
         condition: service_healthy
@@ -138,7 +138,7 @@ services:
     environment:
       POSTGRES_DB: marketing_ai
       POSTGRES_USER: app
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
     expose:
       - "5432"
     volumes:

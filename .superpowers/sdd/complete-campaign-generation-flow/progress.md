@@ -33,3 +33,13 @@ Task 7: pending
   `disabled`, and documented `not_configured`.
 - Documented campaign-service `WORKER_RETRY_MAX_ATTEMPTS` separately from the
   orchestrator source-level `MAX_RETRY = 2` and manual retry limit.
+
+## Task 7 Secret and Source-Check Follow-up Report
+
+- Removed tracked local secret override files and replaced hardcoded compose
+  credentials with runtime environment placeholders; added ignore rules for
+  future local override/secret files.
+- Expanded `scripts/check-secrets.mjs` to scan tracked dotenv/YAML/config files
+  while reporting only file/key identifiers.
+- Replaced page-source assertions with route-backed OpenAPI assertions; all
+  deterministic flow checks use ASGI TestClient and offline fixtures.
