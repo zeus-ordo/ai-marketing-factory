@@ -20,3 +20,16 @@ Task 7: pending
 - Updated UAT and deployment checklists and added
   `docs/release/complete-campaign-flow-runbook.md` with configuration, secret,
   migration, alert, retry, reconciliation, restart, and verification guidance.
+
+## Task 7 Review Follow-up Report
+
+- Replaced source-only acceptance checks with ASGI TestClient coverage for
+  campaign create/run, worker result ingest, review filtering, and single-task
+  retry, using mocked search, worker, decision, orchestrator, and persistence
+  boundaries.
+- Removed collection-time localhost probes; live E2E is now explicitly opt-in
+  with `RUN_LIVE_E2E=1`.
+- Standardized the runtime, example, and GCP compose search default to
+  `disabled`, and documented `not_configured`.
+- Documented campaign-service `WORKER_RETRY_MAX_ATTEMPTS` separately from the
+  orchestrator source-level `MAX_RETRY = 2` and manual retry limit.

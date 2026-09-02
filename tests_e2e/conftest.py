@@ -1,6 +1,7 @@
-"""
-Pytest configuration for E2E tests.
-Checks service availability at collection time and skips all tests if services aren't running.
+"""Pytest configuration for explicit live E2E tests.
+
+Offline acceptance tests do not use these fixtures. Live tests are opt-in via
+RUN_LIVE_E2E=1 and never trigger network probes during collection.
 """
 
 import os
@@ -9,25 +10,12 @@ import pytest
 
 
 MEMBERSHIP_BASE = os.getenv("MEMBERSHIP_E2E_URL", "http://localhost:8095")
-CAMPAIGN_BASE   = os.getenv("CAMPAIGN_E2E_URL",   "http://localhost:8080")
-
-
-def check_service(url: str) -> bool:
-    try:
-        import httpx  # type: ignore
-        r = httpx.Client(timeout=5.0).get(f"{url}/health")
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-membership_ok = check_service(MEMBERSHIP_BASE)
-campaign_ok   = check_service(CAMPAIGN_BASE)
+CAMPAIGN_BASE = os.getenv("CAMPAIGN_E2E_URL", "http://localhost:8080")
+LIVE_E2E_ENABLED = os.getenv("RUN_LIVE_E2E", "0") == "1"
 
 not_running_msg = (
     "E2E tests skipped: required services not running.\n"
-    f"  Membership ({MEMBERSHIP_BASE}): {'OK' if membership_ok else 'NOT RUNNING'}\n"
-    f"  Campaign   ({CAMPAIGN_BASE}):   {'OK' if campaign_ok else 'NOT RUNNING'}\n"
+    "  Live services were not enabled (set RUN_LIVE_E2E=1 after starting them).\n"
     "\n"
     "To run E2E tests, start both services:\n"
     "  membership: cd services/membership_service && python -m uvicorn app.main:app --port 8095\n"
@@ -46,7 +34,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    if not (membership_ok and campaign_ok):
+    if not LIVE_E2E_ENABLED:
         skip_marker = pytest.mark.skip(not_running_msg)
         for item in items:
             if "e2e" in item.keywords:
@@ -55,7 +43,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture(scope="module")
 def http_client():
-    if not membership_ok:
+    if not LIVE_E2E_ENABLED:
         pytest.skip(not_running_msg, allow_module_level=True)
     import httpx  # type: ignore
     return httpx.Client(base_url=MEMBERSHIP_BASE, timeout=15.0)
@@ -63,7 +51,7 @@ def http_client():
 
 @pytest.fixture(scope="module")
 def campaign_client():
-    if not campaign_ok:
+    if not LIVE_E2E_ENABLED:
         pytest.skip(not_running_msg, allow_module_level=True)
     import httpx  # type: ignore
     return httpx.Client(base_url=CAMPAIGN_BASE, timeout=15.0)

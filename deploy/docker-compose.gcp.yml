@@ -39,7 +39,7 @@ services:
     env_file:
       - ../.env.local
     environment:
-      - EXTERNAL_SEARCH_PROVIDER=${EXTERNAL_SEARCH_PROVIDER:-google}
+      - EXTERNAL_SEARCH_PROVIDER=${EXTERNAL_SEARCH_PROVIDER:-disabled}
       - EXTERNAL_SEARCH_API_KEY=${EXTERNAL_SEARCH_API_KEY:-}
       - EXTERNAL_SEARCH_ENGINE_ID=${EXTERNAL_SEARCH_ENGINE_ID:-}
     volumes:

@@ -16,7 +16,7 @@
 - [ ] `.env` values set for target environment
 - [ ] DB backup snapshot completed
 - [ ] Redis persistence/backup policy confirmed
-- [ ] Run deterministic acceptance coverage: `pytest tests_e2e/test_complete_campaign_flow.py -q`
+- [ ] Run deterministic acceptance coverage: `python -m pytest tests_e2e/test_complete_campaign_flow.py -q`
 - [ ] Run service regression coverage: `pytest services/campaign_service -q` and `pytest services/orchestrator -q`
 
 ### Required environment keys
@@ -32,8 +32,9 @@
 - [ ] `EXTERNAL_SEARCH_PROVIDER` (`disabled` is the safe default)
 - [ ] `EXTERNAL_SEARCH_API_KEY` (Secret Manager/VM secret file only when Google search is enabled)
 - [ ] `EXTERNAL_SEARCH_ENGINE_ID` (configuration value; do not put the API key in Git)
-- [ ] `WORKER_RETRY_MAX_ATTEMPTS` and `WORKER_RETRY_BACKOFF_SECONDS`
+- [ ] Campaign-service `WORKER_RETRY_MAX_ATTEMPTS` and `WORKER_RETRY_BACKOFF_SECONDS`
 - [ ] `MANUAL_RETRY_MAX_ATTEMPTS`
+- [ ] Orchestrator automatic retry is verified against hardcoded `MAX_RETRY = 2` and 300-second cap in `services/orchestrator/app/main.py`
 
 ---
 

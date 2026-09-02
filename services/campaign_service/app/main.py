@@ -841,7 +841,7 @@ WORKER_VIDEO_URL = os.getenv("WORKER_VIDEO_URL", "http://worker-video:8093").str
 WORKER_ADS_URL = os.getenv("WORKER_ADS_URL", "http://worker-ads:8094").strip()
 GENERATION_CONTEXT_TOKEN_BUDGET = max(1, int(os.getenv("GENERATION_CONTEXT_TOKEN_BUDGET", "4000")))
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0").strip()
-EXTERNAL_SEARCH_PROVIDER = os.getenv("EXTERNAL_SEARCH_PROVIDER", "").strip()
+EXTERNAL_SEARCH_PROVIDER = os.getenv("EXTERNAL_SEARCH_PROVIDER", "disabled").strip()
 EXTERNAL_SEARCH_API_KEY = os.getenv("EXTERNAL_SEARCH_API_KEY", "").strip()
 EXTERNAL_SEARCH_ENGINE_ID = os.getenv("EXTERNAL_SEARCH_ENGINE_ID", "").strip()
 try:

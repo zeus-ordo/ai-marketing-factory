@@ -14,7 +14,7 @@ in-process fixtures and never calls Google, Gemini, PostgreSQL, Redis, or a
 worker provider:
 
 ```bash
-pytest tests_e2e/test_complete_campaign_flow.py -q
+python -m pytest tests_e2e/test_complete_campaign_flow.py -q
 ```
 
 The suite covers required and conditional validation, reference priority and
@@ -22,7 +22,8 @@ The suite covers required and conditional validation, reference priority and
 hydration, isolated worker failures, bounded and single-task retry, review
 diagnostics/run filtering, empty-result rejection, provider/model metadata,
 and UI/OpenAPI contracts. The live company-isolation checks remain marked
-`e2e` and require the services described in `tests_e2e/conftest.py`.
+`e2e`, are skipped unless `RUN_LIVE_E2E=1`, and require the services described
+in `tests_e2e/conftest.py`.
 
 ## Test Environment
 - Base URL: ____________________

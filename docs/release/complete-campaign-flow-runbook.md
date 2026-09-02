@@ -14,8 +14,9 @@ EXTERNAL_SEARCH_ENGINE_ID=<engine-id>
 The API key must exist only in the runtime secret store or VM secret file. It
 must not appear in Git, database rows, prompts, fixtures, ordinary logs, or
 test output. Search failure is non-fatal: the run continues with internal-only
-context and records a sanitized status (`quota`, `timeout`, or
-`provider_error`).
+context and records a sanitized status (`not_configured`, `quota`, `timeout`,
+or `provider_error`). `not_configured` is expected when search is disabled or
+Google credentials are incomplete; it is not a worker failure.
 
 ## API and Data Contract
 
@@ -34,12 +35,19 @@ context and records a sanitized status (`quota`, `timeout`, or
 1. Check `/health`, queue overview, consumer groups, and recent audit events.
 2. For a failed dependency, expect descendants to become `blocked` while
    unrelated tasks continue.
-3. Automatic retry is bounded by `WORKER_RETRY_MAX_ATTEMPTS`; backoff is capped
-   by the orchestrator. Use the single-task retry endpoint for operator retry.
-4. If a retry dispatch fails, verify reconciliation changed the task to a
+3. Campaign-service worker HTTP dispatch retries are bounded by
+   `WORKER_RETRY_MAX_ATTEMPTS` (default `2`) and use
+   `WORKER_RETRY_BACKOFF_SECONDS` as the local retry wait setting. The
+   orchestrator has a separate hardcoded `MAX_RETRY = 2` in
+   `services/orchestrator/app/main.py`; its exponential delay is capped at 300
+   seconds. These limits are separate and both are finite.
+4. Use the single-task retry endpoint for operator retry. It is bounded by
+   `MANUAL_RETRY_MAX_ATTEMPTS` (default `3`) and does not change the
+   orchestrator's automatic `MAX_RETRY`.
+5. If a retry dispatch fails, verify reconciliation changed the task to a
    terminal retryable state. A zero-row reconciliation is `recovery_pending`,
    not success.
-5. After restart, verify pending-message reclamation and cold-cache context
+6. After restart, verify pending-message reclamation and cold-cache context
    hydration before replaying work.
 
 Alert on retry exhaustion, blocked-task growth, DLQ growth, persistence or
@@ -58,7 +66,7 @@ this flow.
 ## Verification Commands
 
 ```bash
-pytest tests_e2e/test_complete_campaign_flow.py -q
+python -m pytest tests_e2e/test_complete_campaign_flow.py -q
 pytest services/campaign_service -q
 pytest services/orchestrator -q
 npm run check:api:regression
@@ -66,6 +74,8 @@ npm run lint
 npm run build
 ```
 
-The deterministic suite uses mocks/fixtures and is safe without external
-credentials. Live E2E tests are separately marked and require the services and
-test accounts described in `tests_e2e/conftest.py`.
+The deterministic suite uses ASGI TestClient plus mocked provider/worker/storage
+boundaries and is safe without external credentials. It is not a localhost
+smoke test. Live E2E tests are separately marked and require explicit
+`RUN_LIVE_E2E=1`, running services, and test accounts described in
+`tests_e2e/conftest.py`.
