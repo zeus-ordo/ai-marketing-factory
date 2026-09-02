@@ -18,6 +18,15 @@ context and records a sanitized status (`not_configured`, `quota`, `timeout`,
 or `provider_error`). `not_configured` is expected when search is disabled or
 Google credentials are incomplete; it is not a worker failure.
 
+For local compose use, create an ignored `deploy/local-secrets.override.yml` or
+the ignored root `.env.local` and provide `POSTGRES_PASSWORD` and
+`MEMBERSHIP_DB_PASSWORD` there. Verify the file is ignored with
+`git check-ignore deploy/local-secrets.override.yml`; never add it to Git. The
+campaign-service `start-backend.bat` likewise requires
+`CHATBOT_INTERNAL_API_KEY` and `CHAT_AUDIT_API_KEY` to already exist in the
+shell environment and exits without printing their values when either is
+missing.
+
 ## API and Data Contract
 
 - `POST /api/v1/campaigns` returns `422` for blank required fields and for

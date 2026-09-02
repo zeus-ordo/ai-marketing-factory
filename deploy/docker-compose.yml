@@ -7,7 +7,7 @@ services:
       - ../.env.local
     environment:
       - JWT_SECRET=${JWT_SECRET:-change_me}
-      - MEMBERSHIP_DB_DSN=postgresql://app:password@postgres:5432/membership
+      - MEMBERSHIP_DB_DSN=postgresql://app:${MEMBERSHIP_DB_PASSWORD:?MEMBERSHIP_DB_PASSWORD must be set}@postgres:5432/membership
     depends_on:
       postgres:
         condition: service_healthy
@@ -138,7 +138,7 @@ services:
     environment:
       POSTGRES_DB: marketing_ai
       POSTGRES_USER: app
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     expose:
       - "5432"
     volumes:

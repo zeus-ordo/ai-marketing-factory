@@ -43,3 +43,14 @@ Task 7: pending
   while reporting only file/key identifiers.
 - Replaced page-source assertions with route-backed OpenAPI assertions; all
   deterministic flow checks use ASGI TestClient and offline fixtures.
+
+## Task 7 Repository Secret Hygiene Report
+
+- Removed hardcoded database and weak API-key defaults from tracked deployment
+  and startup files; required runtime environment variables now fail clearly
+  without printing values.
+- Expanded the tracked-config scanner to cover dotenv, YAML/JSON, shell,
+  PowerShell, batch, TypeScript, and Python files, including interpolation
+  fallbacks, DSN credentials, and literal key assignments.
+- Added scanner regression coverage for DSNs, batch assignments, and safe/unsafe
+  interpolation; no credential values are included in scanner output.
