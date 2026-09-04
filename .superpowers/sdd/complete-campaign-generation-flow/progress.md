@@ -76,3 +76,14 @@ Task 7: pending
   fallbacks, DSN credentials, and literal key assignments.
 - Added scanner regression coverage for DSNs, batch assignments, and safe/unsafe
   interpolation; no credential values are included in scanner output.
+
+## Task 7 Release Scanner Validation Report
+
+- Extended credential-name matching to compound suffixes such as
+  `_SECRET_KEY` and `_ACCESS_KEY`, with regression coverage for S3/AWS names.
+- Current lint remains at the established baseline of 78 errors and 13
+  warnings, concentrated in pre-existing Task 6 UI files; this follow-up adds
+  0 lint errors in its touched files and does not perform unrelated UI cleanup.
+- `npm run check:api:regression` remains an explicitly live-service check; the
+  unavailable local-service failure is recorded in the release runbook and is
+  not represented as a passing test.

@@ -14,6 +14,8 @@ const issues = findSecretIssues([
   ["fixture.sh", `export CHAT_AUDIT_API_KEY='${providerKey}'`],
   ["fixture.py", `API_TOKEN = '${unsafeToken}'`],
   ["fixture.js", `const API_KEY = '${providerKey}'`],
+  ["fixture.env", `S3_SECRET_KEY=${providerKey}`],
+  ["fixture.env", `AWS_ACCESS_KEY=${providerKey}`],
   ["fixture-safe.yml", `JWT_SECRET: ${"${JWT_SECRET:-"}${safeFallback}}`],
   ["fixture-safe.env", "EXTERNAL_SEARCH_API_KEY=${EXTERNAL_SEARCH_API_KEY}"],
   ["fixture-safe.ps1", "$env:JWT_SECRET = $env:JWT_SECRET"],
@@ -27,6 +29,8 @@ assert.deepEqual(issues.map(({ file, key }) => `${file}:${key}`), [
   "fixture.sh:CHAT_AUDIT_API_KEY",
   "fixture.py:API_TOKEN",
   "fixture.js:API_KEY",
+  "fixture.env:S3_SECRET_KEY",
+  "fixture.env:AWS_ACCESS_KEY",
 ]);
 assert.ok(issues.every(({ value }) => value === undefined));
 console.log("secret scanner contract passed");

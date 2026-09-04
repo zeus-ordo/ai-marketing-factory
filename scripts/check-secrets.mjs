@@ -23,7 +23,7 @@ function isPlaceholder(value) {
 }
 
 function assignment(line) {
-  return line.match(/^[\s"'\-]*(?:set\s+|export\s+)?(?:[\$]env:)?(?:(?:const|let|var)\s+)?["']?((?:[A-Za-z_][A-Za-z0-9_.-]*_)?(?:SECRET|TOKEN|API[_-]?KEY|PASSWORD|CREDENTIAL))["']?\s*([:=])\s*(.*)$/i);
+  return line.match(/^[\s"'\-]*(?:set\s+|export\s+)?(?:[\$]env:)?(?:(?:const|let|var)\s+)?["']?((?:[A-Za-z_][A-Za-z0-9_.-]*_)?(?:SECRET_KEY(?:_[A-Za-z0-9_.-]+)?|ACCESS_KEY(?:_[A-Za-z0-9_.-]+)?|SECRET|TOKEN|API[_-]?KEY|PASSWORD|CREDENTIAL))["']?\s*([:=])\s*(.*)$/i);
 }
 
 function hasUnsafeInterpolation(value) {
@@ -59,7 +59,7 @@ export function findSecretIssues(entries, tracked = new Set(entries.map(([file])
         const literal = value.replace(/^['"]|['"]$/g, "");
         const isShellAssignment = /^(?:set\s+|export\s+|\$env:)/i.test(line);
         const isQuotedLiteral = /^["']/.test(value);
-        const isLiteral = isStructuredConfig || isShellAssignment || isQuotedLiteral;
+        const isLiteral = isStructuredConfig || isShellAssignment || /\.env(?:\.|$)/i.test(file) || isQuotedLiteral;
         if (hasUnsafeInterpolation(value) || (isLiteral && literal && !isVariableReference(literal) && !isPlaceholder(value))) {
           issues.push({ file, key });
           continue;

@@ -89,3 +89,8 @@ boundaries and is safe without external credentials. It is not a localhost
 smoke test. Live E2E tests are separately marked and require explicit
 `RUN_LIVE_E2E=1`, running services, and test accounts described in
 `tests_e2e/conftest.py`.
+
+`npm run check:api:regression` is a live-service check, not an offline test. It
+must be run only with the frontend/API stack available; when services are not
+running it fails with an unavailable fetch and must be reported as such, never
+treated as a pass.
