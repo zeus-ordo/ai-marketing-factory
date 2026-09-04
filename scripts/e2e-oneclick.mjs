@@ -18,7 +18,7 @@ function loadEnvFile(fileName) {
 loadEnvFile(".env.test.local");
 
 const BASE_URL = (process.env.E2E_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
-const PLATFORM_KEY = process.env.E2E_PLATFORM_KEY ?? "change_me_platform_admin_key";
+const PLATFORM_KEY = process.env.E2E_PLATFORM_KEY ?? "";
 const AUTH_EMAIL = process.env.E2E_AUTH_EMAIL ?? "";
 const AUTH_PASSWORD = process.env.E2E_AUTH_PASSWORD ?? "";
 const POLL_MAX = Math.max(80, Number.parseInt(process.env.E2E_POLL_MAX ?? "80", 10));
@@ -36,6 +36,7 @@ function sleep(ms) {
 
 function headers() {
   if (authHeader) return { "Content-Type": "application/json", ...authHeader };
+  if (!PLATFORM_KEY) throw new Error("E2E_PLATFORM_KEY is required for platform-admin E2E");
   return { "Content-Type": "application/json", "x-platform-key": PLATFORM_KEY };
 }
 

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const CONFIG_PATTERN = /(^|\/)(\.env[^/]*|[^/]+\.(ya?ml|json|toml|ini|conf|bat|ps1|sh|ts|py))$/i;
+const CONFIG_PATTERN = /(^|\/)(\.env[^/]*|[^/]+\.(ya?ml|json|toml|ini|conf|bat|ps1|sh|bash|py|js|mjs|ts|tsx|jsx|md|txt|cmd|properties))$/i;
 const LOCKFILE_PATTERN = /(?:package|npm|yarn|pnpm)-?lock\.(?:json|ya?ml)$/i;
 const PLACEHOLDER_PATTERN = /^(?:<[^>]+>|change[_-]?me(?:[_-][^\s]+)?|replace[-_]?me|replace[-_]?with[-_]?.*|your[-_]?.*|example|test[-_]?.*|true|false|none|null)$/i;
 const DSN_PATTERN = /(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^/\s:@]+:([^@\s]+)@/i;
@@ -16,19 +16,22 @@ function isVariableReference(value) {
 function isPlaceholder(value) {
   const normalized = value.trim().replace(/^['"]|['"]$/g, "");
   if (PLACEHOLDER_PATTERN.test(normalized)) return true;
-  const interpolation = normalized.match(/^\$\{[A-Za-z_][A-Za-z0-9_]*(?::([?-])(.*))?\}$/);
+  const interpolation = normalized.match(/^\$\{[A-Za-z_][A-Za-z0-9_]*(?:(:?[-?])(.*))?\}$/);
   if (!interpolation) return false;
-  if (!interpolation[1] || interpolation[1] === "?") return true;
+  if (!interpolation[1] || interpolation[1].endsWith("?")) return true;
   return !interpolation[2] || isPlaceholder(interpolation[2]);
 }
 
 function assignment(line) {
-  return line.match(/^[\s"'\-]*(?:set\s+)?(?:[\$]env:)?(?:(?:const|let|var)\s+)?["']?([A-Za-z_][A-Za-z0-9_.-]*(?:SECRET|TOKEN|API[_-]?KEY|PASSWORD|CREDENTIAL)[A-Za-z0-9_.-]*)["']?\s*([:=])\s*(.*)$/i);
+  return line.match(/^[\s"'\-]*(?:set\s+|export\s+)?(?:[\$]env:)?(?:(?:const|let|var)\s+)?["']?((?:[A-Za-z_][A-Za-z0-9_.-]*_)?(?:SECRET|TOKEN|API[_-]?KEY|PASSWORD|CREDENTIAL))["']?\s*([:=])\s*(.*)$/i);
 }
 
 function hasUnsafeInterpolation(value) {
-  const match = value.match(/\$\{[A-Za-z_][A-Za-z0-9_]*(?::-(.*?))?\}/);
-  return Boolean(match?.[1] && !isPlaceholder(match[1].trim()));
+  const matches = value.matchAll(/\$\{[A-Za-z_][A-Za-z0-9_]*(?:(:?[-?])(.*?))?\}/g);
+  for (const match of matches) {
+    if (match[1]?.endsWith("-") && match[2] && !isPlaceholder(match[2].trim())) return true;
+  }
+  return false;
 }
 
 export function findSecretIssues(entries, tracked = new Set(entries.map(([file]) => file))) {
@@ -52,7 +55,7 @@ export function findSecretIssues(entries, tracked = new Set(entries.map(([file])
         const isStructuredConfig = /\.(?:ya?ml|json)$/i.test(file);
         if (separator === ":" && !isStructuredConfig) continue;
         const value = match[3].trim().replace(/[,;#].*$/, "").trim();
-        if (/REQUIRE|ENABLED|PROVIDER|MODEL|URL|PORT|HEADER|COUNT/i.test(key)) continue;
+        if (/REQUIRE|ENABLED|PROVIDER|MODEL|URL|PORT|HEADER|COUNT|ACCESS_TOKEN_KEY|REFRESH_TOKEN_KEY/i.test(key)) continue;
         const literal = value.replace(/^['"]|['"]$/g, "");
         const isShellAssignment = /^(?:set\s+|export\s+|\$env:)/i.test(line);
         const isQuotedLiteral = /^["']/.test(value);

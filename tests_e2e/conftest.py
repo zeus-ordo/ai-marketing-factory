@@ -22,8 +22,8 @@ not_running_msg = (
     "  campaign:   cd services/campaign_service   && python -m uvicorn app.main:app --port 8080\n"
     "\n"
     "Also ensure PostgreSQL is running for membership service and set:\n"
-    "  JWT_SECRET=dev-secret-key-for-testing-only\n"
-    "  PLATFORM_ADMIN_KEY=dev-platform-admin-key-change-me\n"
+    "  JWT_SECRET=<generated runtime secret>\n"
+    "  PLATFORM_ADMIN_KEY=<generated runtime key>\n"
     "in both services' environments."
 )
 

@@ -6,7 +6,7 @@ services:
     env_file:
       - ../.env.local
     environment:
-      - JWT_SECRET=${JWT_SECRET:-change_me}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
       - MEMBERSHIP_DB_DSN=postgresql://app:${MEMBERSHIP_DB_PASSWORD:?MEMBERSHIP_DB_PASSWORD must be set}@postgres:5432/membership
     depends_on:
       postgres:
@@ -54,7 +54,7 @@ services:
       - ../.env.example
       - ../.env.local
     environment:
-      - JWT_SECRET=${JWT_SECRET:-change_me}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
     depends_on:
       postgres:
         condition: service_healthy

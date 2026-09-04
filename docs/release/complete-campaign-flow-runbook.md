@@ -76,6 +76,7 @@ this flow.
 
 ```bash
 python -m pytest tests_e2e/test_complete_campaign_flow.py -q
+python -m pytest -m e2e --collect-only
 pytest services/campaign_service -q
 pytest services/orchestrator -q
 npm run check:api:regression

@@ -44,6 +44,28 @@ Task 7: pending
 - Replaced page-source assertions with route-backed OpenAPI assertions; all
   deterministic flow checks use ASGI TestClient and offline fixtures.
 
+## Task 7 Credential Fallback and Release Gate Report
+
+- Removed predictable JWT/platform/API/password fallbacks from compose,
+  examples, scripts, live E2E fixtures, and batch/source startup paths. Live
+  E2E now requires out-of-band secrets and generates per-run account passwords.
+- Expanded scanner regression coverage for DSNs, `:-`/`-`/multiple
+  interpolations, shell export, batch, Python, and JavaScript assignments.
+- Added marker-aware collection isolation so `python -m pytest -m e2e
+  --collect-only` collects only the three live E2E tests without service-package
+  import collisions; offline acceptance remains unmarked.
+
+## Task 7 Credential Fallback and Release Gate Follow-up Report
+
+- Removed predictable credential fallbacks from compose, tracked examples,
+  scripts, batch/source files, and live E2E setup; live tests now require
+  out-of-band auth values and generate per-run passwords.
+- Hardened tracked-text scanning for DSNs, direct assignments, shell/batch,
+  Python/JavaScript, multiple `${...}` fallback forms, and known credential
+  names without printing values.
+- Added scanner bypass regression tests and a root marker collection hook;
+  `python -m pytest -m e2e --collect-only` selects only live E2E tests.
+
 ## Task 7 Repository Secret Hygiene Report
 
 - Removed hardcoded database and weak API-key defaults from tracked deployment
