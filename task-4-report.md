@@ -30,8 +30,8 @@ The pre-existing changes in `deploy/docker-compose.yml`,
 - `npm run build`: PASS, production build and TypeScript completed; Next.js reported the existing multiple-lockfile workspace-root warning.
 - `git diff --check`: PASS.
 
-The new offline E2E uses mocked boundaries and no provider keys,
-JWTs, localhost probes, or live identities. It covers Manager review access,
+The new offline E2E uses mocked boundaries and no provider keys, JWTs,
+localhost probes, or live identities. It covers Manager review access,
 platform folder read/use-only behavior, platform-admin mutation, company folder
 isolation, same-company role assignment with platform-role and genuine
 cross-company-role rejection. The association reload test writes with
@@ -62,6 +62,23 @@ from B; it is explicitly skipped when `CAMPAIGN_TEST_DATABASE_URL` is absent.
 - No fallback deployment of the older `origin/master` revision was performed.
 - Migration/init for the target revision was not run because its revision was
   unavailable. No schema mutation was made.
+
+## Deployment Path Investigation
+
+- `deploy/gcp-deploy.ps1` only SCPs the generated `/tmp/gcp-vm-setup.sh`; its
+  VM setup step performs `git pull` when `/opt/ai-marketing-factory/.git`
+  exists, or `git clone` when it does not. It has no application archive or
+  source-bundle deployment mode.
+- `gcpdeployment.txt` documents source delivery only through `git clone` and
+  production updates through `git fetch` plus `git checkout`; its `rsync`
+  commands copy persistent asset folders, not application source.
+- No repository script or runbook documents a tar/zip/source-bundle upload and
+  extraction workflow. The target checkout failed with
+  `fatal: reference is not a tree: 6c1e01dd3f924765307810b346ee9fb0332d5f05`.
+- Blocker: an archive deployment is not an existing authorized workflow, and
+  creating one or changing remotes would exceed the requested scope. No safe
+  workaround exists without either publishing the target revision or using an
+  older revision, so deployment and migration stopped before mutation.
 
 ## Post-Deploy Checks
 
