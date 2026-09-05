@@ -9,6 +9,7 @@ from app.routes.company import router as company_router
 from app.routes.roles import router as roles_router
 from app.routes.platform import router as platform_router
 from app.routes.invitation import router as invitation_router
+from app.permissions import add_manager_review_permission
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -137,16 +138,12 @@ async def ensure_optional_tables() -> None:
                     """
                 )
                 # Add review access to existing Manager roles without changing other permissions.
-                cur.execute(
-                    """
-                    UPDATE roles
-                    SET permissions = ARRAY(
-                        SELECT DISTINCT permission
-                        FROM unnest(COALESCE(permissions, '{}') || ARRAY['review:manage']::text[]) AS permission
+                cur.execute("SELECT role_id, permissions FROM roles WHERE lower(trim(name)) = 'manager'")
+                for row in cur.fetchall():
+                    cur.execute(
+                        "UPDATE roles SET permissions = %s WHERE role_id = %s",
+                        (add_manager_review_permission(list(row["permissions"] or [])), row["role_id"]),
                     )
-                    WHERE lower(trim(name)) = 'manager'
-                    """
-                )
     await asyncio.to_thread(_create_tables)
 
 

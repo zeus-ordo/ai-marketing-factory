@@ -7212,9 +7212,10 @@ def submit_revision_request(payload: RevisionRequestPayload, req: Request) -> di
     campaign = store.get_campaign(payload.campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    require_review_action_access(req)
     actor_payload = require_campaign_access(req, campaign)
     if actor_payload is not None:
-        require_any_permission(actor_payload, {"review:regenerate", "review:manage", "role:manage"})
+        require_any_permission(actor_payload, {"review:manage", "review:revision"})
     worker_url = WORKER_TYPE_TO_URL.get(payload.asset_type)
     if not worker_url:
         raise HTTPException(status_code=400, detail=f"Unknown asset type: {payload.asset_type}")
@@ -7370,7 +7371,7 @@ def batch_run_campaigns(payload: BatchCampaignRunRequest, req: Request) -> Batch
     response_model=ReviewAuditResponse,
 )
 def list_review_audit_logs(req: Request, page: int = 1, page_size: int = 20) -> ReviewAuditResponse:
-    require_authenticated_read_access(req)
+    require_review_action_access(req)
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
     ordered = sorted(review_audit_logs, key=lambda item: item.timestamp, reverse=True)

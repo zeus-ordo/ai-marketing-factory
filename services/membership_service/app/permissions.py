@@ -46,3 +46,9 @@ def validate_permissions(permissions: list[str]) -> list[str]:
     if any(permission not in ALLOWED_PERMISSIONS for permission in deduped):
         raise HTTPException(status_code=422, detail="Invalid permissions")
     return deduped
+
+
+def add_manager_review_permission(permissions: list[str]) -> list[str]:
+    if "review:manage" in permissions:
+        return list(permissions)
+    return [*permissions, "review:manage"]

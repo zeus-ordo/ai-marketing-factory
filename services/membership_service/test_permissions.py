@@ -9,7 +9,7 @@ for module_name in list(sys.modules):
         del sys.modules[module_name]
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app.permissions import ALLOWED_PERMISSIONS, has_permission, require_permission, validate_permissions
+from app.permissions import ALLOWED_PERMISSIONS, add_manager_review_permission, has_permission, require_permission, validate_permissions
 
 
 def test_allowed_permissions_include_canonical_contract_and_migration_names():
@@ -49,3 +49,14 @@ def test_role_validation_accepts_canonical_permissions_and_rejects_unknown_value
         validate_permissions(["review:manage", "unknown:permission"])
 
     assert error.value.status_code == 422
+
+
+def test_manager_default_permission_seed_is_additive_and_idempotent():
+    existing = ["member:manage", "review:approve"]
+
+    seeded = add_manager_review_permission(existing)
+    reseeded = add_manager_review_permission(seeded)
+
+    assert seeded == ["member:manage", "review:approve", "review:manage"]
+    assert reseeded == seeded
+    assert "member:assign_role" not in seeded
