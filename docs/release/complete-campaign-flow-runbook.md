@@ -76,6 +76,7 @@ this flow.
 
 ```bash
 python -m pytest tests_e2e/test_complete_campaign_flow.py -q
+python -m pytest tests_e2e/test_permissions_and_folder_scope.py -q
 python -m pytest -m e2e --collect-only
 pytest services/campaign_service -q
 pytest services/orchestrator -q
@@ -94,3 +95,17 @@ smoke test. Live E2E tests are separately marked and require explicit
 must be run only with the frontend/API stack available; when services are not
 running it fails with an unavailable fetch and must be reported as such, never
 treated as a pass.
+
+## Permissions and Folder Rollout
+
+Run the permissions/folder E2E gate with mocked providers and test identities.
+It verifies Manager review access, company-admin same-company role assignment,
+platform-folder read/use-only behavior for company users, platform-admin
+folder mutation, company isolation, and association reads after a persistence
+reload. The additive migration must be applied and existing folder/reference
+counts checked before traffic is moved.
+
+Keep `lib/server/folders-store.ts` and local folder directories in place until
+backend persistence and read verification have passed. Only then can local
+folder-store deprecation be considered, and the decision must be recorded in
+the rollout report.

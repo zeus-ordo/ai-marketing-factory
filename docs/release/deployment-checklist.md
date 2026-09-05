@@ -17,6 +17,7 @@
 - [ ] DB backup snapshot completed
 - [ ] Redis persistence/backup policy confirmed
 - [ ] Run deterministic acceptance coverage: `python -m pytest tests_e2e/test_complete_campaign_flow.py -q`
+- [ ] Run deterministic permissions/folder coverage: `python -m pytest tests_e2e/test_permissions_and_folder_scope.py -q`
 - [ ] Run service regression coverage: `pytest services/campaign_service -q` and `pytest services/orchestrator -q`
 
 ### Required environment keys
@@ -57,6 +58,8 @@
 - [ ] Run DB migration/init (if applicable)
 - [ ] Apply additive campaign-service migrations before traffic. Never drop or rewrite existing campaign/reference tables.
 - [ ] Confirm `generation_contexts`, `generation_context_items`, and task-attempt columns exist; snapshots are immutable and keyed by campaign run.
+- [ ] Confirm additive `folders.folder_id`/scope schema and `folder_id` associations exist without dropping legacy data.
+- [ ] Verify existing folder/reference counts and association integrity before accepting traffic.
 - [ ] Verify orchestrator consumer loop active
 - [ ] Verify Redis stream group exists for:
   - [ ] `task.copy`
@@ -79,6 +82,11 @@
 - [ ] Verify audit logs record operator/action/result
 - [ ] Verify audit CSV export works with filters
 - [ ] Verify diagnostics are scoped to the selected `run_id` and show provider/model names only
+- [ ] Verify Manager review access and platform-folder read/use-only behavior.
+- [ ] Verify company-admin same-company role assignment rejects platform and cross-company roles.
+- [ ] Verify platform-admin folder mutation and company folder isolation.
+- [ ] Restart the service and verify knowledge/reference `folder_id` associations remain readable.
+- [ ] Preserve local folder store until backend persistence/read verification is complete.
 
 ---
 
