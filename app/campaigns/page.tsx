@@ -1561,7 +1561,7 @@ export default function CampaignCenterPage() {
           >
             <option value="">{t("campaigns.knowledge.allCategories")}</option>
             {folderRecords.map((folder) => (
-              <option key={folder.folder_id} value={folder.folder_id}>{getKnowledgeFolderLabel(folder.name)}</option>
+              <option key={folder.folder_id} value={folder.folder_id}>{getKnowledgeFolderLabel(folder.folder_id)}</option>
             ))}
           </select>
           <button

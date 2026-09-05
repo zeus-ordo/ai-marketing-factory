@@ -3,6 +3,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from datetime import datetime
 
 import pytest
 from fastapi import HTTPException
@@ -79,6 +80,50 @@ def test_in_memory_folder_delete_rejects_referenced_folder(monkeypatch):
 
 
 def test_in_memory_internal_folder_listing_matches_persistent_platform_scope(monkeypatch):
+    main.folders_cache.clear()
+
+
+def test_in_memory_knowledge_update_persists_selected_folder_id(monkeypatch):
+    folder = {"folder_id": "target", "scope": "company", "company_id": "company-a", "name": "Target"}
+    item = main.KnowledgeItemRecord(
+        item_id="item-1", company_id="company-a", title="Guide", source="manual", description="",
+        metadata={"category": "Old"}, folder_id=None, created_at=datetime.utcnow(),
+    )
+    main.knowledge_items["company-a"] = [item]
+    main.folders_cache["target"] = {**folder, "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()}
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: actor(permissions=["folder:edit"]))
+
+    request = SimpleNamespace(headers={}, query_params={})
+    updated = main.update_knowledge_item(request, "item-1", main.KnowledgeItemUpdateRequest(category="Target", folder_id="target"))
+    assert updated.folder_id == "target"
+    assert main.knowledge_items["company-a"][0].folder_id == "target"
+    main.knowledge_items.clear()
+    main.folders_cache.clear()
+
+
+def test_in_memory_reference_move_persists_selected_folder_id(monkeypatch):
+    campaign = SimpleNamespace(campaign_id="campaign-1", company_id="company-a")
+    reference = main.CampaignReferenceRecord(
+        reference_id="ref-1", campaign_id="campaign-1", file_name="guide.txt", file_type="text/plain",
+        file_size=1, uploaded_at=datetime.utcnow().isoformat(), download_url="", folder="Old", folder_id=None,
+    )
+    main.campaign_references["campaign-1"] = [reference]
+    main.campaign_reference_files["campaign-1"] = {"ref-1": __file__}
+    main.folders_cache["target"] = {"folder_id": "target", "scope": "company", "company_id": "company-a", "name": "Target", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()}
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "store", SimpleNamespace(get_campaign=lambda _id: campaign))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: actor(permissions=["folder:edit"]))
+    monkeypatch.setattr(main, "append_trace_event", lambda **_kwargs: None)
+
+    request = SimpleNamespace(base_url="http://test", headers={}, query_params={})
+    updated = main.update_campaign_reference("campaign-1", "ref-1", main.CampaignReferenceUpdateRequest(folder_id="target"), request)
+    assert updated.folder_id == "target"
+    assert main.campaign_references["campaign-1"][0].folder_id == "target"
+    main.campaign_references.clear()
+    main.campaign_reference_files.clear()
     main.folders_cache.clear()
     main.folders_cache.update({
         "platform": {"folder_id": "platform", "scope": "platform", "company_id": None, "name": "Brand", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()},

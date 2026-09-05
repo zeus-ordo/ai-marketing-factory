@@ -4638,6 +4638,7 @@ def update_campaign_reference(
         for item in campaign_references.get(campaign_id, []):
             if item.reference_id == reference_id:
                 item.folder = folder
+                item.folder_id = payload.folder_id
                 break
 
     append_trace_event(
@@ -5828,6 +5829,7 @@ def update_knowledge_item(req: Request, item_id: str, payload: KnowledgeItemUpda
             "description": str(updates.get("description") if updates.get("description") is not None else item.description).strip(),
             "content_url": updates.get("content_url") if updates.get("content_url") is not None else item.content_url,
             "metadata": metadata,
+            "folder_id": updates.get("folder_id") if "folder_id" in updates else item.folder_id,
         })
         rows[index] = updated_item
         knowledge_items[company_id] = rows

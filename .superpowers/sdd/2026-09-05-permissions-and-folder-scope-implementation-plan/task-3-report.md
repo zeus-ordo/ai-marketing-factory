@@ -92,3 +92,27 @@
 - `npm run check:secrets` remains blocked by pre-existing weak/default values in local environment files; no secrets were added or exposed.
 - The real persistence reload test requires a disposable PostgreSQL URL because the production abstraction is PostgreSQL-specific; without `CAMPAIGN_TEST_DATABASE_URL` it is skipped and documented rather than using a recording cursor.
 - Legacy inference is intentionally conservative: one case-insensitive match only; ambiguous, General, and Unfiled values remain `folder_id=None`.
+
+## Final Reviewer Fix Report
+
+### Changed Files
+
+- `services/campaign_service/app/main.py`: preserve explicit nullable `folder_id` in in-memory knowledge updates and mutate cached reference `folder_id` alongside its legacy label.
+- `app/campaigns/page.tsx`: pass folder IDs to the read-only label helper.
+- `services/campaign_service/test_folder_scope.py`: exercise in-memory knowledge and reference mutation responses/state.
+- `scripts/test-folder-scope-review-contract.mjs`: assert label calls use folder IDs rather than names.
+
+### TDD Evidence
+
+- RED: fallback mutation tests failed before implementation because knowledge response/cache retained `folder_id=None`, reference cache retained `folder_id=None`, and the UI contract found `getKnowledgeFolderLabel(folder.name)`.
+- GREEN: `python -m pytest services/campaign_service/test_folder_scope.py services/campaign_service/test_reference_folder_association.py services/campaign_service/test_persistence_migrations.py services/campaign_service/test_reference_scope.py services/campaign_service/test_task6_routes.py -q` passed **38 tests**, skipped 1 optional database reload test, and emitted 2 framework deprecation warnings.
+- GREEN: `node scripts/test-folder-scope-review-contract.mjs` passed.
+- GREEN: `npm run lint` passed with 0 errors and 13 existing warnings.
+- GREEN: `npm run build` passed.
+- GREEN: `git diff --check` passed.
+
+### Concerns
+
+- The real restart/reload test remains skipped without `CAMPAIGN_TEST_DATABASE_URL`; with that variable it writes and reloads through `PostgresPersistence` rather than a recording cursor.
+- Secret scanning remains blocked by pre-existing weak/default local environment values; no secrets were added or exposed.
+- Unrelated worktree modifications remain unstaged and preserved.

@@ -24,3 +24,9 @@ if (!campaigns.includes("getKnowledgeFolderKey(item, folderRecords)")) {
 if (!campaigns.includes("folder.company_id")) {
   throw new Error("Folder UI contract must retain company scope keys for duplicate names");
 }
+if (campaigns.includes("getKnowledgeFolderLabel(folder.name)")) {
+  throw new Error("Folder labels must receive the folder ID/key, not folder.name");
+}
+if (!campaigns.includes("getKnowledgeFolderLabel(folder.folder_id)")) {
+  throw new Error("Folder label call must pass folder_id");
+}
