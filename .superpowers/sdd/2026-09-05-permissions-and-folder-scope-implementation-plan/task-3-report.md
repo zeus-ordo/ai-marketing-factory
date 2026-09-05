@@ -116,3 +116,27 @@
 - The real restart/reload test remains skipped without `CAMPAIGN_TEST_DATABASE_URL`; with that variable it writes and reloads through `PostgresPersistence` rather than a recording cursor.
 - Secret scanning remains blocked by pre-existing weak/default local environment values; no secrets were added or exposed.
 - Unrelated worktree modifications remain unstaged and preserved.
+
+## Final Reference Scope Fix Report
+
+### Changed Files
+
+- `services/campaign_service/app/main.py`: apply conservative legacy folder inference to in-memory reference listings; preserve existing `folder_id` for omitted PATCH fields while allowing explicit null clearing.
+- `app/campaigns/page.tsx`: group references with scope/company/folder-ID keys and keep folder labels keyed by folder ID.
+- `services/campaign_service/test_folder_scope.py`: cover in-memory reference inference and omitted-versus-null reference PATCH behavior.
+- `scripts/test-folder-scope-review-contract.mjs`: assert reference grouping uses folder keys and label calls receive folder IDs.
+
+### TDD Evidence
+
+- RED: focused tests failed 2 fallback behaviors (legacy reference inference and omitted PATCH association preservation), and the UI contract failed on reference name-only grouping/label usage.
+- GREEN: `python -m pytest services/campaign_service/test_folder_scope.py services/campaign_service/test_reference_folder_association.py services/campaign_service/test_persistence_migrations.py services/campaign_service/test_reference_scope.py services/campaign_service/test_task6_routes.py -q` passed **41 tests**, skipped 1 optional database reload test, and emitted 2 framework deprecation warnings.
+- GREEN: `node scripts/test-folder-scope-review-contract.mjs` passed.
+- GREEN: `npm run lint` passed with 0 errors and 13 existing warnings.
+- GREEN: `npm run build` passed.
+- GREEN: `git diff --check` passed.
+
+### Concerns
+
+- The optional real reload test requires `CAMPAIGN_TEST_DATABASE_URL`; without it, the test is skipped because the production repository abstraction is PostgreSQL-specific.
+- Secret scanning remains blocked by pre-existing weak/default local environment values; no secrets were added or exposed.
+- Unrelated worktree modifications remain unstaged and preserved.

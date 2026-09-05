@@ -495,11 +495,11 @@ export default function CampaignCenterPage() {
 
   const groupedReferences = useMemo(() => {
     return references.reduce<Record<string, CampaignReferenceRecord[]>>((groups, item) => {
-      const folder = getReferenceFolder(item);
-      groups[folder] = [...(groups[folder] ?? []), item];
+      const folderKey = getReferenceFolderKey(item, folderRecords);
+      groups[folderKey] = [...(groups[folderKey] ?? []), item];
       return groups;
     }, {});
-  }, [references]);
+  }, [folderRecords, references]);
 
   useEffect(() => {
     let mounted = true;
@@ -2021,6 +2021,12 @@ function getReferenceFolder(item: CampaignReferenceRecord): string {
 function getKnowledgeFolder(item: KnowledgeItemRecord): string {
   const folder = item.metadata?.folder ?? item.metadata?.category;
   return typeof folder === "string" && folder.trim() ? folder : "General";
+}
+
+function getReferenceFolderKey(item: CampaignReferenceRecord, folderRecords: FolderRecord[]): string {
+  if (!item.folder_id) return `legacy:${getReferenceFolder(item)}`;
+  const folder = folderRecords.find((candidate) => candidate.folder_id === item.folder_id);
+  return folder ? folderScopeKey(folder) : item.folder_id;
 }
 
 function getKnowledgeFolderKey(item: KnowledgeItemRecord, folderRecords: FolderRecord[]): string {

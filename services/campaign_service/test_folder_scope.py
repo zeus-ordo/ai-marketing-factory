@@ -125,6 +125,72 @@ def test_in_memory_reference_move_persists_selected_folder_id(monkeypatch):
     main.campaign_references.clear()
     main.campaign_reference_files.clear()
     main.folders_cache.clear()
+
+
+def test_in_memory_reference_listing_infers_unambiguous_legacy_folder_id(monkeypatch):
+    campaign = SimpleNamespace(campaign_id="campaign-1", company_id="company-a")
+    reference = main.CampaignReferenceRecord(
+        reference_id="ref-legacy", campaign_id="campaign-1", file_name="guide.txt", file_type="text/plain",
+        file_size=1, uploaded_at=datetime.utcnow().isoformat(), download_url="", folder="brand", folder_id=None,
+    )
+    main.campaign_references["campaign-1"] = [reference]
+    main.campaign_reference_files["campaign-1"] = {"ref-legacy": __file__}
+    main.folders_cache["folder-brand"] = {"folder_id": "folder-brand", "scope": "company", "company_id": "company-a", "name": "Brand", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()}
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "store", SimpleNamespace(get_campaign=lambda _id: campaign))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "is_internal_api_key_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: actor())
+
+    result = main.list_campaign_references("campaign-1", SimpleNamespace(base_url="http://test", headers={}))
+    assert result.items[0].folder_id == "folder-brand"
+    main.campaign_references.clear()
+    main.campaign_reference_files.clear()
+    main.folders_cache.clear()
+
+
+def test_in_memory_reference_patch_without_folder_id_preserves_existing_association(monkeypatch):
+    campaign = SimpleNamespace(campaign_id="campaign-1", company_id="company-a")
+    reference = main.CampaignReferenceRecord(
+        reference_id="ref-keep", campaign_id="campaign-1", file_name="guide.txt", file_type="text/plain",
+        file_size=1, uploaded_at=datetime.utcnow().isoformat(), download_url="", folder="Old", folder_id="folder-old",
+    )
+    main.campaign_references["campaign-1"] = [reference]
+    main.campaign_reference_files["campaign-1"] = {"ref-keep": __file__}
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "store", SimpleNamespace(get_campaign=lambda _id: campaign))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "is_internal_api_key_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: actor())
+    monkeypatch.setattr(main, "append_trace_event", lambda **_kwargs: None)
+
+    request = SimpleNamespace(base_url="http://test", headers={}, query_params={})
+    updated = main.update_campaign_reference("campaign-1", "ref-keep", main.CampaignReferenceUpdateRequest(folder="Renamed"), request)
+    assert updated.folder_id == "folder-old"
+    main.campaign_references.clear()
+    main.campaign_reference_files.clear()
+
+
+def test_in_memory_reference_patch_with_explicit_null_clears_association(monkeypatch):
+    campaign = SimpleNamespace(campaign_id="campaign-1", company_id="company-a")
+    reference = main.CampaignReferenceRecord(
+        reference_id="ref-clear", campaign_id="campaign-1", file_name="guide.txt", file_type="text/plain",
+        file_size=1, uploaded_at=datetime.utcnow().isoformat(), download_url="", folder="Old", folder_id="folder-old",
+    )
+    main.campaign_references["campaign-1"] = [reference]
+    main.campaign_reference_files["campaign-1"] = {"ref-clear": __file__}
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "store", SimpleNamespace(get_campaign=lambda _id: campaign))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "is_internal_api_key_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: actor())
+    monkeypatch.setattr(main, "append_trace_event", lambda **_kwargs: None)
+
+    request = SimpleNamespace(base_url="http://test", headers={}, query_params={})
+    updated = main.update_campaign_reference("campaign-1", "ref-clear", main.CampaignReferenceUpdateRequest(folder="General", folder_id=None), request)
+    assert updated.folder_id is None
+    main.campaign_references.clear()
+    main.campaign_reference_files.clear()
     main.folders_cache.update({
         "platform": {"folder_id": "platform", "scope": "platform", "company_id": None, "name": "Brand", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()},
         "company": {"folder_id": "company", "scope": "company", "company_id": "company-a", "name": "Brand", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()},

@@ -21,6 +21,9 @@ if (!campaigns.includes("item.folder_id !== knowledgeCategoryFilter")) {
 if (!campaigns.includes("getKnowledgeFolderKey(item, folderRecords)")) {
   throw new Error("Campaigns grouping must use folder_id keys");
 }
+if (!campaigns.includes("getReferenceFolderKey(item, folderRecords)")) {
+  throw new Error("Reference grouping must use folder_id and scope keys");
+}
 if (!campaigns.includes("folder.company_id")) {
   throw new Error("Folder UI contract must retain company scope keys for duplicate names");
 }

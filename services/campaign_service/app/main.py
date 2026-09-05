@@ -3265,6 +3265,8 @@ def get_reference_payload_or_404(campaign_id: str, reference_id: str) -> dict[st
                 "file_size": item.file_size,
                 "uploaded_at": item.uploaded_at,
                 "stored_path": stored_path,
+                "folder": item.folder,
+                "folder_id": item.folder_id,
             }
 
     raise HTTPException(status_code=404, detail="Campaign reference not found")
@@ -4625,8 +4627,9 @@ def update_campaign_reference(
     if target_folder is not None:
         folder = target_folder["name"]
     existing = get_reference_payload_or_404(campaign_id, reference_id)
+    folder_id = payload.folder_id if "folder_id" in payload.model_fields_set else existing.get("folder_id")
     if persistence is not None:
-        if not persistence.update_campaign_reference_folder(campaign_id, reference_id, folder, payload.folder_id):
+        if not persistence.update_campaign_reference_folder(campaign_id, reference_id, folder, folder_id):
             raise HTTPException(status_code=404, detail="Campaign reference not found")
         updated = persistence.get_campaign_reference(campaign_id, reference_id)
         if updated is None:
@@ -4634,11 +4637,11 @@ def update_campaign_reference(
     else:
         updated = dict(existing)
         updated["folder"] = folder
-        updated["folder_id"] = payload.folder_id
+        updated["folder_id"] = payload.folder_id if "folder_id" in payload.model_fields_set else existing.get("folder_id")
         for item in campaign_references.get(campaign_id, []):
             if item.reference_id == reference_id:
                 item.folder = folder
-                item.folder_id = payload.folder_id
+                item.folder_id = updated["folder_id"]
                 break
 
     append_trace_event(
@@ -7887,7 +7890,12 @@ def list_campaign_references(campaign_id: str, req: Request) -> CampaignReferenc
         items = [to_reference_record(base_url, payload) for payload in db_items if reference_file_exists(payload)]
     else:
         path_map = campaign_reference_files.get(campaign_id, {})
-        items = [item for item in campaign_references.get(campaign_id, []) if os.path.exists(path_map.get(item.reference_id, ""))]
+        visible_folders = [folder for folder in folders_cache.values() if folder["scope"] == "platform" or folder.get("company_id") == campaign.company_id]
+        items = [
+            CampaignReferenceRecord(**apply_legacy_folder_association(item.model_dump(mode="python"), visible_folders))
+            for item in campaign_references.get(campaign_id, [])
+            if os.path.exists(path_map.get(item.reference_id, ""))
+        ]
     return CampaignReferenceListResponse(items=items, total=len(items))
 
 
