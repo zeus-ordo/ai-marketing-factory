@@ -7,7 +7,7 @@ from app.repositories.role import RoleRepository
 from app.repositories.invitation import InvitationRepository
 from app.services.email import send_email, EmailType
 from app.config import settings
-from app.permissions import require_permission
+from app.permissions import require_any_permission, require_permission
 
 router = APIRouter()
 member_repo = MemberRepository()
@@ -88,7 +88,7 @@ async def list_members(
     company_id: UUID,
     payload: dict = Depends(require_auth),
 ):
-    check_permission(payload, "member:manage")
+    require_any_permission(payload, "member:assign_role", "member:manage")
     if str(payload.get("company_id")) != str(company_id):
         raise HTTPException(status_code=403, detail="Cannot view members of another company")
 
@@ -140,9 +140,30 @@ async def update_member_roles(
     req: MemberRoleUpdateRequest,
     payload: dict = Depends(require_auth),
 ):
-    check_permission(payload, "member:manage")
+    require_any_permission(payload, "member:assign_role", "member:manage")
     if str(payload.get("company_id")) != str(company_id):
         raise HTTPException(status_code=403, detail="Cannot update members of another company")
 
-    await role_repo.set_member_roles(member_id, req.role_ids)
+    target = await member_repo.get_by_id(member_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Member not found")
+    if target.company_id is None or str(target.company_id) != str(company_id):
+        raise HTTPException(status_code=403, detail="Cannot update a member of another company")
+
+    role_ids = list(dict.fromkeys(req.role_ids))
+    for role_id in role_ids:
+        role = await role_repo.get_by_id(role_id)
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+        if role.is_system or role.company_id is None:
+            raise HTTPException(status_code=422, detail="Cannot assign platform roles")
+        if str(role.company_id) != str(company_id):
+            raise HTTPException(status_code=403, detail="Cannot assign roles from another company")
+
+    await role_repo.set_member_roles(
+        member_id,
+        role_ids,
+        actor_id=UUID(payload["sub"]),
+        company_id=company_id,
+    )
     return {"message": "Roles updated"}

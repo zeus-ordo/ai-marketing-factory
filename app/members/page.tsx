@@ -8,6 +8,7 @@ import {
   inviteMember,
   removeMember,
   listRoles,
+  updateMemberRoles,
   type MemberResponse,
   type RoleResponse,
 } from "@/lib/api/auth";
@@ -25,13 +26,20 @@ function MembersContent() {
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState(false);
+  const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  const [editingRoleIds, setEditingRoleIds] = useState<string[]>([]);
+  const [roleUpdateLoading, setRoleUpdateLoading] = useState(false);
+  const [roleUpdateMsg, setRoleUpdateMsg] = useState<string | null>(null);
+  const [roleUpdateError, setRoleUpdateError] = useState(false);
   const failedMessage = "Failed";
   const removeConfirmMessage = "Remove this member?";
   const noCompanyMessage = "You are not assigned to a company yet.";
   const loadingLabel = "...";
 
   const canManage = user?.permissions.includes("member:manage");
-  const inviteRoles = roles.filter((role) => role.company_id === user?.company_id);
+  const canAssignRoles = Boolean(canManage || user?.permissions.includes("member:assign_role"));
+  const assignableRoles = roles.filter((role) => role.company_id === user?.company_id && !role.is_system);
+  const inviteRoles = assignableRoles;
   const adminRole = inviteRoles.find((role) => /admin/i.test(role.name));
 
   useEffect(() => {
@@ -88,6 +96,39 @@ function MembersContent() {
     if (!user?.company_id || !window.confirm(removeConfirmMessage)) return;
     await removeMember(user.company_id, memberId);
     setMembers((prev) => prev.filter((m) => m.member_id !== memberId));
+  }
+
+  function startRoleEdit(member: MemberResponse) {
+    setEditingMemberId(member.member_id);
+    setEditingRoleIds(member.roles.filter((role) => !role.is_system).map((role) => role.role_id));
+    setRoleUpdateMsg(null);
+    setRoleUpdateError(false);
+  }
+
+  function cancelRoleEdit() {
+    setEditingMemberId(null);
+    setEditingRoleIds([]);
+    setRoleUpdateMsg(null);
+    setRoleUpdateError(false);
+  }
+
+  async function handleRoleUpdate(memberId: string) {
+    if (!user?.company_id) return;
+    setRoleUpdateLoading(true);
+    setRoleUpdateMsg(null);
+    setRoleUpdateError(false);
+    try {
+      await updateMemberRoles(user.company_id, memberId, editingRoleIds);
+      setRoleUpdateMsg(t("members.rolesUpdated"));
+      const res = await listMembers(user.company_id);
+      setMembers(res.items);
+      setEditingMemberId(null);
+    } catch (err) {
+      setRoleUpdateMsg(err instanceof Error ? err.message : t("members.updateFailure"));
+      setRoleUpdateError(true);
+    } finally {
+      setRoleUpdateLoading(false);
+    }
   }
 
   if (!user?.company_id) {
@@ -162,7 +203,7 @@ function MembersContent() {
               <th className="px-4 py-3">{t("members.email")}</th>
               <th className="px-4 py-3">{t("members.roles")}</th>
               <th className="px-4 py-3">{t("members.status")}</th>
-              {canManage && <th className="px-4 py-3">{t("members.actions")}</th>}
+              {(canManage || canAssignRoles) && <th className="px-4 py-3">{t("members.actions")}</th>}
             </tr>
           </thead>
           <tbody>
@@ -211,15 +252,40 @@ function MembersContent() {
                       {m.email_verified ? t("members.verified") : t("members.pending")}
                     </span>
                   </td>
-                  {canManage && (
+                  {(canManage || canAssignRoles) && (
                     <td className="px-4 py-3">
-                      {m.member_id !== user?.member_id && (
-                        <button
-                          onClick={() => handleRemove(m.member_id)}
-                          className="text-xs text-rose-600 hover:underline"
-                        >
-                          {t("members.remove")}
-                        </button>
+                      {canAssignRoles && editingMemberId === m.member_id ? (
+                        <div className="flex flex-col gap-2">
+                          <select
+                            multiple
+                            value={editingRoleIds}
+                            onChange={(e) => setEditingRoleIds(Array.from(e.target.selectedOptions, (option) => option.value))}
+                            aria-label={t("members.editRoles")}
+                            className="min-w-[180px] rounded-lg border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
+                          >
+                            {assignableRoles.map((role) => (
+                              <option key={role.role_id} value={role.role_id}>{role.name}</option>
+                            ))}
+                          </select>
+                          <div className="flex gap-2">
+                            <button type="button" disabled={roleUpdateLoading} onClick={() => handleRoleUpdate(m.member_id)} className="text-xs text-emerald-600 hover:underline disabled:opacity-50">
+                              {roleUpdateLoading ? loadingLabel : t("members.save")}
+                            </button>
+                            <button type="button" disabled={roleUpdateLoading} onClick={cancelRoleEdit} className="text-xs text-slate-500 hover:underline disabled:opacity-50">
+                              {t("members.cancel")}
+                            </button>
+                          </div>
+                          {roleUpdateMsg && <span className={roleUpdateError ? "text-xs text-rose-600" : "text-xs text-emerald-600"}>{roleUpdateMsg}</span>}
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {canAssignRoles && <button type="button" onClick={() => startRoleEdit(m)} className="text-xs text-[#0071e3] hover:underline">{t("members.editRoles")}</button>}
+                          {canManage && m.member_id !== user?.member_id && (
+                            <button type="button" onClick={() => handleRemove(m.member_id)} className="text-xs text-rose-600 hover:underline">
+                              {t("members.remove")}
+                            </button>
+                          )}
+                        </div>
                       )}
                     </td>
                   )}

@@ -41,6 +41,11 @@ def require_permission(payload: dict, permission: str) -> None:
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
 
+def require_any_permission(payload: dict, *permissions: str) -> None:
+    if not any(has_permission(payload.get("permissions"), permission) for permission in permissions):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+
 def validate_permissions(permissions: list[str]) -> list[str]:
     deduped = list(dict.fromkeys(permissions))
     if any(permission not in ALLOWED_PERMISSIONS for permission in deduped):

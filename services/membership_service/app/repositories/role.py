@@ -1,4 +1,5 @@
 import asyncio
+import json
 from uuid import UUID
 from app.database import get_connection
 from app.models import Role
@@ -160,7 +161,14 @@ class RoleRepository:
                     )
         await asyncio.to_thread(_do)
 
-    async def set_member_roles(self, member_id: UUID, role_ids: list[UUID]) -> None:
+    async def set_member_roles(
+        self,
+        member_id: UUID,
+        role_ids: list[UUID],
+        *,
+        actor_id: UUID | None = None,
+        company_id: UUID | None = None,
+    ) -> None:
         def _do():
             with get_connection() as conn:
                 with conn.cursor() as cur:
@@ -169,5 +177,28 @@ class RoleRepository:
                         cur.execute(
                             "INSERT INTO member_roles (member_id, role_id) VALUES (%s, %s)",
                             (member_id, role_id),
+                        )
+                    if actor_id is not None and company_id is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO audit_logs
+                                (member_id, company_id, action, resource_type, resource_id, metadata)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                actor_id,
+                                company_id,
+                                "member.roles.update",
+                                "member",
+                                str(member_id),
+                                json.dumps(
+                                    {
+                                        "actor_id": str(actor_id),
+                                        "member_id": str(member_id),
+                                        "role_ids": [str(role_id) for role_id in role_ids],
+                                        "result": "success",
+                                    }
+                                ),
+                            ),
                         )
         await asyncio.to_thread(_do)
