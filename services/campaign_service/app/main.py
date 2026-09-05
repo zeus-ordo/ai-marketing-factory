@@ -2409,12 +2409,32 @@ def build_campaign_prompt_context(campaign: CampaignRecord) -> str:
     return "\n".join(parts)
 
 
+REFERENCE_PRIORITY_POLICY = """
+Reference policy:
+1. Treat user-uploaded or user-selected campaign references as the highest-priority source of truth（優先使用使用者上傳或選擇的參考資料）。
+2. Use the matching reference folder for the requested copy, image, or video style/concept.
+3. Use industry-matched knowledge as supporting context only.
+4. Use external search context only to learn similar keywords, tone, format, style, and concepts; never copy claims or wording blindly.
+5. When external context is present, preserve the assembled context balance: user-selected/uploaded plus folder context first, external web context approximately 75:25 overall.
+6. 生成後校稿：確認內容符合活動需求、參考資料優先級、資料夾風格與禁止事項，再輸出結果。
+""".strip()
+
+
 def build_image_generation_prompt(campaign: CampaignRecord) -> str:
     brief = campaign.brief
     parts = [
         build_campaign_prompt_context(campaign),
         "",
         "Image generation task: Create campaign visual assets using all campaign context above.",
+        REFERENCE_PRIORITY_POLICY,
+        """
+Visual type policy:
+1. Infer the requested visual type from the campaign brief. Choose the closest of: 主視覺 KV、Banner（橫置／9:16需求）、社群圖文（方形 1:1）、特殊規則（直式 2:1）。
+2. Follow the selected type's composition, focal point, hierarchy, safe area, and intended placement. Treat the requested ratio as a design requirement and do not silently change it.
+3. Match the selected folder's visual style and concept before using generic model style.
+4. Before returning, self-check composition, style consistency, brand/product accuracy, legibility, unwanted artifacts, and whether the concept matches the campaign.
+5. Return only the requested image-generation output; do not describe the self-check in the asset itself.
+""".strip(),
     ]
 
     intent_text = " ".join(parts).lower()
@@ -2435,6 +2455,15 @@ def build_copy_generation_prompt(campaign: CampaignRecord) -> str:
     return "\n\n".join(
         [
             build_campaign_prompt_context(campaign),
+            REFERENCE_PRIORITY_POLICY,
+            """
+Copy type policy:
+1. Infer the requested copy type from the campaign brief and choose exactly one primary format: 宣傳文宣（100 字內）、社群文章（100-200 字）、 or 公關稿（300-500 字）。
+2. Match the selected copy type's structure, tone, pacing, headline style, and CTA format to the corresponding reference folder.
+3. Use similar keywords from external context to learn tone and format, not to invent unsupported facts or copy wording.
+4. Generate a complete draft, then proofread it before returning: check the selected length range, grammar, tone, campaign objective, mandatory elements, forbidden elements, factual grounding, and CTA.
+5. If the brief is ambiguous, prefer the shortest format that satisfies the objective and state the chosen format in the internal reasoning, not in the copy body.
+""".strip(),
             "Copywriting task: Generate campaign copy using all campaign context above. Preserve the project brief intent and industry context.",
         ]
     )
@@ -2444,6 +2473,15 @@ def build_video_generation_prompt(campaign: CampaignRecord) -> str:
     return "\n\n".join(
         [
             build_campaign_prompt_context(campaign),
+            REFERENCE_PRIORITY_POLICY,
+            """
+Video type policy:
+1. Infer the requested video type from the campaign brief and choose exactly one: 短影音（10 秒）、宣傳短片（15 秒）、網路廣告（30 秒）。
+2. Build the script, shot rhythm, opening hook, visual concept, voice/text density, and CTA for the selected duration and campaign placement.
+3. Match the selected folder's video style and concept before using generic motion-graphic conventions.
+4. Use external context only for comparable style and concept inspiration; do not copy footage, claims, or branded wording.
+5. Before returning, self-check duration intent, shot continuity, readability, product accuracy, brand tone, CTA, and unwanted artifacts.
+""".strip(),
             "Video generation task: Create a polished short vertical social media ad video using all campaign context above.",
             "Output requirements: duration 6 seconds, aspect ratio 9:16 vertical, MP4, 1080p high-definition quality if supported, commercial-grade sharp visuals, smooth motion, readable Traditional Chinese text overlays when text is needed, clear CTA ending, no blurry frames, no distorted logos/text, no misleading claims.",
         ]
@@ -3257,9 +3295,9 @@ def require_internal_api_key(req: Request) -> None:
 
 def require_review_action_access(req: Request) -> None:
     """Allow review actions from internal automation, platform admin, or privileged company members."""
-    if is_internal_api_key_request(req):
-        return
     if is_platform_admin_request(req):
+        return
+    if is_internal_api_key_request(req):
         return
     payload = require_jwt(req)
     require_any_permission(
@@ -3269,9 +3307,6 @@ def require_review_action_access(req: Request) -> None:
             "review:approve",
             "review:reject",
             "review:revision",
-            "campaign:review",
-            "campaign:approve",
-            "role:manage",
         },
     )
 
@@ -6644,6 +6679,7 @@ def list_review_queue(
     campaign_id: str | None = None,
     run_id: str | None = None,
 ) -> ReviewQueueResponse:
+    require_review_action_access(req)
     actor_company_id: str | None = None
     if is_platform_admin_request(req) or is_internal_api_key_request(req):
         actor_company_id = None

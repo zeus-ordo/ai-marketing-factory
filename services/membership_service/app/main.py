@@ -136,6 +136,17 @@ async def ensure_optional_tables() -> None:
                     );
                     """
                 )
+                # Add review access to existing Manager roles without changing other permissions.
+                cur.execute(
+                    """
+                    UPDATE roles
+                    SET permissions = ARRAY(
+                        SELECT DISTINCT permission
+                        FROM unnest(COALESCE(permissions, '{}') || ARRAY['review:manage']::text[]) AS permission
+                    )
+                    WHERE lower(trim(name)) = 'manager'
+                    """
+                )
     await asyncio.to_thread(_create_tables)
 
 

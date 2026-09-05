@@ -7,6 +7,7 @@ from app.repositories.role import RoleRepository
 from app.repositories.invitation import InvitationRepository
 from app.services.email import send_email, EmailType
 from app.config import settings
+from app.permissions import require_permission
 
 router = APIRouter()
 member_repo = MemberRepository()
@@ -15,8 +16,7 @@ invitation_repo = InvitationRepository()
 
 
 def check_permission(payload: dict, permission: str) -> None:
-    if permission not in (payload.get("permissions") or []):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    require_permission(payload, permission)
 
 
 async def get_member_roles(member_id: UUID) -> list[RoleResponse]:

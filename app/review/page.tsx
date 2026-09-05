@@ -20,6 +20,7 @@ import {
 } from "@/lib/api/campaigns";
 import { useAuth } from "@/lib/auth/context";
 import { useI18n } from "@/lib/i18n/context";
+import { canReview as hasReviewPermission } from "@/lib/auth/permissions";
 
 function diagnosticTaskTypeLabel(taskType: string, t: ReturnType<typeof useI18n>["t"]) {
   if (taskType === "copywriting") return t("review.diagnostics.copywriting");
@@ -44,7 +45,7 @@ function diagnosticTaskStatusLabel(status: string, t: ReturnType<typeof useI18n>
 export default function ReviewPage() {
   const { t } = useI18n();
   const { user, isLoading: authLoading } = useAuth();
-  const canReview = user?.permissions.some((permission) => ["*", "admin", "platform:admin", "review:approve", "review:reject", "review:revision"].includes(permission)) ?? false;
+  const canReview = user ? hasReviewPermission(user.permissions) : false;
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [campaignNameMap, setCampaignNameMap] = useState<Record<string, string>>({});
   const [campaignTaskMap, setCampaignTaskMap] = useState<Record<string, CampaignTask[]>>({});
