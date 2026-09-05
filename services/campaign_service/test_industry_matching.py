@@ -9,6 +9,9 @@ from app.main import (
     CampaignReferenceRecord,
     KnowledgeItemRecord,
     build_campaign_prompt_context,
+    build_copy_generation_prompt,
+    build_image_generation_prompt,
+    build_video_generation_prompt,
     campaign_references,
     campaign_reference_files,
     list_campaign_reference_prompt_lines,
@@ -142,3 +145,40 @@ def test_generation_prompt_contains_structured_reference_traceability(monkeypatc
         campaign_references.pop("ca_1", None)
         campaign_reference_files.pop("ca_1", None)
         knowledge_items.pop("co_1", None)
+
+
+def test_copy_prompt_contains_type_length_priority_and_proofreading_policy():
+    prompt = build_copy_generation_prompt(campaign())
+
+    assert "宣傳文宣" in prompt
+    assert "社群文章" in prompt
+    assert "公關稿" in prompt
+    assert "100 字內" in prompt
+    assert "100-200 字" in prompt
+    assert "300-500 字" in prompt
+    assert "使用者上傳或選擇的參考資料" in prompt
+    assert "生成後校稿" in prompt
+
+
+def test_image_prompt_contains_type_reference_ratio_and_review_policy():
+    prompt = build_image_generation_prompt(campaign())
+
+    assert "主視覺 KV" in prompt
+    assert "社群圖文" in prompt
+    assert "特殊規則" in prompt
+    assert "75:25" in prompt
+    assert "使用者上傳或選擇的參考資料" in prompt
+    assert "生成後校稿" in prompt
+
+
+def test_video_prompt_contains_duration_type_reference_and_review_policy():
+    prompt = build_video_generation_prompt(campaign())
+
+    assert "短影音" in prompt
+    assert "10 秒" in prompt
+    assert "宣傳短片" in prompt
+    assert "15 秒" in prompt
+    assert "網路廣告" in prompt
+    assert "30 秒" in prompt
+    assert "使用者上傳或選擇的參考資料" in prompt
+    assert "生成後校稿" in prompt

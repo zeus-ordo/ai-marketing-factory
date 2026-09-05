@@ -64,8 +64,10 @@ def build_copy_prompt(prompt: str, brand_context: dict[str, object], variant_no:
         + (f"Brand context:\n{context_str}\n" if context_str else "")
         + (
             f"Generate copy variant {variant_no}. "
-            "Output ONLY valid JSON with these exact keys and length limits: "
-            '{"title": "max 30 chars", "body": "80-200 chars", "cta": "max 15 chars"}. '
+            "Follow the copy type, length range, reference priority, and proofreading policy in the campaign prompt. "
+            "Output ONLY valid JSON with these exact keys; keep title max 30 chars and CTA max 15 chars, "
+            "and do not override the campaign prompt's selected body length range. "
+            '{"title": "string", "body": "string", "cta": "string"}. '
             "Do NOT use null or empty strings for any field."
         )
     )
