@@ -38,3 +38,23 @@ def test_company_folder_requires_matching_company_and_permission():
 
 def test_legacy_unfiled_content_remains_general_when_no_folder_id_exists():
     assert main.authorize_folder_access({"folder_id": None, "scope": None, "company_id": None, "name": "General"}, actor(), "use") is None
+
+
+def test_folder_delete_rejects_referenced_folder(monkeypatch):
+    folder = {"folder_id": "company-brand", "scope": "company", "company_id": "company-a", "name": "Brand"}
+
+    class Persistence:
+        def get_folder(self, folder_id):
+            return folder if folder_id == folder["folder_id"] else None
+
+        def count_folder_associations(self, folder_id):
+            return 1
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "is_internal_api_key_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: actor(permissions=["folder:delete"]))
+
+    with pytest.raises(HTTPException) as exc:
+        main.delete_folder(object(), "company-brand")
+    assert exc.value.status_code == 409

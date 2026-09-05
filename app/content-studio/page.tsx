@@ -35,7 +35,7 @@ export default function ContentStudioPage() {
 
   // Folder state
   const [folders, setFolders] = useState<FolderRecord[]>([]);
-  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
 
@@ -69,31 +69,18 @@ export default function ContentStudioPage() {
     return () => window.clearTimeout(timer);
   }, [loadItems, loadFolders]);
 
-  const allCategories = useMemo(() => {
-    const cats = new Set<string>();
-    for (const item of items) {
-      const cat = String(item.metadata.category ?? "General");
-      cats.add(cat);
-    }
-    return Array.from(cats).sort();
-  }, [items]);
-
-  const availableFolders = useMemo(() => {
-    // Combine user-created folders with categories from items
-    const combined = new Set([...folders.map((f) => f.name), ...allCategories]);
-    return Array.from(combined).sort();
-  }, [folders, allCategories]);
+  const availableFolders = useMemo(() => folders, [folders]);
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return items.filter((item) => {
       if (tab === "ai" && item.source !== "ai") return false;
       if (tab === "manual" && item.source !== "manual") return false;
-      if (selectedFolder && String(item.metadata.category ?? "General") !== selectedFolder) return false;
+      if (selectedFolderId && item.folder_id !== selectedFolderId) return false;
       if (!normalized) return true;
       return `${item.title} ${item.description} ${String(item.metadata.file_name ?? "")} ${String(item.metadata.category ?? "")}`.toLowerCase().includes(normalized);
     });
-  }, [items, query, tab, selectedFolder]);
+  }, [items, query, tab, selectedFolderId]);
 
   async function handleCreateFolder() {
     const name = newFolderName.trim();
@@ -112,7 +99,7 @@ export default function ContentStudioPage() {
     if (!window.confirm(t("knowledge.deleteConfirm"))) return;
     try {
       await deleteFolder(folder.folder_id);
-      if (selectedFolder === folder.name) setSelectedFolder(null);
+      if (selectedFolderId === folder.folder_id) setSelectedFolderId(null);
       void loadFolders();
     } catch {
       // ignore errors
@@ -128,8 +115,8 @@ export default function ContentStudioPage() {
         title: cleanTitle,
         source: "manual",
         description,
-        folder_id: folders.find((folder) => folder.name === (category || "General"))?.folder_id ?? null,
-        metadata: { category: category || "General", source_label: "manual_copy", asset_type: "copy" },
+        folder_id: category || null,
+        metadata: { category: folders.find((folder) => folder.folder_id === category)?.name || "General", source_label: "manual_copy", asset_type: "copy" },
       });
       setTitle("");
       setDescription("");
@@ -147,7 +134,7 @@ export default function ContentStudioPage() {
     if (!file || assetType === "copy") return;
     setBusy(true);
     try {
-      await uploadKnowledgeItem(file, title || file.name, description, category || "General", assetType, folders.find((folder) => folder.name === (category || "General"))?.folder_id);
+      await uploadKnowledgeItem(file, title || file.name, description, folders.find((folder) => folder.folder_id === category)?.name || "General", assetType, category || undefined);
       setTitle("");
       setDescription("");
       setCategory("");
@@ -175,12 +162,13 @@ export default function ContentStudioPage() {
     }
   }
 
-  async function handleMoveItem(item: KnowledgeItemRecord, folderName: string) {
-    const currentFolder = String(item.metadata.category ?? "General");
-    if (!folderName || folderName === currentFolder) return;
+  async function handleMoveItem(item: KnowledgeItemRecord, folderId: string) {
+    if (!folderId || folderId === item.folder_id) return;
+    const target = folders.find((folder) => folder.folder_id === folderId);
+    if (!target || target.scope === "platform") return;
     setBusy(true);
     try {
-      await updateKnowledgeItem(item.item_id, { category: folderName, folder_id: folders.find((folder) => folder.name === folderName)?.folder_id ?? null });
+      await updateKnowledgeItem(item.item_id, { category: target.name, folder_id: target.folder_id });
       setMessage(t("knowledge.moveSuccess"));
       await loadItems();
       void loadFolders();
@@ -248,16 +236,16 @@ export default function ContentStudioPage() {
 
         <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => setSelectedFolder(null)}
-            className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolder === null ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
+            onClick={() => setSelectedFolderId(null)}
+            className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolderId === null ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
           >
             {t("knowledge.folderAll")}
           </button>
           {folders.map((folder) => (
             <div key={folder.folder_id} className="group relative">
               <button
-                onClick={() => setSelectedFolder(selectedFolder === folder.name ? null : folder.name)}
-                className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolder === folder.name ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
+                onClick={() => setSelectedFolderId(selectedFolderId === folder.folder_id ? null : folder.folder_id)}
+                className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolderId === folder.folder_id ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
               >
                 {folder.name}{folder.scope === "platform" ? " · read-only" : ""}
               </button>
@@ -303,7 +291,7 @@ export default function ContentStudioPage() {
           >
             <option value="">{t("knowledge.folderSelect")}</option>
             {availableFolders.map((f) => (
-              <option key={f} value={f}>{f}</option>
+              <option key={f.folder_id} value={f.folder_id}>{f.name}</option>
             ))}
           </select>
           <div className={`relative flex min-h-10 items-center justify-center rounded-xl border border-slate-200 text-sm dark:border-slate-700 dark:bg-slate-950 ${assetType === "copy" ? "opacity-50" : ""}`}>
@@ -364,14 +352,14 @@ export default function ContentStudioPage() {
                   <div className="flex flex-wrap gap-2">
                     {item.content_url ? <a href={item.content_url} target="_blank" rel="noreferrer" className="text-xs font-medium text-blue-600 hover:underline">{t("knowledge.download")}</a> : null}
                     <select
-                      value={String(item.metadata.category ?? "General")}
+                      value={item.folder_id ?? ""}
                       onChange={(event) => void handleMoveItem(item, event.target.value)}
                       disabled={busy || availableFolders.length === 0}
                       className="rounded-md border border-slate-200 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
                     >
                       <option value="">{t("knowledge.moveTo")}</option>
-                      {availableFolders.map((folder) => (
-                        <option key={folder} value={folder}>{folder}</option>
+                      {availableFolders.filter((folder) => folder.scope !== "platform").map((folder) => (
+                        <option key={folder.folder_id} value={folder.folder_id}>{folder.name}</option>
                       ))}
                     </select>
                     <button onClick={() => handleDelete(item.item_id)} className="text-xs font-medium text-rose-600 hover:underline">{t("common.delete")}</button>

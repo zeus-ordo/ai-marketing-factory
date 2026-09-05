@@ -60,3 +60,39 @@ def test_knowledge_and_reference_rows_round_trip_folder_id(monkeypatch):
     assert references[0]["folder_id"] == "folder-1"
     assert "folder_id" in knowledge_cursor.executed[0][0]
     assert "folder_id" in reference_cursor.executed[0][0]
+
+
+def test_delete_folder_checks_reference_and_knowledge_associations():
+    persistence = PostgresPersistence.__new__(PostgresPersistence)
+
+    class Cursor:
+        rowcount = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, statement, params=None):
+            self.statement = statement
+            self.params = params
+
+        def fetchone(self):
+            return (1,)
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            pass
+
+    persistence._connect = lambda: Connection()
+    assert persistence.count_folder_associations("folder-1") == 1

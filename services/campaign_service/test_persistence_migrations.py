@@ -51,3 +51,10 @@ def test_initialize_adds_scoped_folder_and_association_columns_to_existing_schem
     assert "CREATE TABLE IF NOT EXISTS folders" in sql
     assert "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id" in sql
     assert "ALTER TABLE campaign_references ADD COLUMN IF NOT EXISTS folder_id" in sql
+
+
+def test_legacy_text_without_safe_folder_inference_is_explicitly_unfiled():
+    from app.persistence import legacy_folder_id
+
+    assert legacy_folder_id("Old category", []) is None
+    assert legacy_folder_id("Brand", [{"folder_id": "folder-brand", "name": "Brand"}]) == "folder-brand"

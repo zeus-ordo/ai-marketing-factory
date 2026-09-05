@@ -451,14 +451,14 @@ export default function CampaignCenterPage() {
 
   function getKnowledgeFolderLabel(folderName: string): string {
     const label = folderName === IMMEDIATE_UPLOAD_FOLDER ? t("campaigns.knowledge.immediateUploadFolder") : folderName;
-    return folderRecords.find((folder) => folder.name === folderName)?.scope === "platform" ? `${label} · read-only` : label;
+    return folderRecords.some((folder) => folder.name === folderName && folder.scope === "platform") ? `${label} · read-only` : label;
   }
 
   const filteredKnowledgeItems = useMemo(() => {
     const query = knowledgeSearch.trim().toLowerCase();
     return knowledgeItems.filter((item) => {
       const category = getKnowledgeFolder(item);
-      if (knowledgeCategoryFilter && category !== knowledgeCategoryFilter) return false;
+      if (knowledgeCategoryFilter && item.folder_id !== knowledgeCategoryFilter) return false;
       if (!query) return true;
       const fileName = String(item.metadata.file_name ?? "");
       return `${item.title} ${item.description} ${fileName} ${category}`.toLowerCase().includes(query);
@@ -664,7 +664,7 @@ export default function CampaignCenterPage() {
       if (draft.referenceFiles.length > 0 || selectedKnowledgeItems.length > 0) {
         const uploadResults = await Promise.allSettled([
           ...selectedKnowledgeItems.map((item) => attachKnowledgeItemToCampaign(created.campaign_id, item)),
-          ...draft.referenceFiles.map((file) => uploadCampaignReference(created.campaign_id, file, "admin", folderRecords.find((folder) => folder.name === knowledgeCategoryFilter)?.folder_id)),
+          ...draft.referenceFiles.map((file) => uploadCampaignReference(created.campaign_id, file, "admin", knowledgeCategoryFilter || null)),
         ]);
         
       }
@@ -1003,7 +1003,7 @@ export default function CampaignCenterPage() {
 
     setKnowledgeBusy(true);
     try {
-      await uploadKnowledgeItem(knowledgeFile, knowledgeTitle || knowledgeFile.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER, undefined, folderRecords.find((folder) => folder.name === IMMEDIATE_UPLOAD_FOLDER)?.folder_id);
+      await uploadKnowledgeItem(knowledgeFile, knowledgeTitle || knowledgeFile.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER, undefined, undefined);
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
       setKnowledgeFile(null);
@@ -1037,7 +1037,9 @@ export default function CampaignCenterPage() {
   async function handleMoveKnowledgeItem(itemId: string, newFolder: string) {
     setKnowledgeBusy(true);
     try {
-      await updateKnowledgeItem(itemId, { category: newFolder, folder_id: folderRecords.find((folder) => folder.name === newFolder)?.folder_id ?? null });
+      const targetFolder = folderRecords.find((folder) => folder.folder_id === newFolder);
+      if (!targetFolder || targetFolder.scope === "platform") return;
+      await updateKnowledgeItem(itemId, { category: targetFolder.name, folder_id: targetFolder.folder_id });
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
       setKnowledgeMessage(t("knowledge.moveSuccess"));
@@ -1109,7 +1111,9 @@ export default function CampaignCenterPage() {
 
     setReferencesBusy(true);
     try {
-      await updateCampaignReference(activeCampaignId, referenceId, { folder: newFolder, folder_id: folderRecords.find((folder) => folder.name === newFolder)?.folder_id ?? null });
+      const targetFolder = folderRecords.find((folder) => folder.folder_id === newFolder);
+      if (!targetFolder || targetFolder.scope === "platform") return;
+      await updateCampaignReference(activeCampaignId, referenceId, { folder: targetFolder.name, folder_id: targetFolder.folder_id });
       const rows = await listCampaignReferences(activeCampaignId);
       setReferences(rows);
       setReferencesMessage(t("campaigns.references.moveSuccess"));
@@ -1558,8 +1562,8 @@ export default function CampaignCenterPage() {
             className="h-9 rounded-xl border border-slate-200 px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
             <option value="">{t("campaigns.knowledge.allCategories")}</option>
-            {knowledgeCategories.map((category) => (
-              <option key={category} value={category}>{getKnowledgeFolderLabel(category)}</option>
+            {folderRecords.map((folder) => (
+              <option key={folder.folder_id} value={folder.folder_id}>{getKnowledgeFolderLabel(folder.name)}</option>
             ))}
           </select>
           <button
@@ -1632,10 +1636,10 @@ export default function CampaignCenterPage() {
                               className="rounded-md border border-slate-200 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
                             >
                               <option value="">{t("knowledge.moveTo")}</option>
-                              {folders
-                                .filter((f) => f !== category && f !== IMMEDIATE_UPLOAD_FOLDER)
+                              {folderRecords
+                                .filter((folder) => folder.name !== category && folder.scope !== "platform")
                                 .map((folder) => (
-                                  <option key={folder} value={folder}>{getKnowledgeFolderLabel(folder)}</option>
+                                  <option key={folder.folder_id} value={folder.folder_id}>{folder.name}</option>
                                 ))}
                             </select>
                           ) : null}

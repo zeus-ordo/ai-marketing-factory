@@ -4300,6 +4300,8 @@ def delete_folder(req: Request, folder_id: str) -> dict[str, Any]:
     folder = get_folder_or_404(folder_id)
     if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
         authorize_folder_access(folder, require_jwt(req), "delete")
+    if persistence is not None and persistence.count_folder_associations(folder_id) > 0:
+        raise HTTPException(status_code=409, detail="Folder has content associations")
     deleted = persistence.delete_folder(folder_id) if persistence is not None else folders_cache.pop(folder_id, None) is not None
     return {"folder_id": folder_id, "deleted": deleted}
 
@@ -7749,6 +7751,7 @@ def upload_campaign_reference(
     campaign = store.get_campaign(campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    require_campaign_access(req, campaign)
     target_folder = resolve_folder_for_actor(req, folder_id)
 
     reference_id = f"ref_{uuid4().hex[:12]}"
@@ -7848,6 +7851,7 @@ def list_campaign_references(campaign_id: str, req: Request) -> CampaignReferenc
     campaign = store.get_campaign(campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    require_campaign_access(req, campaign)
 
     if persistence is not None:
         db_items = persistence.list_campaign_references(campaign_id)
@@ -7863,7 +7867,11 @@ def list_campaign_references(campaign_id: str, req: Request) -> CampaignReferenc
     "/api/v1/campaigns/{campaign_id}/references/{reference_id}/download",
     responses={404: {"model": ErrorResponse}},
 )
-def download_campaign_reference(campaign_id: str, reference_id: str) -> FileResponse:
+def download_campaign_reference(campaign_id: str, reference_id: str, req: Request) -> FileResponse:
+    campaign = store.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    require_campaign_access(req, campaign)
     payload = get_reference_payload_or_404(campaign_id, reference_id)
     stored_path = str(payload.get("stored_path"))
     record = CampaignReferenceRecord(

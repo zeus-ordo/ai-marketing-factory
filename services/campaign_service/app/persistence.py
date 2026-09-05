@@ -7,6 +7,15 @@ from typing import Any
 from .schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord, ValidationResult
 from .context_assembler import GenerationContextSnapshot
 
+
+def legacy_folder_id(label: str | None, folders: list[dict[str, Any]]) -> str | None:
+    """Infer a legacy text folder only when exactly one ID is unambiguous."""
+    normalized = (label or "").strip().casefold()
+    if not normalized or normalized in {"general", "unfiled"}:
+        return None
+    matches = [folder["folder_id"] for folder in folders if str(folder.get("name", "")).strip().casefold() == normalized]
+    return matches[0] if len(matches) == 1 else None
+
 try:
     psycopg = importlib.import_module("psycopg")
 except ModuleNotFoundError:
@@ -1413,6 +1422,21 @@ class PostgresPersistence:
                 deleted = cur.rowcount > 0
             conn.commit()
         return deleted
+
+    def count_folder_associations(self, folder_id: str) -> int:
+        """Return durable content references before allowing a folder delete."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM knowledge_items WHERE folder_id = %s AND deleted_at IS NULL)
+                        + (SELECT COUNT(*) FROM campaign_references WHERE folder_id = %s);
+                    """,
+                    (folder_id, folder_id),
+                )
+                row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
 
     def save_campaign_reference(
         self,

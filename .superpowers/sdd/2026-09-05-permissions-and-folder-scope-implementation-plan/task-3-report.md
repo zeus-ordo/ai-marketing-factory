@@ -37,3 +37,32 @@
 - Verify platform/company normalized-name uniqueness conflicts before enabling writes.
 - Confirm `CHATBOT_INTERNAL_API_KEY`, `PLATFORM_ADMIN_KEY`, JWT configuration, and campaign-service connectivity in deployment environments.
 - Keep `lib/server/folders-store.ts` until production backend reads and association persistence are verified across restart; it was intentionally not deleted in this task.
+
+## Reviewer Fix Report
+
+### Changed Files
+
+- `services/campaign_service/app/main.py`: require authenticated campaign-company access for reference upload/list/download; reject deletion of folders with persisted knowledge/reference associations.
+- `services/campaign_service/app/persistence.py`: add durable association counting and deterministic legacy text inference helper.
+- `services/campaign_service/test_reference_scope.py`: cover unauthenticated, cross-company, same-company, and internal reference-list access.
+- `services/campaign_service/test_folder_scope.py`: cover referenced-folder deletion rejection.
+- `services/campaign_service/test_reference_folder_association.py`: cover repository association-count query.
+- `services/campaign_service/test_persistence_migrations.py`: cover deterministic legacy inference and explicit unfiled fallback.
+- `app/content-studio/page.tsx`: use `folder_id` for selection, upload, filtering, and moves; exclude platform folders from move targets.
+- `app/campaigns/page.tsx`: use folder IDs for reference filtering and knowledge moves; exclude platform folders from mutation targets.
+- `scripts/test-folder-scope-review-contract.mjs`: assert no name-only folder resolution and platform read-only UI behavior.
+
+### TDD Evidence
+
+- RED: the new focused command initially failed 5 tests: 3 missing production behaviors, 1 missing persistence helper, and 1 missing legacy helper; the same run also exposed 2 incomplete test-fixture errors, which were corrected before implementation verification. The UI contract failed on existing name-only lookups.
+- GREEN: `python -m pytest services/campaign_service/test_folder_scope.py services/campaign_service/test_reference_folder_association.py services/campaign_service/test_persistence_migrations.py services/campaign_service/test_reference_scope.py services/campaign_service/test_task6_routes.py -q` passed **33 tests**, with 2 framework deprecation warnings.
+- GREEN: `node scripts/test-folder-scope-review-contract.mjs` passed.
+- GREEN: `git diff --check` passed.
+
+### Verification and Concerns
+
+- `npm run lint` passed with 0 errors and 13 existing warnings.
+- `npm run build` passed. Next.js reported the existing multiple-lockfile workspace-root warning.
+- `npm run check:secrets` remains blocked by pre-existing weak/default values in `.env.local` and `.env.test.local`; no secrets were added or exposed.
+- Legacy text is preserved as the response fallback; `legacy_folder_id` only infers an ID for one case-insensitive match and returns `None` for ambiguous/general/unfiled values. A production backfill should run after conflict review.
+- `lib/server/folders-store.ts` remains retained until deployed backend reads and restart persistence are verified.
