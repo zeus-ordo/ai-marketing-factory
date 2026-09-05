@@ -195,3 +195,39 @@ def test_all_review_actions_reject_an_unauthorized_user(monkeypatch):
             req,
         )
     assert revision_error.value.status_code == 403
+
+
+def test_review_audit_logs_are_company_scoped(monkeypatch):
+    monkeypatch.setattr(main, "review_audit_logs", [
+        main.ReviewAuditEntry(
+            timestamp="2026-09-05T00:00:00Z",
+            operator="member-a",
+            action="approve",
+            target="review-a",
+            result="ok",
+            company_id="company-a",
+        ),
+        main.ReviewAuditEntry(
+            timestamp="2026-09-05T00:00:01Z",
+            operator="member-b",
+            action="reject",
+            target="review-b",
+            result="ok",
+            company_id="company-b",
+        ),
+    ])
+    monkeypatch.setattr(main, "require_jwt", lambda _request: SimpleNamespace(company_id="company-a", permissions=["review:manage"]))
+
+    same_company = main.list_review_audit_logs(authorized_request(company_id="company-a"))
+
+    assert [entry.target for entry in same_company.items] == ["review-a"]
+    assert same_company.total == 1
+
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _request: True)
+    platform_view = main.list_review_audit_logs(request())
+    assert [entry.target for entry in platform_view.items] == ["review-b", "review-a"]
+
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _request: False)
+    monkeypatch.setattr(main, "is_internal_api_key_request", lambda _request: True)
+    internal_view = main.list_review_audit_logs(request())
+    assert [entry.target for entry in internal_view.items] == ["review-b", "review-a"]

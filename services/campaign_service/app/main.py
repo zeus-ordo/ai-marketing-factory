@@ -227,6 +227,7 @@ class ReviewActionResponse(BaseModel):
 
 class ReviewAuditEntry(BaseModel):
     timestamp: str
+    company_id: str | None = None
     operator: str
     action: str
     target: str
@@ -3063,10 +3064,12 @@ def append_review_audit(
     result: str,
     operator: str,
     reason: str | None = None,
+    company_id: str | None = None,
 ) -> None:
     review_audit_logs.append(
         ReviewAuditEntry(
             timestamp=now_utc().isoformat(),
+            company_id=company_id,
             operator=operator,
             action=action,
             target=target,
@@ -3293,12 +3296,12 @@ def require_internal_api_key(req: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def require_review_action_access(req: Request) -> None:
+def require_review_action_access(req: Request) -> JWTPayload | None:
     """Allow review actions from internal automation, platform admin, or privileged company members."""
     if is_platform_admin_request(req):
-        return
+        return None
     if is_internal_api_key_request(req):
-        return
+        return None
     payload = require_jwt(req)
     require_any_permission(
         payload,
@@ -3309,6 +3312,7 @@ def require_review_action_access(req: Request) -> None:
             "review:revision",
         },
     )
+    return payload
 
 
 def is_internal_api_key_request(req: Request) -> bool:
@@ -6748,6 +6752,7 @@ def approve_review_item(review_id: str, payload: ReviewActionRequest, req: Reque
         target=review_id,
         result="ok",
         operator=operator,
+        company_id=campaign_record.company_id,
     )
     append_trace_event(
         campaign_id=item.campaign_id,
@@ -6812,6 +6817,7 @@ def reject_review_item(review_id: str, payload: ReviewActionRequest, req: Reques
         result="ok",
         operator=operator,
         reason=reason,
+        company_id=campaign_record.company_id,
     )
     append_trace_event(
         campaign_id=item.campaign_id,
@@ -7371,10 +7377,12 @@ def batch_run_campaigns(payload: BatchCampaignRunRequest, req: Request) -> Batch
     response_model=ReviewAuditResponse,
 )
 def list_review_audit_logs(req: Request, page: int = 1, page_size: int = 20) -> ReviewAuditResponse:
-    require_review_action_access(req)
+    actor_payload = require_review_action_access(req)
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
     ordered = sorted(review_audit_logs, key=lambda item: item.timestamp, reverse=True)
+    if actor_payload is not None:
+        ordered = [item for item in ordered if item.company_id == actor_payload.company_id]
 
     start = (page - 1) * page_size
     end = start + page_size
