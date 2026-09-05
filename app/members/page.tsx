@@ -150,7 +150,7 @@ function MembersContent() {
             <p className={`mt-2 text-xs ${inviteError ? "text-rose-600" : "text-emerald-600"}`}>{inviteMsg}</p>
           )}
           {inviteRoles.length === 0 ? (
-            <p className="mt-2 text-xs text-amber-600">沒有可指派的公司角色。平台角色不可直接指派給成員。</p>
+            <p className="mt-2 text-xs text-amber-600">{t("members.noAssignableRoles")}</p>
           ) : null}
         </div>
       )}

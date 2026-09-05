@@ -289,7 +289,7 @@ export default function ContentStudioPage() {
 
       {/* Create/upload form */}
       <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-        <h2 className="text-sm font-semibold">新增素材</h2>
+        <h2 className="text-sm font-semibold">{t("knowledge.createTitle")}</h2>
         <div className="grid gap-3 md:grid-cols-[0.8fr_1fr_1fr_1fr_1.2fr_auto]">
           <select
             value={assetType}
@@ -300,9 +300,9 @@ export default function ContentStudioPage() {
             }}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
-            <option value="copy">文案</option>
-            <option value="image">圖片</option>
-            <option value="video">影片</option>
+            <option value="copy">{t("assets.type.copy")}</option>
+            <option value="image">{t("assets.type.image")}</option>
+            <option value="video">{t("assets.type.video")}</option>
           </select>
           <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("knowledge.itemTitle")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950" />
           <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={assetType === "copy" ? "文案內容" : t("knowledge.description")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950" />
@@ -330,13 +330,13 @@ export default function ContentStudioPage() {
               htmlFor={`knowledge-file-input-${fileKey}`}
               className="flex h-full min-h-10 w-full cursor-pointer items-center justify-center gap-2 px-3 py-2 text-center leading-none text-slate-600 dark:text-slate-300"
             >
-              <span className="font-medium text-slate-800 dark:text-slate-100">{assetType === "copy" ? "文案不需檔案" : t("knowledge.chooseFile")}</span>
+              <span className="font-medium text-slate-800 dark:text-slate-100">{assetType === "copy" ? t("knowledge.copyNoFile") : t("knowledge.chooseFile")}</span>
               <span className="truncate text-slate-500">{assetType === "copy" ? "" : file ? file.name : t("knowledge.noFileSelected")}</span>
             </label>
           </div>
           <div className="flex min-w-32 flex-col gap-2">
-            <button onClick={handleCreateText} disabled={busy || assetType !== "copy" || !title.trim()} className="whitespace-nowrap rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700">新增文案</button>
-            <button onClick={handleUpload} disabled={busy || assetType === "copy" || !file} className="whitespace-nowrap rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">新增{assetType === "video" ? "影片" : "圖片"}</button>
+            <button onClick={handleCreateText} disabled={busy || assetType !== "copy" || !title.trim()} className="whitespace-nowrap rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700">{t("knowledge.createText")}</button>
+            <button onClick={handleUpload} disabled={busy || assetType === "copy" || !file} className="whitespace-nowrap rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{t("knowledge.add", { type: t(`assets.type.${assetType}`) })}</button>
           </div>
         </div>
       </div>
