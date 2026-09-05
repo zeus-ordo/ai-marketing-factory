@@ -277,6 +277,7 @@ export type CampaignReferenceRecord = {
   uploaded_at: string;
   download_url: string;
   folder?: string | null;
+  folder_id?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -288,6 +289,7 @@ export type KnowledgeItemRecord = {
   description: string;
   content_url: string | null;
   metadata: Record<string, unknown>;
+  folder_id?: string | null;
   created_at: string;
 };
 
@@ -908,6 +910,15 @@ export type ReviewItem = {
   source_provenance?: GenerationSourceProvenance[];
 };
 
+export type FolderRecord = {
+  folder_id: string;
+  scope: "platform" | "company";
+  company_id: string | null;
+  name: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ReviewQueueResponse = {
   items: ReviewItem[];
   total: number;
@@ -1096,16 +1107,31 @@ export async function listCampaignReferences(campaignId: string): Promise<Campai
   return data.items;
 }
 
+export async function listFolders(): Promise<FolderRecord[]> {
+  const data = await request<{ items: FolderRecord[]; total: number }>("/api/v1/folders");
+  return data.items;
+}
+
+export async function createFolder(name: string): Promise<FolderRecord> {
+  return request<FolderRecord>("/api/v1/folders", { method: "POST", body: JSON.stringify({ name, scope: "company" }) });
+}
+
+export async function deleteFolder(folderId: string): Promise<{ folder_id: string; deleted: boolean }> {
+  return request<{ folder_id: string; deleted: boolean }>(`/api/v1/folders/${folderId}`, { method: "DELETE" });
+}
+
 export async function uploadCampaignReference(
   campaignId: string,
   file: File,
   operator?: string,
+  folderId?: string | null,
 ): Promise<CampaignReferenceRecord> {
   const formData = new FormData();
   formData.append("file", file);
   if (operator) {
     formData.append("operator", operator);
   }
+  if (folderId) formData.append("folder_id", folderId);
 
   return request<CampaignReferenceRecord>(`/api/v1/campaigns/${campaignId}/references/upload`, {
     method: "POST",
@@ -1119,6 +1145,7 @@ export async function attachCampaignReferenceText(params: {
   content: string;
   fileType?: string;
   operator?: string;
+  folderId?: string | null;
 }): Promise<CampaignReferenceRecord> {
   return request<CampaignReferenceRecord>(`/api/v1/campaigns/${params.campaignId}/references/attach-text`, {
     method: "POST",
@@ -1127,6 +1154,7 @@ export async function attachCampaignReferenceText(params: {
       content: params.content,
       file_type: params.fileType ?? "text/plain",
       operator: params.operator ?? "admin",
+      folder_id: params.folderId ?? null,
     }),
   });
 }
@@ -1140,7 +1168,7 @@ export async function deleteCampaignReference(campaignId: string, referenceId: s
 export async function updateCampaignReference(
   campaignId: string,
   referenceId: string,
-  payload: { folder?: string | null; metadata?: Record<string, unknown> },
+  payload: { folder?: string | null; folder_id?: string | null; metadata?: Record<string, unknown> },
 ): Promise<CampaignReferenceRecord> {
   return request<CampaignReferenceRecord>(`/api/v1/campaigns/${campaignId}/references/${referenceId}`, {
     method: "PATCH",
@@ -1159,6 +1187,7 @@ export async function uploadKnowledgeItem(
   description?: string,
   category = "reference-library",
   assetType?: "image" | "video",
+  folderId?: string | null,
 ): Promise<KnowledgeItemRecord> {
   const formData = new FormData();
   formData.append("file", file);
@@ -1166,6 +1195,7 @@ export async function uploadKnowledgeItem(
   formData.append("description", description?.trim() || "");
   formData.append("category", category);
   if (assetType) formData.append("asset_type", assetType);
+  if (folderId) formData.append("folder_id", folderId);
 
   return request<KnowledgeItemRecord>("/api/v1/knowledge-items/upload", {
     method: "POST",
@@ -1179,6 +1209,7 @@ export async function createKnowledgeItem(payload: {
   description?: string;
   content_url?: string | null;
   metadata?: Record<string, unknown>;
+  folder_id?: string | null;
 }): Promise<KnowledgeItemRecord> {
   return request<KnowledgeItemRecord>("/api/v1/knowledge-items", {
     method: "POST",
@@ -1188,6 +1219,7 @@ export async function createKnowledgeItem(payload: {
       description: payload.description ?? "",
       content_url: payload.content_url ?? null,
       metadata: payload.metadata ?? {},
+      folder_id: payload.folder_id ?? null,
     }),
   });
 }
@@ -1200,7 +1232,7 @@ export async function deleteKnowledgeItem(itemId: string): Promise<{ item_id: st
 
 export async function updateKnowledgeItem(
   itemId: string,
-  payload: { title?: string; description?: string; category?: string; metadata?: Record<string, unknown> },
+  payload: { title?: string; description?: string; category?: string; folder_id?: string | null; metadata?: Record<string, unknown> },
 ): Promise<KnowledgeItemRecord> {
   return request<KnowledgeItemRecord>(`/api/v1/knowledge-items/${itemId}`, {
     method: "PATCH",
@@ -1220,6 +1252,7 @@ export async function attachKnowledgeItemToCampaign(campaignId: string, item: Kn
         content: item.description,
         fileType: "text/plain",
         operator: "admin",
+        folderId: item.folder_id,
       });
     }
     throw new Error("Knowledge item has no downloadable content");
@@ -1245,7 +1278,7 @@ export async function attachKnowledgeItemToCampaign(campaignId: string, item: Kn
     ? item.metadata.file_type
     : blob.type || "application/octet-stream";
   const file = new File([blob], fileName, { type: fileType });
-  return uploadCampaignReference(campaignId, file, "admin");
+  return uploadCampaignReference(campaignId, file, "admin", item.folder_id);
 }
 
 export async function getCampaignTrace(campaignId: string): Promise<CampaignTraceSummary> {

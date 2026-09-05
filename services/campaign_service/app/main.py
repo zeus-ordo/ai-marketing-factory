@@ -281,6 +281,7 @@ class KnowledgeItemRecord(BaseModel):
     description: str = ""
     content_url: str | None = None
     metadata: dict[str, Any] = {}
+    folder_id: str | None = None
     created_at: datetime
 
 
@@ -295,6 +296,7 @@ class KnowledgeItemCreateRequest(BaseModel):
     description: str = ""
     content_url: str | None = None
     metadata: dict[str, Any] = {}
+    folder_id: str | None = None
 
 
 class KnowledgeItemUpdateRequest(BaseModel):
@@ -303,6 +305,7 @@ class KnowledgeItemUpdateRequest(BaseModel):
     content_url: str | None = None
     category: str | None = None
     metadata: dict[str, Any] | None = None
+    folder_id: str | None = None
 
 
 class KnowledgeItemDeleteResponse(BaseModel):
@@ -388,10 +391,12 @@ class CampaignReferenceRecord(BaseModel):
     uploaded_at: str
     download_url: str
     folder: str = "General"
+    folder_id: str | None = None
 
 
 class CampaignReferenceUpdateRequest(BaseModel):
     folder: str | None = None
+    folder_id: str | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -410,6 +415,30 @@ class CampaignReferenceAttachRequest(BaseModel):
     content: str
     file_type: str = "text/plain"
     operator: str | None = None
+    folder_id: str | None = None
+
+
+class FolderRecord(BaseModel):
+    folder_id: str
+    scope: Literal["platform", "company"]
+    company_id: str | None = None
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class FolderListResponse(BaseModel):
+    items: list[FolderRecord]
+    total: int
+
+
+class FolderCreateRequest(BaseModel):
+    name: str
+    scope: Literal["platform", "company"] = "company"
+
+
+class FolderUpdateRequest(BaseModel):
+    name: str
 
 
 class ChatbotAuditWriteRequest(BaseModel):
@@ -884,6 +913,7 @@ workflow_template_versions: dict[str, list[WorkflowTemplateVersion]] = {}
 campaign_references: dict[str, list[CampaignReferenceRecord]] = {}
 campaign_reference_files: dict[str, dict[str, str]] = {}
 knowledge_items: dict[str, list[KnowledgeItemRecord]] = {}
+folders_cache: dict[str, dict[str, Any]] = {}
 chatbot_audit_logs: list[ChatbotAuditRecord] = []
 campaign_traces: dict[str, CampaignTraceRecord] = {}
 campaign_trace_events: dict[str, list[CampaignTraceEventRecord]] = {}
@@ -3200,6 +3230,7 @@ def to_reference_record(base_url: str, payload: dict[str, Any]) -> CampaignRefer
         uploaded_at=uploaded_at,
         download_url=build_reference_download_url(base_url, campaign_id, reference_id),
         folder=str(payload.get("folder") or "General"),
+        folder_id=str(payload.get("folder_id")) if payload.get("folder_id") else None,
     )
 
 
@@ -3362,6 +3393,43 @@ def has_any_permission(payload: JWTPayload, allowed: set[str]) -> bool:
 def require_any_permission(payload: JWTPayload, allowed: set[str]) -> None:
     if not has_any_permission(payload, allowed):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+
+def authorize_folder_access(folder: dict[str, Any], payload: JWTPayload, action: str) -> None:
+    """Authorize company JWT access; platform-key mutations are handled by routes."""
+    scope = folder.get("scope")
+    if scope == "platform":
+        if action in {"read", "use"}:
+            return
+        raise HTTPException(status_code=403, detail="Platform folders are read-only for company users")
+    if scope == "company" and folder.get("company_id") != (payload.company_id or ""):
+        raise HTTPException(status_code=403, detail="Folder belongs to another company")
+    if folder.get("folder_id") is None:
+        return
+    check_permission(payload, f"folder:{action}")
+
+
+def folder_payload(folder: dict[str, Any]) -> FolderRecord:
+    return FolderRecord(**folder)
+
+
+def get_folder_or_404(folder_id: str) -> dict[str, Any]:
+    if persistence is not None:
+        folder = persistence.get_folder(folder_id)
+    else:
+        folder = folders_cache.get(folder_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return folder
+
+
+def resolve_folder_for_actor(req: Request, folder_id: str | None, action: str = "use") -> dict[str, Any] | None:
+    if not folder_id:
+        return None
+    folder = get_folder_or_404(folder_id)
+    if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
+        authorize_folder_access(folder, require_jwt(req), action)
+    return folder
 
 
 def require_campaign_access(req: Request, campaign: CampaignRecord) -> JWTPayload | None:
@@ -4174,6 +4242,68 @@ def list_sla_backlog_data(limit: int, overdue_only: bool) -> tuple[list[SlaBackl
     return result, overdue_pending
 
 
+@app.get("/api/v1/folders", response_model=FolderListResponse)
+def list_folders(req: Request) -> FolderListResponse:
+    if is_platform_admin_request(req) or is_internal_api_key_request(req):
+        rows = persistence.list_folders("") if persistence is not None else list(folders_cache.values())
+    else:
+        actor = require_jwt(req)
+        rows = persistence.list_folders(actor.company_id or "") if persistence is not None else [
+            folder for folder in folders_cache.values()
+            if folder["scope"] == "platform" or folder.get("company_id") == actor.company_id
+        ]
+    return FolderListResponse(items=[folder_payload(row) for row in rows], total=len(rows))
+
+
+@app.post("/api/v1/folders", response_model=FolderRecord, status_code=201)
+def create_folder(req: Request, payload: FolderCreateRequest) -> FolderRecord:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    if payload.scope == "platform":
+        if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
+            raise HTTPException(status_code=403, detail="Platform folder mutation requires platform administration")
+        company_id = None
+    else:
+        actor = require_jwt(req)
+        check_permission(actor, "folder:create")
+        company_id = actor.company_id or ""
+    now = now_utc()
+    folder = {"folder_id": f"folder_{uuid4().hex[:12]}", "scope": payload.scope, "company_id": company_id, "name": name, "created_at": now, "updated_at": now}
+    if persistence is not None:
+        folder = persistence.create_folder(folder)
+    else:
+        folders_cache[folder["folder_id"]] = folder
+    return folder_payload(folder)
+
+
+@app.patch("/api/v1/folders/{folder_id}", response_model=FolderRecord)
+def update_folder(req: Request, folder_id: str, payload: FolderUpdateRequest) -> FolderRecord:
+    folder = get_folder_or_404(folder_id)
+    if is_platform_admin_request(req) or is_internal_api_key_request(req):
+        pass
+    else:
+        authorize_folder_access(folder, require_jwt(req), "edit")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    updated = persistence.update_folder(folder_id, name, now_utc()) if persistence is not None else {**folder, "name": name, "updated_at": now_utc()}
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if persistence is None:
+        folders_cache[folder_id] = updated
+    return folder_payload(updated)
+
+
+@app.delete("/api/v1/folders/{folder_id}")
+def delete_folder(req: Request, folder_id: str) -> dict[str, Any]:
+    folder = get_folder_or_404(folder_id)
+    if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
+        authorize_folder_access(folder, require_jwt(req), "delete")
+    deleted = persistence.delete_folder(folder_id) if persistence is not None else folders_cache.pop(folder_id, None) is not None
+    return {"folder_id": folder_id, "deleted": deleted}
+
+
 def get_redis_stats() -> RedisStats:
     try:
         import redis as redis_lib
@@ -4468,9 +4598,12 @@ def update_campaign_reference(
     require_campaign_access(req, campaign)
 
     folder = (payload.folder or "General").strip() or "General"
+    target_folder = resolve_folder_for_actor(req, payload.folder_id, "edit")
+    if target_folder is not None:
+        folder = target_folder["name"]
     existing = get_reference_payload_or_404(campaign_id, reference_id)
     if persistence is not None:
-        if not persistence.update_campaign_reference_folder(campaign_id, reference_id, folder):
+        if not persistence.update_campaign_reference_folder(campaign_id, reference_id, folder, payload.folder_id):
             raise HTTPException(status_code=404, detail="Campaign reference not found")
         updated = persistence.get_campaign_reference(campaign_id, reference_id)
         if updated is None:
@@ -4478,6 +4611,7 @@ def update_campaign_reference(
     else:
         updated = dict(existing)
         updated["folder"] = folder
+        updated["folder_id"] = payload.folder_id
         for item in campaign_references.get(campaign_id, []):
             if item.reference_id == reference_id:
                 item.folder = folder
@@ -5511,9 +5645,11 @@ def list_knowledge_items(req: Request, company_id: str | None = None) -> Knowled
 
     if persistence is not None:
         rows = persistence.list_knowledge_items(target_company_id)
+        if not is_platform_admin_request(req) and target_company_id != "platform":
+            rows = persistence.list_knowledge_items("platform") + rows
         items = [KnowledgeItemRecord(**row) for row in rows]
     else:
-        items = knowledge_items.get(target_company_id, [])
+        items = knowledge_items.get(target_company_id, []) if is_platform_admin_request(req) else [*knowledge_items.get("platform", []), *knowledge_items.get(target_company_id, [])]
     return KnowledgeItemListResponse(items=items, total=len(items))
 
 
@@ -5530,6 +5666,7 @@ def create_knowledge_item(req: Request, payload: KnowledgeItemCreateRequest) -> 
     title = payload.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="title is required")
+    resolve_folder_for_actor(req, payload.folder_id)
 
     item = KnowledgeItemRecord(
         item_id=f"kh_{uuid4().hex[:12]}",
@@ -5539,6 +5676,7 @@ def create_knowledge_item(req: Request, payload: KnowledgeItemCreateRequest) -> 
         description=payload.description.strip(),
         content_url=payload.content_url,
         metadata={**payload.metadata, "created_by": actor_id},
+        folder_id=payload.folder_id,
         created_at=now_utc(),
     )
     if persistence is not None:
@@ -5554,6 +5692,7 @@ def upload_knowledge_item(
     title: str = Form(...),
     description: str = Form(""),
     category: str = Form(""),
+    folder_id: str | None = Form(default=None),
     asset_type: str = Form(""),
     file: UploadFile = File(...),
 ) -> KnowledgeItemRecord:
@@ -5568,6 +5707,7 @@ def upload_knowledge_item(
     cleaned_title = title.strip()
     if not cleaned_title:
         raise HTTPException(status_code=400, detail="title is required")
+    resolve_folder_for_actor(req, folder_id)
 
     original_name = os.path.basename(file.filename or "knowledge-file.bin")
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", original_name).strip("._") or "knowledge-file.bin"
@@ -5599,6 +5739,7 @@ def upload_knowledge_item(
             "category": category.strip(),
             "asset_type": asset_type.strip() or "file",
         },
+        folder_id=folder_id,
         created_at=now_utc(),
     )
     if persistence is not None:
@@ -5640,6 +5781,7 @@ def update_knowledge_item(req: Request, item_id: str, payload: KnowledgeItemUpda
         company_id = actor.company_id or ""
 
     updates = payload.model_dump(exclude_unset=True)
+    resolve_folder_for_actor(req, payload.folder_id, "edit")
     if persistence is not None:
         updated = persistence.update_knowledge_item(company_id, item_id, updates)
         if updated is None:
@@ -6586,6 +6728,7 @@ def attach_campaign_reference_text(campaign_id: str, payload: CampaignReferenceA
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
     require_campaign_trace_access(req, campaign)
+    target_folder = resolve_folder_for_actor(req, payload.folder_id)
 
     reference_id = f"ref_{uuid4().hex[:12]}"
     safe_name = os.path.basename(payload.file_name.strip() or f"{reference_id}.txt")
@@ -6609,9 +6752,11 @@ def attach_campaign_reference_text(campaign_id: str, payload: CampaignReferenceA
         file_size=file_size,
         uploaded_at=uploaded_at,
         download_url=build_reference_download_url(base_url, campaign_id, reference_id),
+        folder=target_folder["name"] if target_folder else "General",
+        folder_id=payload.folder_id,
     )
     if persistence is not None:
-        persistence.save_campaign_reference(reference_id, campaign_id, safe_name, record.file_type, file_size, uploaded_at_dt, stored_path, payload.operator)
+        persistence.save_campaign_reference(reference_id, campaign_id, safe_name, record.file_type, file_size, uploaded_at_dt, stored_path, payload.operator, record.folder, record.folder_id)
     else:
         campaign_references.setdefault(campaign_id, []).append(record)
         campaign_reference_files.setdefault(campaign_id, {})[reference_id] = stored_path
@@ -7599,10 +7744,12 @@ def upload_campaign_reference(
     req: Request,
     file: UploadFile = File(...),
     operator: str | None = Form(default=None),
+    folder_id: str | None = Form(default=None),
 ) -> CampaignReferenceRecord:
     campaign = store.get_campaign(campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    target_folder = resolve_folder_for_actor(req, folder_id)
 
     reference_id = f"ref_{uuid4().hex[:12]}"
     original_name = os.path.basename(file.filename or "upload.bin")
@@ -7639,6 +7786,8 @@ def upload_campaign_reference(
         file_size=file_size,
         uploaded_at=uploaded_at,
         download_url=download_url,
+        folder=target_folder["name"] if target_folder else "General",
+        folder_id=folder_id,
     )
 
     if persistence is not None:
@@ -7652,6 +7801,8 @@ def upload_campaign_reference(
                 uploaded_at=uploaded_at_dt,
                 stored_path=stored_path,
                 operator=operator,
+                folder=record.folder,
+                folder_id=record.folder_id,
             )
         except Exception:
             campaign_references.setdefault(campaign_id, []).append(record)

@@ -306,6 +306,21 @@ class PostgresPersistence:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS folders (
+                        folder_id TEXT PRIMARY KEY,
+                        scope TEXT NOT NULL CHECK (scope IN ('platform', 'company')),
+                        company_id TEXT,
+                        name TEXT NOT NULL,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        CHECK ((scope = 'platform' AND company_id IS NULL) OR (scope = 'company' AND company_id IS NOT NULL))
+                    );
+                    """
+                )
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_platform_name ON folders (LOWER(name)) WHERE scope = 'platform';")
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_company_name ON folders (company_id, LOWER(name)) WHERE scope = 'company';")
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS workflow_templates (
                         template_id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
@@ -323,6 +338,8 @@ class PostgresPersistence:
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS content_url TEXT;")
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb;")
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;")
+                cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT;")
+                cur.execute("ALTER TABLE campaign_references ADD COLUMN IF NOT EXISTS folder_id TEXT;")
                 cur.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_knowledge_items_company_created
@@ -1355,6 +1372,48 @@ class PostgresPersistence:
             conn.commit()
         return deleted_count
 
+    def list_folders(self, company_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT folder_id, scope, company_id, name, created_at, updated_at FROM folders WHERE scope = 'platform' OR (scope = 'company' AND company_id = %s) ORDER BY scope, LOWER(name)", (company_id,))
+                rows = cur.fetchall()
+        return [self._folder_dict(row) for row in rows]
+
+    @staticmethod
+    def _folder_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {"folder_id": row[0], "scope": row[1], "company_id": row[2], "name": row[3], "created_at": row[4], "updated_at": row[5]}
+
+    def get_folder(self, folder_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT folder_id, scope, company_id, name, created_at, updated_at FROM folders WHERE folder_id = %s", (folder_id,))
+                row = cur.fetchone()
+        return self._folder_dict(row) if row is not None else None
+
+    def create_folder(self, folder: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO folders (folder_id, scope, company_id, name, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s) RETURNING folder_id, scope, company_id, name, created_at, updated_at", (folder["folder_id"], folder["scope"], folder.get("company_id"), folder["name"], folder["created_at"], folder["updated_at"]))
+                row = cur.fetchone()
+            conn.commit()
+        return self._folder_dict(row)
+
+    def update_folder(self, folder_id: str, name: str, updated_at: datetime) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE folders SET name = %s, updated_at = %s WHERE folder_id = %s RETURNING folder_id, scope, company_id, name, created_at, updated_at", (name, updated_at, folder_id))
+                row = cur.fetchone()
+            conn.commit()
+        return self._folder_dict(row) if row is not None else None
+
+    def delete_folder(self, folder_id: str) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM folders WHERE folder_id = %s", (folder_id,))
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
+
     def save_campaign_reference(
         self,
         reference_id: str,
@@ -1366,14 +1425,15 @@ class PostgresPersistence:
         stored_path: str,
         operator: str | None,
         folder: str = "General",
+        folder_id: str | None = None,
     ) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO campaign_references
-                        (reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, operator, folder)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, operator, folder, folder_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (reference_id) DO UPDATE SET
                         file_name = EXCLUDED.file_name,
                         file_type = EXCLUDED.file_type,
@@ -1381,7 +1441,8 @@ class PostgresPersistence:
                         uploaded_at = EXCLUDED.uploaded_at,
                         stored_path = EXCLUDED.stored_path,
                         operator = EXCLUDED.operator,
-                        folder = EXCLUDED.folder;
+                        folder = EXCLUDED.folder,
+                        folder_id = EXCLUDED.folder_id;
                     """,
                     (
                         reference_id,
@@ -1393,6 +1454,7 @@ class PostgresPersistence:
                         stored_path,
                         operator,
                         folder,
+                        folder_id,
                     ),
                 )
             conn.commit()
@@ -1402,7 +1464,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, folder
+                    SELECT reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, folder, folder_id
                     FROM campaign_references
                     WHERE campaign_id = %s
                     ORDER BY uploaded_at DESC;
@@ -1423,6 +1485,7 @@ class PostgresPersistence:
                     "uploaded_at": row[5],
                     "stored_path": row[6],
                     "folder": row[7] or "General",
+                    "folder_id": row[8],
                 }
             )
         return items
@@ -1432,7 +1495,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, folder
+                    SELECT reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, folder, folder_id
                     FROM campaign_references
                     WHERE campaign_id = %s AND reference_id = %s
                     LIMIT 1;
@@ -1453,18 +1516,19 @@ class PostgresPersistence:
             "uploaded_at": row[5],
             "stored_path": row[6],
             "folder": row[7] or "General",
+            "folder_id": row[8],
         }
 
-    def update_campaign_reference_folder(self, campaign_id: str, reference_id: str, folder: str) -> bool:
+    def update_campaign_reference_folder(self, campaign_id: str, reference_id: str, folder: str, folder_id: str | None = None) -> bool:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE campaign_references
-                    SET folder = %s
+                    SET folder = %s, folder_id = %s
                     WHERE campaign_id = %s AND reference_id = %s;
                     """,
-                    (folder, campaign_id, reference_id),
+                    (folder, folder_id, campaign_id, reference_id),
                 )
                 updated = cur.rowcount > 0
             conn.commit()
@@ -2719,7 +2783,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT item_id, company_id, title, source, description, content_url, metadata_json, created_at
+                    SELECT item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id
                     FROM knowledge_items
                     WHERE company_id = %s AND deleted_at IS NULL
                     ORDER BY created_at DESC;
@@ -2737,6 +2801,7 @@ class PostgresPersistence:
                 "content_url": row[5],
                 "metadata": dict(row[6] or {}),
                 "created_at": row[7],
+                "folder_id": row[8],
             }
             for row in rows
         ]
@@ -2747,14 +2812,15 @@ class PostgresPersistence:
                 cur.execute(
                     """
                     INSERT INTO knowledge_items
-                        (item_id, company_id, title, source, description, content_url, metadata_json, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        (item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                     ON CONFLICT (item_id) DO UPDATE SET
                         title = EXCLUDED.title,
                         source = EXCLUDED.source,
                         description = EXCLUDED.description,
                         content_url = EXCLUDED.content_url,
                         metadata_json = EXCLUDED.metadata_json,
+                        folder_id = EXCLUDED.folder_id,
                         deleted_at = NULL;
                     """,
                     (
@@ -2766,6 +2832,7 @@ class PostgresPersistence:
                         item.get("content_url"),
                         json.dumps(item.get("metadata", {})),
                         item["created_at"],
+                        item.get("folder_id"),
                     ),
                 )
             conn.commit()
@@ -2784,6 +2851,7 @@ class PostgresPersistence:
         title = str(updates.get("title") or current.get("title") or "").strip()
         description = str(updates.get("description") if updates.get("description") is not None else current.get("description") or "").strip()
         content_url = updates.get("content_url") if updates.get("content_url") is not None else current.get("content_url")
+        folder_id = updates.get("folder_id") if "folder_id" in updates else current.get("folder_id")
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -2792,11 +2860,12 @@ class PostgresPersistence:
                     SET title = %s,
                         description = %s,
                         content_url = %s,
-                        metadata_json = %s::jsonb
+                        metadata_json = %s::jsonb,
+                        folder_id = %s
                     WHERE company_id = %s AND item_id = %s AND deleted_at IS NULL
-                    RETURNING item_id, company_id, title, source, description, content_url, metadata_json, created_at;
+                    RETURNING item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id;
                     """,
-                    (title, description, content_url, json.dumps(metadata), company_id, item_id),
+                    (title, description, content_url, json.dumps(metadata), folder_id, company_id, item_id),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -2811,6 +2880,7 @@ class PostgresPersistence:
             "content_url": row[5],
             "metadata": dict(row[6] or {}),
             "created_at": row[7],
+            "folder_id": row[8],
         }
 
     def soft_delete_knowledge_item(self, company_id: str, item_id: str) -> bool:

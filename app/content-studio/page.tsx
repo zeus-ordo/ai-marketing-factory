@@ -3,18 +3,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createKnowledgeItem,
+  createFolder,
+  deleteFolder,
   deleteKnowledgeItem,
   listKnowledgeItems,
+  listFolders,
   updateKnowledgeItem,
   uploadKnowledgeItem,
+  type FolderRecord,
   type KnowledgeItemRecord,
 } from "@/lib/api/campaigns";
 import { useI18n } from "@/lib/i18n/context";
 import { formatDateTime } from "@/lib/i18n/format";
 
 type KnowledgeTab = "all" | "ai" | "manual";
-
-type Folder = { name: string };
 
 export default function ContentStudioPage() {
   const { t, locale } = useI18n();
@@ -32,7 +34,7 @@ export default function ContentStudioPage() {
   const [busy, setBusy] = useState(false);
 
   // Folder state
-  const [folders, setFolders] = useState<Folder[]>([]);
+  const [folders, setFolders] = useState<FolderRecord[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
@@ -53,11 +55,7 @@ export default function ContentStudioPage() {
 
   const loadFolders = useCallback(async function loadFolders() {
     try {
-      const res = await fetch("/api/folders");
-      if (res.ok) {
-        const data = (await res.json()) as { items: Folder[] };
-        setFolders(data.items);
-      }
+      setFolders(await listFolders());
     } catch {
       // folders not critical, ignore errors
     }
@@ -101,31 +99,21 @@ export default function ContentStudioPage() {
     const name = newFolderName.trim();
     if (!name) return;
     try {
-      const res = await fetch("/api/folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      if (res.ok) {
-        setNewFolderName("");
-        setShowNewFolderInput(false);
-        void loadFolders();
-      }
+      await createFolder(name);
+      setNewFolderName("");
+      setShowNewFolderInput(false);
+      void loadFolders();
     } catch {
       // ignore errors
     }
   }
 
-  async function handleDeleteFolder(folderName: string) {
+  async function handleDeleteFolder(folder: FolderRecord) {
     if (!window.confirm(t("knowledge.deleteConfirm"))) return;
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(folderName)}`, {
-        method: "DELETE",
-      });
-      if (res.ok) {
-        if (selectedFolder === folderName) setSelectedFolder(null);
-        void loadFolders();
-      }
+      await deleteFolder(folder.folder_id);
+      if (selectedFolder === folder.name) setSelectedFolder(null);
+      void loadFolders();
     } catch {
       // ignore errors
     }
@@ -140,6 +128,7 @@ export default function ContentStudioPage() {
         title: cleanTitle,
         source: "manual",
         description,
+        folder_id: folders.find((folder) => folder.name === (category || "General"))?.folder_id ?? null,
         metadata: { category: category || "General", source_label: "manual_copy", asset_type: "copy" },
       });
       setTitle("");
@@ -158,7 +147,7 @@ export default function ContentStudioPage() {
     if (!file || assetType === "copy") return;
     setBusy(true);
     try {
-      await uploadKnowledgeItem(file, title || file.name, description, category || "General", assetType);
+      await uploadKnowledgeItem(file, title || file.name, description, category || "General", assetType, folders.find((folder) => folder.name === (category || "General"))?.folder_id);
       setTitle("");
       setDescription("");
       setCategory("");
@@ -191,7 +180,7 @@ export default function ContentStudioPage() {
     if (!folderName || folderName === currentFolder) return;
     setBusy(true);
     try {
-      await updateKnowledgeItem(item.item_id, { category: folderName });
+      await updateKnowledgeItem(item.item_id, { category: folderName, folder_id: folders.find((folder) => folder.name === folderName)?.folder_id ?? null });
       setMessage(t("knowledge.moveSuccess"));
       await loadItems();
       void loadFolders();
@@ -264,19 +253,20 @@ export default function ContentStudioPage() {
           >
             {t("knowledge.folderAll")}
           </button>
-          {availableFolders.map((folder) => (
-            <div key={folder} className="group relative">
+          {folders.map((folder) => (
+            <div key={folder.folder_id} className="group relative">
               <button
-                onClick={() => setSelectedFolder(selectedFolder === folder ? null : folder)}
-                className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolder === folder ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
+                onClick={() => setSelectedFolder(selectedFolder === folder.name ? null : folder.name)}
+                className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolder === folder.name ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
               >
-                {folder}
+                {folder.name}{folder.scope === "platform" ? " · read-only" : ""}
               </button>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   void handleDeleteFolder(folder);
                 }}
+                disabled={folder.scope === "platform"}
                 className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-xs text-white group-hover:flex"
                 title={t("knowledge.folderDelete")}
               >

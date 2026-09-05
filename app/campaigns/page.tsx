@@ -14,6 +14,7 @@ import {
   deleteCampaignReference,
   listCampaigns,
   listKnowledgeItems,
+  listFolders,
   listCampaignReferences,
   listReviewQueue,
   regenerateAsset,
@@ -29,6 +30,7 @@ import {
   type KnowledgeItemRecord,
   type CampaignRecord,
   type CampaignStatus,
+  type FolderRecord,
   type ReviewItem,
   type ReviewStatus,
   ApiRequestError,
@@ -287,6 +289,7 @@ export default function CampaignCenterPage() {
   const [knowledgeMessage, setKnowledgeMessage] = useState<string | null>(null);
   const [knowledgeInputKey, setKnowledgeInputKey] = useState(0);
   const [folders, setFolders] = useState<string[]>([]);
+  const [folderRecords, setFolderRecords] = useState<FolderRecord[]>([]);
   const [campaignForm, setCampaignForm] = useState({
     campaignName: "",
     productName: "",
@@ -392,10 +395,10 @@ export default function CampaignCenterPage() {
 
     async function loadFolders() {
       try {
-        const res = await fetch("/api/folders");
-        if (res.ok) {
-          const data = (await res.json()) as { items: { name: string }[] };
-          if (mounted) setFolders(Array.from(new Set([...data.items.map((f) => f.name), IMMEDIATE_UPLOAD_FOLDER])));
+        const data = await listFolders();
+        if (mounted) {
+          setFolderRecords(data);
+          setFolders(Array.from(new Set([...data.map((f) => f.name), IMMEDIATE_UPLOAD_FOLDER])));
         }
       } catch {
         // folders not critical
@@ -447,9 +450,8 @@ export default function CampaignCenterPage() {
   }, [folders, knowledgeItems]);
 
   function getKnowledgeFolderLabel(folderName: string): string {
-    return folderName === IMMEDIATE_UPLOAD_FOLDER
-      ? t("campaigns.knowledge.immediateUploadFolder")
-      : folderName;
+    const label = folderName === IMMEDIATE_UPLOAD_FOLDER ? t("campaigns.knowledge.immediateUploadFolder") : folderName;
+    return folderRecords.find((folder) => folder.name === folderName)?.scope === "platform" ? `${label} · read-only` : label;
   }
 
   const filteredKnowledgeItems = useMemo(() => {
@@ -662,7 +664,7 @@ export default function CampaignCenterPage() {
       if (draft.referenceFiles.length > 0 || selectedKnowledgeItems.length > 0) {
         const uploadResults = await Promise.allSettled([
           ...selectedKnowledgeItems.map((item) => attachKnowledgeItemToCampaign(created.campaign_id, item)),
-          ...draft.referenceFiles.map((file) => uploadCampaignReference(created.campaign_id, file, "admin")),
+          ...draft.referenceFiles.map((file) => uploadCampaignReference(created.campaign_id, file, "admin", folderRecords.find((folder) => folder.name === knowledgeCategoryFilter)?.folder_id)),
         ]);
         
       }
@@ -1001,7 +1003,7 @@ export default function CampaignCenterPage() {
 
     setKnowledgeBusy(true);
     try {
-      await uploadKnowledgeItem(knowledgeFile, knowledgeTitle || knowledgeFile.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER);
+      await uploadKnowledgeItem(knowledgeFile, knowledgeTitle || knowledgeFile.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER, undefined, folderRecords.find((folder) => folder.name === IMMEDIATE_UPLOAD_FOLDER)?.folder_id);
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
       setKnowledgeFile(null);
@@ -1035,7 +1037,7 @@ export default function CampaignCenterPage() {
   async function handleMoveKnowledgeItem(itemId: string, newFolder: string) {
     setKnowledgeBusy(true);
     try {
-      await updateKnowledgeItem(itemId, { category: newFolder });
+      await updateKnowledgeItem(itemId, { category: newFolder, folder_id: folderRecords.find((folder) => folder.name === newFolder)?.folder_id ?? null });
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
       setKnowledgeMessage(t("knowledge.moveSuccess"));
@@ -1107,7 +1109,7 @@ export default function CampaignCenterPage() {
 
     setReferencesBusy(true);
     try {
-      await updateCampaignReference(activeCampaignId, referenceId, { folder: newFolder });
+      await updateCampaignReference(activeCampaignId, referenceId, { folder: newFolder, folder_id: folderRecords.find((folder) => folder.name === newFolder)?.folder_id ?? null });
       const rows = await listCampaignReferences(activeCampaignId);
       setReferences(rows);
       setReferencesMessage(t("campaigns.references.moveSuccess"));
