@@ -191,11 +191,11 @@ export default function ReviewPage() {
   }, [items]);
 
   if (authLoading) {
-    return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading...</section>;
+    return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">{t("common.loading")}</section>;
   }
 
   if (!canReview) {
-    return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">你沒有審核中心權限。</section>;
+    return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">{t("roles.noPermission")}</section>;
   }
 
   const normalizedQuery = query.trim().toLowerCase();

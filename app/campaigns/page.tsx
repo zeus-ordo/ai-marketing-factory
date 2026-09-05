@@ -1,5 +1,8 @@
 "use client";
 
+/* The legacy campaign edit modal is being migrated incrementally. */
+/* eslint-disable no-restricted-syntax */
+
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   attachKnowledgeItemToCampaign,
@@ -1186,15 +1189,15 @@ export default function CampaignCenterPage() {
             required
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
-            <option value="awareness">品牌曝光</option>
-            <option value="engagement">互動</option>
-            <option value="conversion">導購</option>
+            <option value="awareness">{t("campaigns.objectives.awareness")}</option>
+            <option value="engagement">{t("campaigns.objectives.engagement")}</option>
+            <option value="conversion">{t("campaigns.objectives.conversion")}</option>
           </select>
           <input
             value={campaignForm.industryCategory}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, industryCategory: event.target.value }))}
-            aria-label="industryCategory"
-            placeholder="產業別"
+            aria-label={t("campaigns.knowledge.category")}
+            placeholder={t("campaigns.knowledge.category")}
             required
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           />
@@ -1204,9 +1207,9 @@ export default function CampaignCenterPage() {
             aria-label={t("campaigns.form.platforms")}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
-            <option value="社群平台">社群平台</option>
-            <option value="廣告素材">廣告素材</option>
-            <option value="網站版位">網站版位</option>
+            <option value="社群平台">{t("campaigns.form.platforms")}</option>
+            <option value="廣告素材">{t("campaigns.form.platforms")}</option>
+            <option value="網站版位">{t("campaigns.form.platforms")}</option>
           </select>
           <input
             value={campaignForm.brandTone}
@@ -1215,14 +1218,14 @@ export default function CampaignCenterPage() {
             placeholder={t("campaigns.form.brandTone")}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           />
-          <input type="number" min={0} max={7} value={campaignForm.copyVariants} onChange={(event) => setCampaignForm((prev) => ({ ...prev, copyVariants: event.target.value }))} aria-label="文案數量" placeholder="文案數量" className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
-          <input type="number" min={0} max={5} value={campaignForm.imageAssets} onChange={(event) => setCampaignForm((prev) => ({ ...prev, imageAssets: event.target.value }))} aria-label="圖檔數量" placeholder="圖檔數量" className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
-          <input type="number" min={0} max={3} value={campaignForm.shortVideoAssets} onChange={(event) => setCampaignForm((prev) => ({ ...prev, shortVideoAssets: event.target.value }))} aria-label="影片數量" placeholder="影片數量" className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+          <input type="number" min={0} max={7} value={campaignForm.copyVariants} onChange={(event) => setCampaignForm((prev) => ({ ...prev, copyVariants: event.target.value }))} aria-label={t("campaigns.form.copyVariants")} placeholder={t("campaigns.form.copyVariants")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+          <input type="number" min={0} max={5} value={campaignForm.imageAssets} onChange={(event) => setCampaignForm((prev) => ({ ...prev, imageAssets: event.target.value }))} aria-label={t("campaigns.form.imageAssets")} placeholder={t("campaigns.form.imageAssets")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+          <input type="number" min={0} max={3} value={campaignForm.shortVideoAssets} onChange={(event) => setCampaignForm((prev) => ({ ...prev, shortVideoAssets: event.target.value }))} aria-label={t("campaigns.form.shortVideoAssets")} placeholder={t("campaigns.form.shortVideoAssets")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
           <input
             value={campaignForm.budget}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, budget: formatNumberInput(event.target.value) }))}
             aria-label={t("campaigns.form.budget")}
-            placeholder="美金預算（勾選投廣策略時必填）"
+            placeholder={t("campaigns.form.budget")}
             required={selectedDeliverables.includes("ads")}
             inputMode="numeric"
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
@@ -1233,21 +1236,21 @@ export default function CampaignCenterPage() {
               checked={selectedDeliverables.includes("ads")}
               onChange={() => setSelectedDeliverables((prev) => prev.includes("ads") ? prev.filter((v) => v !== "ads") : [...prev, "ads"])}
             />
-            投廣策略
+            {t("campaigns.deliverables.ads")}
           </label>
           <div className="hidden xl:block" aria-hidden />
           <input
             value={campaignForm.audiencePersona}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, audiencePersona: event.target.value }))}
             aria-label={t("campaigns.form.audience")}
-            placeholder="受眾目標"
+            placeholder={t("campaigns.form.audience")}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 md:col-span-2"
           />
           <textarea
             value={campaignForm.projectDescription}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, projectDescription: event.target.value }))}
-            aria-label="projectDescription"
-            placeholder="專案需求描述"
+            aria-label={t("campaigns.form.subtitle")}
+            placeholder={t("campaigns.form.subtitle")}
             required
             rows={2}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 md:col-span-2"
@@ -1280,10 +1283,10 @@ export default function CampaignCenterPage() {
                 {t("campaigns.form.referenceLibrarySelected", { count: selectedReferenceItemIds.length })}
               </span>
             </div>
-            <p className="text-xs text-slate-500">先勾選資料夾可套用該資料夾內全部素材；展開資料夾可改選特定檔案。</p>
+            <p className="text-xs text-slate-500">{t("campaigns.form.referenceLibrary")}</p>
             <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-200 p-2 dark:border-slate-700">
               {Object.entries(groupedKnowledgeItems).length === 0 ? (
-                <p className="px-2 py-3 text-xs text-slate-500">沒有符合篩選的內容資料庫素材。</p>
+                <p className="px-2 py-3 text-xs text-slate-500">{t("campaigns.form.referenceLibraryEmpty")}</p>
               ) : Object.entries(groupedKnowledgeItems).map(([folderName, items]) => {
                 const folderSelected = selectedKnowledgeFolderNames.includes(folderName);
                 const expanded = expandedKnowledgeFolderNames.includes(folderName);
@@ -1312,10 +1315,10 @@ export default function CampaignCenterPage() {
                           onChange={() => toggleKnowledgeFolder(folderName)}
                         />
                         <span className="truncate font-semibold text-slate-800 dark:text-slate-100">📁 {getKnowledgeFolderLabel(folderName)}</span>
-                        <span className="shrink-0 text-slate-500">{items.length} 個檔案{attachableItems.length < items.length ? `，${t("campaigns.form.attachableCount", { count: attachableItems.length })}` : ""}{selectedFileCount > 0 && !folderSelected ? `，已選 ${selectedFileCount}` : ""}</span>
+                        <span className="shrink-0 text-slate-500">{t("campaigns.form.referenceFilesSelected", { count: items.length })}{attachableItems.length < items.length ? `，${t("campaigns.form.attachableCount", { count: attachableItems.length })}` : ""}{selectedFileCount > 0 && !folderSelected ? `，${t("campaigns.form.referenceLibrarySelected", { count: selectedFileCount })}` : ""}</span>
                       </label>
                       <span className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium dark:border-slate-700">
-                        {expanded ? "收合" : "展開"}
+                        {expanded ? t("common.cancel") : t("common.edit")}
                       </span>
                     </div>
                     {expanded ? (
@@ -1353,7 +1356,7 @@ export default function CampaignCenterPage() {
           <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-5 shadow-2xl dark:bg-slate-900">
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-3 dark:border-slate-800">
               <div>
-                <h2 className="text-lg font-semibold">建立活動工單確認</h2>
+                <h2 className="text-lg font-semibold">{t("campaigns.editTitle")}</h2>
               </div>
               <button
                 type="button"
@@ -1361,36 +1364,36 @@ export default function CampaignCenterPage() {
                 disabled={creatingCampaign}
                 className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-slate-700"
               >
-                關閉
+                {t("common.cancel")}
               </button>
             </div>
 
             <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
-              <ReviewField label="活動名稱" value={pendingCreateDraft.campaignName} />
-              <ReviewField label="產品名稱" value={pendingCreateDraft.productName} />
+              <ReviewField label={t("campaigns.form.campaignName")} value={pendingCreateDraft.campaignName} />
+              <ReviewField label={t("campaigns.form.productName")} value={pendingCreateDraft.productName} />
               <ReviewField
-                label="活動目標"
-                value={pendingCreateDraft.objective === "conversion" ? "導購" : pendingCreateDraft.objective === "engagement" ? "互動" : "品牌曝光"}
+                label={t("campaigns.form.objective")}
+                value={t(`campaigns.objectives.${pendingCreateDraft.objective === "conversion" ? "conversion" : pendingCreateDraft.objective === "engagement" ? "engagement" : "awareness"}` as "campaigns.objectives.conversion" | "campaigns.objectives.engagement" | "campaigns.objectives.awareness")}
               />
-              <ReviewField label="投放平台" value={pendingCreateDraft.platforms.join(", ")} />
-              <ReviewField label="產業類別" value={pendingCreateDraft.industryCategory} />
-              <ReviewField label="目標受眾" value={pendingCreateDraft.audiencePersona} />
-              <ReviewField label="品牌語氣" value={pendingCreateDraft.brandTone.length > 0 ? pendingCreateDraft.brandTone.join(", ") : "—"} />
-              <ReviewField label="預算" value={pendingCreateDraft.budget > 0 ? formatCurrencyUSD(locale, pendingCreateDraft.budget) : "—"} />
-              <ReviewField label="文案數量" value={String(pendingCreateDraft.deliverables.copyVariants)} />
-              <ReviewField label="圖片數量" value={String(pendingCreateDraft.deliverables.imageAssets)} />
-              <ReviewField label="影片數量" value={String(pendingCreateDraft.deliverables.shortVideoAssets)} />
-              <ReviewField label="投廣策略" value={pendingCreateDraft.deliverables.adsStrategy > 0 ? "是" : "否"} />
-              <ReviewField label="期限" value={formatDateTime(locale, pendingCreateDraft.deadline)} />
-              <ReviewField label="上傳參考素材" value={pendingCreateDraft.referenceFiles.length > 0 ? `${pendingCreateDraft.referenceFiles.length} 個檔案` : "—"} />
+              <ReviewField label={t("campaigns.form.platforms")} value={pendingCreateDraft.platforms.join(", ")} />
+              <ReviewField label={t("campaigns.knowledge.category")} value={pendingCreateDraft.industryCategory} />
+              <ReviewField label={t("campaigns.form.audience")} value={pendingCreateDraft.audiencePersona} />
+              <ReviewField label={t("campaigns.form.brandTone")} value={pendingCreateDraft.brandTone.length > 0 ? pendingCreateDraft.brandTone.join(", ") : "—"} />
+              <ReviewField label={t("campaigns.form.budget")} value={pendingCreateDraft.budget > 0 ? formatCurrencyUSD(locale, pendingCreateDraft.budget) : "—"} />
+              <ReviewField label={t("campaigns.form.copyVariants")} value={String(pendingCreateDraft.deliverables.copyVariants)} />
+              <ReviewField label={t("campaigns.form.imageAssets")} value={String(pendingCreateDraft.deliverables.imageAssets)} />
+              <ReviewField label={t("campaigns.form.shortVideoAssets")} value={String(pendingCreateDraft.deliverables.shortVideoAssets)} />
+              <ReviewField label={t("campaigns.deliverables.ads")} value={pendingCreateDraft.deliverables.adsStrategy > 0 ? t("common.yes") : t("common.no")} />
+              <ReviewField label={t("campaigns.form.deadline")} value={formatDateTime(locale, pendingCreateDraft.deadline)} />
+              <ReviewField label={t("campaigns.form.referenceFiles")} value={pendingCreateDraft.referenceFiles.length > 0 ? t("campaigns.form.referenceFilesSelected", { count: pendingCreateDraft.referenceFiles.length }) : "—"} />
               <div className="md:col-span-2">
-                <p className="text-xs font-medium text-slate-500">專案需求描述</p>
+                <p className="text-xs font-medium text-slate-500">{t("campaigns.form.subtitle")}</p>
                 <p className="mt-1 whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
                   {pendingCreateDraft.projectDescription}
                 </p>
               </div>
               <div className="md:col-span-2">
-                <p className="text-xs font-medium text-slate-500">內容資料庫</p>
+                <p className="text-xs font-medium text-slate-500">{t("campaigns.form.referenceLibrary")}</p>
                 <p className="mt-1 rounded-xl bg-slate-50 p-3 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
                   {pendingCreateDraft.knowledgeItemIds.length > 0
                     ? knowledgeItems
@@ -1409,7 +1412,7 @@ export default function CampaignCenterPage() {
                 disabled={creatingCampaign}
                 className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-slate-700"
               >
-                返回修改
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -1417,7 +1420,7 @@ export default function CampaignCenterPage() {
                 disabled={creatingCampaign}
                 className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700"
               >
-                {creatingCampaign ? "建立中..." : "確認工單內容"}
+                {creatingCampaign ? t("common.loading") : t("campaigns.form.submit")}
               </button>
             </div>
           </div>
