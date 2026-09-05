@@ -31,7 +31,7 @@ from .auth import (
     check_permission,
     PLATFORM_ADMIN_KEY,
 )
-from .persistence import PostgresPersistence, now_utc
+from .persistence import PostgresPersistence, legacy_folder_id, now_utc
 from .schemas import (
     AssetOutput,
     AssetVersion,
@@ -3413,6 +3413,26 @@ def folder_payload(folder: dict[str, Any]) -> FolderRecord:
     return FolderRecord(**folder)
 
 
+def apply_legacy_folder_association(item: dict[str, Any], folders: list[dict[str, Any]]) -> dict[str, Any]:
+    """Make legacy text useful without guessing across duplicate scoped folders."""
+    if item.get("folder_id"):
+        return item
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    label = item.get("folder") or metadata.get("category") or metadata.get("folder")
+    inferred = legacy_folder_id(label, folders)
+    return {**item, "folder_id": inferred} if inferred else item
+
+
+def count_in_memory_folder_associations(folder_id: str) -> int:
+    return sum(
+        1 for rows in knowledge_items.values() for item in rows
+        if getattr(item, "folder_id", None) == folder_id
+    ) + sum(
+        1 for rows in campaign_references.values() for item in rows
+        if getattr(item, "folder_id", None) == folder_id
+    )
+
+
 def get_folder_or_404(folder_id: str) -> dict[str, Any]:
     if persistence is not None:
         folder = persistence.get_folder(folder_id)
@@ -4245,7 +4265,7 @@ def list_sla_backlog_data(limit: int, overdue_only: bool) -> tuple[list[SlaBackl
 @app.get("/api/v1/folders", response_model=FolderListResponse)
 def list_folders(req: Request) -> FolderListResponse:
     if is_platform_admin_request(req) or is_internal_api_key_request(req):
-        rows = persistence.list_folders("") if persistence is not None else list(folders_cache.values())
+        rows = persistence.list_folders("") if persistence is not None else [folder for folder in folders_cache.values() if folder["scope"] == "platform"]
     else:
         actor = require_jwt(req)
         rows = persistence.list_folders(actor.company_id or "") if persistence is not None else [
@@ -4300,7 +4320,8 @@ def delete_folder(req: Request, folder_id: str) -> dict[str, Any]:
     folder = get_folder_or_404(folder_id)
     if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
         authorize_folder_access(folder, require_jwt(req), "delete")
-    if persistence is not None and persistence.count_folder_associations(folder_id) > 0:
+    association_count = persistence.count_folder_associations(folder_id) if persistence is not None else count_in_memory_folder_associations(folder_id)
+    if association_count > 0:
         raise HTTPException(status_code=409, detail="Folder has content associations")
     deleted = persistence.delete_folder(folder_id) if persistence is not None else folders_cache.pop(folder_id, None) is not None
     return {"folder_id": folder_id, "deleted": deleted}
@@ -5649,6 +5670,9 @@ def list_knowledge_items(req: Request, company_id: str | None = None) -> Knowled
         rows = persistence.list_knowledge_items(target_company_id)
         if not is_platform_admin_request(req) and target_company_id != "platform":
             rows = persistence.list_knowledge_items("platform") + rows
+        list_persisted_folders = getattr(persistence, "list_folders", lambda _company_id: [])
+        visible_folders = list_persisted_folders(target_company_id) if target_company_id != "platform" else list_persisted_folders("")
+        rows = [apply_legacy_folder_association(row, visible_folders) for row in rows]
         items = [KnowledgeItemRecord(**row) for row in rows]
     else:
         items = knowledge_items.get(target_company_id, []) if is_platform_admin_request(req) else [*knowledge_items.get("platform", []), *knowledge_items.get(target_company_id, [])]
@@ -7855,6 +7879,8 @@ def list_campaign_references(campaign_id: str, req: Request) -> CampaignReferenc
 
     if persistence is not None:
         db_items = persistence.list_campaign_references(campaign_id)
+        list_persisted_folders = getattr(persistence, "list_folders", lambda _company_id: [])
+        db_items = [apply_legacy_folder_association(item, list_persisted_folders(campaign.company_id or "")) for item in db_items]
         base_url = str(req.base_url).rstrip("/")
         items = [to_reference_record(base_url, payload) for payload in db_items if reference_file_exists(payload)]
     else:

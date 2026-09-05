@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -58,3 +59,35 @@ def test_folder_delete_rejects_referenced_folder(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         main.delete_folder(object(), "company-brand")
     assert exc.value.status_code == 409
+
+
+def test_in_memory_folder_delete_rejects_referenced_folder(monkeypatch):
+    folder = {"folder_id": "company-brand", "scope": "company", "company_id": "company-a", "name": "Brand"}
+    main.folders_cache.clear()
+    main.folders_cache[folder["folder_id"]] = folder
+    main.knowledge_items["company-a"] = [SimpleNamespace(folder_id=folder["folder_id"])]
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "is_internal_api_key_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: actor(permissions=["folder:delete"]))
+
+    with pytest.raises(HTTPException) as exc:
+        main.delete_folder(object(), folder["folder_id"])
+    assert exc.value.status_code == 409
+    main.knowledge_items.clear()
+    main.folders_cache.clear()
+
+
+def test_in_memory_internal_folder_listing_matches_persistent_platform_scope(monkeypatch):
+    main.folders_cache.clear()
+    main.folders_cache.update({
+        "platform": {"folder_id": "platform", "scope": "platform", "company_id": None, "name": "Brand", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()},
+        "company": {"folder_id": "company", "scope": "company", "company_id": "company-a", "name": "Brand", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()},
+    })
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "is_internal_api_key_request", lambda _req: True)
+
+    result = main.list_folders(object())
+    assert [item.folder_id for item in result.items] == ["platform"]
+    main.folders_cache.clear()

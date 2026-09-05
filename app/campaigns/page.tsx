@@ -444,14 +444,12 @@ export default function CampaignCenterPage() {
   }, [realCampaigns, selectedReferenceCampaignId]);
   const activeCampaignRecord = campaignRecords.find((record) => record.campaign_id === activeCampaignId) ?? null;
 
-  const knowledgeCategories = useMemo(() => {
-    const categories = knowledgeItems.map((item) => getKnowledgeFolder(item)).filter(Boolean);
-    return Array.from(new Set([...folders, ...categories, IMMEDIATE_UPLOAD_FOLDER])).sort((a, b) => a.localeCompare(b));
-  }, [folders, knowledgeItems]);
-
   function getKnowledgeFolderLabel(folderName: string): string {
-    const label = folderName === IMMEDIATE_UPLOAD_FOLDER ? t("campaigns.knowledge.immediateUploadFolder") : folderName;
-    return folderRecords.some((folder) => folder.name === folderName && folder.scope === "platform") ? `${label} · read-only` : label;
+    const folder = folderRecords.find((candidate) => candidate.folder_id === folderName || folderScopeKey(candidate) === folderName);
+    const label = folderName === IMMEDIATE_UPLOAD_FOLDER
+      ? t("campaigns.knowledge.immediateUploadFolder")
+      : ((folder?.name ?? folderName.replace(/^legacy:/, "")) || "General");
+    return folder?.scope === "platform" ? `${label} · read-only` : label;
   }
 
   const filteredKnowledgeItems = useMemo(() => {
@@ -467,8 +465,8 @@ export default function CampaignCenterPage() {
 
   const groupedKnowledgeItems = useMemo(() => {
     const folderNames = new Set([
-      ...folders,
-      ...knowledgeCategories,
+      ...folderRecords.map((folder) => folderScopeKey(folder)),
+      ...knowledgeItems.map((item) => getKnowledgeFolderKey(item, folderRecords)),
       IMMEDIATE_UPLOAD_FOLDER,
     ]);
     const groups = Array.from(folderNames).reduce<Record<string, KnowledgeItemRecord[]>>((result, folderName) => {
@@ -476,11 +474,11 @@ export default function CampaignCenterPage() {
       return result;
     }, {});
     return filteredKnowledgeItems.reduce<Record<string, KnowledgeItemRecord[]>>((groups, item) => {
-      const category = getKnowledgeFolder(item);
-      groups[category] = [...(groups[category] ?? []), item];
+      const folderKey = getKnowledgeFolderKey(item, folderRecords);
+      groups[folderKey] = [...(groups[folderKey] ?? []), item];
       return groups;
     }, groups);
-  }, [filteredKnowledgeItems, folders, knowledgeCategories]);
+  }, [filteredKnowledgeItems, folderRecords, knowledgeItems]);
 
   const selectedReferenceItemIds = useMemo(() => {
     const ids = new Set(selectedKnowledgeItemIds.filter((itemId) => {
@@ -488,12 +486,12 @@ export default function CampaignCenterPage() {
       return item ? isKnowledgeItemAttachable(item) : false;
     }));
     for (const item of knowledgeItems) {
-      if (isKnowledgeItemAttachable(item) && selectedKnowledgeFolderNames.includes(getKnowledgeFolder(item))) {
+      if (isKnowledgeItemAttachable(item) && selectedKnowledgeFolderNames.includes(getKnowledgeFolderKey(item, folderRecords))) {
         ids.add(item.item_id);
       }
     }
     return Array.from(ids);
-  }, [knowledgeItems, selectedKnowledgeFolderNames, selectedKnowledgeItemIds]);
+  }, [folderRecords, knowledgeItems, selectedKnowledgeFolderNames, selectedKnowledgeItemIds]);
 
   const groupedReferences = useMemo(() => {
     return references.reduce<Record<string, CampaignReferenceRecord[]>>((groups, item) => {
@@ -1059,7 +1057,7 @@ export default function CampaignCenterPage() {
   }
 
   function toggleKnowledgeFolder(folderName: string) {
-    const folderItemIds = new Set(knowledgeItems.filter((item) => getKnowledgeFolder(item) === folderName && isKnowledgeItemAttachable(item)).map((item) => item.item_id));
+    const folderItemIds = new Set(knowledgeItems.filter((item) => getKnowledgeFolderKey(item, folderRecords) === folderName && isKnowledgeItemAttachable(item)).map((item) => item.item_id));
     if (folderItemIds.size === 0) return;
     setSelectedKnowledgeFolderNames((prev) => (
       prev.includes(folderName) ? prev.filter((name) => name !== folderName) : [...prev, folderName]
@@ -1624,7 +1622,7 @@ export default function CampaignCenterPage() {
                               {t("campaigns.knowledge.download")}
                             </a>
                           ) : null}
-                          {category !== IMMEDIATE_UPLOAD_FOLDER ? (
+                          {item.folder_id ? (
                             <select
                               value={category}
                               onChange={(e) => {
@@ -2023,6 +2021,16 @@ function getReferenceFolder(item: CampaignReferenceRecord): string {
 function getKnowledgeFolder(item: KnowledgeItemRecord): string {
   const folder = item.metadata?.folder ?? item.metadata?.category;
   return typeof folder === "string" && folder.trim() ? folder : "General";
+}
+
+function getKnowledgeFolderKey(item: KnowledgeItemRecord, folderRecords: FolderRecord[]): string {
+  if (!item.folder_id) return `legacy:${getKnowledgeFolder(item)}`;
+  const folder = folderRecords.find((candidate) => candidate.folder_id === item.folder_id);
+  return folder ? folderScopeKey(folder) : item.folder_id;
+}
+
+function folderScopeKey(folder: Pick<FolderRecord, "folder_id" | "scope" | "company_id">): string {
+  return `${folder.scope}:${folder.company_id ?? "platform"}:${folder.folder_id}`;
 }
 
 function isKnowledgeItemAttachable(item: KnowledgeItemRecord): boolean {

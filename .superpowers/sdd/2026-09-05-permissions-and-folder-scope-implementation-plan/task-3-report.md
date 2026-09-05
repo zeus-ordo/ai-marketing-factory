@@ -66,3 +66,29 @@
 - `npm run check:secrets` remains blocked by pre-existing weak/default values in `.env.local` and `.env.test.local`; no secrets were added or exposed.
 - Legacy text is preserved as the response fallback; `legacy_folder_id` only infers an ID for one case-insensitive match and returns `None` for ambiguous/general/unfiled values. A production backfill should run after conflict review.
 - `lib/server/folders-store.ts` remains retained until deployed backend reads and restart persistence are verified.
+
+## Latest Reviewer Fix Report
+
+### Changed Files
+
+- `services/campaign_service/app/main.py`: activate deterministic legacy category inference in knowledge/reference list responses; align in-memory folder deletion safety and internal platform-only listing with persistence.
+- `app/campaigns/page.tsx`: use scope/company/folder ID keys for knowledge grouping and selection, and exclude platform folders from move targets.
+- `services/campaign_service/test_folder_scope.py`: cover in-memory association rejection and internal listing scope.
+- `services/campaign_service/test_persistence_migrations.py`: cover ambiguous scoped-name fallback and production list-response inference.
+- `services/campaign_service/test_reference_folder_association.py`: add real repository reload test using `PostgresPersistence` when `CAMPAIGN_TEST_DATABASE_URL` is available.
+- `scripts/test-folder-scope-review-contract.mjs`: assert duplicate-safe folder keys, company scope retention, folder-ID filtering, and platform mutation exclusion.
+
+### TDD Evidence
+
+- RED: focused tests failed 3 expected behaviors for inactive legacy conversion, in-memory deletion/listing divergence, and the new grouping contract. A fixture-only timestamp error was corrected before implementation verification.
+- GREEN: `python -m pytest services/campaign_service/test_folder_scope.py services/campaign_service/test_reference_folder_association.py services/campaign_service/test_persistence_migrations.py services/campaign_service/test_reference_scope.py services/campaign_service/test_task6_routes.py -q` passed **36 tests**, with 1 optional real-DB reload test skipped and 2 framework deprecation warnings.
+- GREEN: `node scripts/test-folder-scope-review-contract.mjs` passed.
+- GREEN: `git diff --check` passed.
+
+### Verification and Concerns
+
+- `npm run lint` passed with 0 errors and 13 existing warnings.
+- `npm run build` passed; Next.js emitted the existing multiple-lockfile workspace-root warning.
+- `npm run check:secrets` remains blocked by pre-existing weak/default values in local environment files; no secrets were added or exposed.
+- The real persistence reload test requires a disposable PostgreSQL URL because the production abstraction is PostgreSQL-specific; without `CAMPAIGN_TEST_DATABASE_URL` it is skipped and documented rather than using a recording cursor.
+- Legacy inference is intentionally conservative: one case-insensitive match only; ambiguous, General, and Unfiled values remain `folder_id=None`.

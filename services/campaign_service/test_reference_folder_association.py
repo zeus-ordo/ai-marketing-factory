@@ -1,5 +1,7 @@
 import os
 import sys
+import pytest
+from uuid import uuid4
 from datetime import datetime
 from pathlib import Path
 
@@ -96,3 +98,22 @@ def test_delete_folder_checks_reference_and_knowledge_associations():
 
     persistence._connect = lambda: Connection()
     assert persistence.count_folder_associations("folder-1") == 1
+
+
+@pytest.mark.skipif(not os.getenv("CAMPAIGN_TEST_DATABASE_URL"), reason="requires disposable PostgreSQL fixture")
+def test_reference_folder_association_survives_real_persistence_reload():
+    persistence = PostgresPersistence(os.environ["CAMPAIGN_TEST_DATABASE_URL"])
+    persistence.initialize()
+    folder_id = f"test-folder-{uuid4().hex}"
+    reference_id = f"test-reference-{uuid4().hex}"
+    persistence.create_folder({
+        "folder_id": folder_id, "scope": "company", "company_id": "reload-company", "name": "Reload",
+        "created_at": datetime.utcnow(), "updated_at": datetime.utcnow(),
+    })
+    persistence.save_campaign_reference(
+        reference_id, "reload-campaign", "guide.txt", "text/plain", 1, datetime.utcnow(), __file__, "test",
+        "Reload", folder_id,
+    )
+
+    reloaded = PostgresPersistence(os.environ["CAMPAIGN_TEST_DATABASE_URL"])
+    assert reloaded.list_campaign_references("reload-campaign")[0]["folder_id"] == folder_id
