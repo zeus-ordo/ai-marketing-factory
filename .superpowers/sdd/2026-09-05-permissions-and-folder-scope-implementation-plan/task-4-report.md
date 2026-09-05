@@ -30,8 +30,8 @@ The pre-existing changes in `deploy/docker-compose.yml`,
 - `npm run build`: PASS, production build and TypeScript completed; Next.js reported the existing multiple-lockfile workspace-root warning.
 - `git diff --check`: PASS.
 
-The new offline E2E uses mocked boundaries and no provider keys,
-JWTs, localhost probes, or live identities. It covers Manager review access,
+The new offline E2E uses mocked boundaries and no provider keys, JWTs,
+localhost probes, or live identities. It covers Manager review access,
 platform folder read/use-only behavior, platform-admin mutation, company folder
 isolation, same-company role assignment with platform-role and genuine
 cross-company-role rejection. The association reload test writes with

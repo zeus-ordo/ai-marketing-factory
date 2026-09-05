@@ -22,6 +22,7 @@ os.environ.setdefault("CHATBOT_INTERNAL_API_KEY", "test-key")
 sys.path.insert(0, str(CAMPAIGN_SERVICE))
 
 from app import main as campaign_main  # noqa: E402
+from app.persistence import PostgresPersistence  # noqa: E402
 
 
 COMPANY_A = "company-a"
@@ -87,35 +88,31 @@ def test_manager_review_access_and_folder_scope_are_enforced(monkeypatch: pytest
         campaign_main.require_any_permission(actor(COMPANY_A, ["folder:read"]), {"review:manage"})
 
 
-def test_folder_association_is_readable_after_persistence_reload(monkeypatch: pytest.MonkeyPatch):
-    class Persistence:
-        records: dict[str, dict] = {}
+@pytest.mark.skipif(not os.getenv("CAMPAIGN_TEST_DATABASE_URL"), reason="requires disposable PostgreSQL fixture")
+def test_folder_association_is_readable_after_persistence_reload():
+    database_url = os.environ["CAMPAIGN_TEST_DATABASE_URL"]
+    folder_id = f"task4-folder-{uuid4().hex}"
+    reference_id = f"task4-reference-{uuid4().hex}"
+    campaign_id = f"task4-campaign-{uuid4().hex}"
+    first = PostgresPersistence(database_url)
+    first.initialize()
+    first.create_folder({
+        "folder_id": folder_id,
+        "scope": "company",
+        "company_id": COMPANY_A,
+        "name": "Task 4 Reload",
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+    })
+    first.save_campaign_reference(
+        reference_id, campaign_id, "guide.txt", "text/plain", 1, datetime.utcnow(), __file__, "test",
+        "Task 4 Reload", folder_id,
+    )
+    del first
 
-        def list_campaign_references(self, campaign_id):
-            return [item for item in self.records.values() if item["campaign_id"] == campaign_id]
-
-        def get_folder(self, folder_id):
-            return {"folder_id": folder_id, "scope": "company", "company_id": COMPANY_A, "name": "Brand"}
-
-        def list_folders(self, _company_id):
-            return [self.get_folder("company-a-brand")]
-
-    first = Persistence()
-    Persistence.records["ref-1"] = {
-        "reference_id": "ref-1", "campaign_id": "campaign-1", "file_name": "guide.txt",
-        "file_type": "text/plain", "file_size": 4, "uploaded_at": "2026-09-06T00:00:00Z",
-        "stored_path": __file__, "folder": "Brand", "folder_id": "company-a-brand",
-    }
-    second = Persistence()
-    monkeypatch.setattr(campaign_main, "persistence", second)
-    monkeypatch.setattr(campaign_main, "store", SimpleNamespace(get_campaign=lambda _id: SimpleNamespace(company_id=COMPANY_A)))
-    monkeypatch.setattr(campaign_main, "is_platform_admin_request", lambda _req: False)
-    monkeypatch.setattr(campaign_main, "is_internal_api_key_request", lambda _req: False)
-    monkeypatch.setattr(campaign_main, "require_jwt", lambda _req: actor(COMPANY_A, ["folder:read"]))
-    req = request()
-    req.base_url = "http://test"
-    result = campaign_main.list_campaign_references("campaign-1", req)
-    assert result.items[0].folder_id == "company-a-brand"
+    second = PostgresPersistence(database_url)
+    reloaded = second.list_campaign_references(campaign_id)
+    assert reloaded[0]["folder_id"] == folder_id
 
 
 @pytest.mark.asyncio
@@ -125,6 +122,8 @@ async def test_company_admin_role_assignment_is_same_company_and_non_platform(mo
     member_id = UUID("00000000-0000-0000-0000-000000000002")
     role_id = UUID("00000000-0000-0000-0000-000000000003")
     platform_role_id = UUID("00000000-0000-0000-0000-000000000004")
+    cross_company_role_id = UUID("00000000-0000-0000-0000-000000000005")
+    other_company_id = UUID("00000000-0000-0000-0000-000000000006")
 
     class Members:
         async def get_by_id(self, _member_id):
@@ -135,7 +134,8 @@ async def test_company_admin_role_assignment_is_same_company_and_non_platform(mo
             self.updated = None
 
         async def get_by_id(self, selected):
-            return SimpleNamespace(role_id=selected, company_id=company_id if selected == role_id else None, is_system=selected == platform_role_id)
+            role_company = company_id if selected == role_id else other_company_id if selected == cross_company_role_id else None
+            return SimpleNamespace(role_id=selected, company_id=role_company, is_system=selected == platform_role_id)
 
         async def set_member_roles(self, *args, **kwargs):
             self.updated = (args, kwargs)
@@ -151,3 +151,7 @@ async def test_company_admin_role_assignment_is_same_company_and_non_platform(mo
     with pytest.raises(HTTPException) as error:
         await company_routes.update_member_roles(company_id, member_id, company_routes.MemberRoleUpdateRequest(role_ids=[platform_role_id]), payload)
     assert error.value.status_code == 422
+
+    with pytest.raises(HTTPException) as error:
+        await company_routes.update_member_roles(company_id, member_id, company_routes.MemberRoleUpdateRequest(role_ids=[cross_company_role_id]), payload)
+    assert error.value.status_code == 403
