@@ -117,6 +117,31 @@
 - Secret scanning remains blocked by pre-existing weak/default local environment values; no secrets were added or exposed.
 - Unrelated worktree modifications remain unstaged and preserved.
 
+## Final Listing and Rendering Fix Report
+
+### Changed Files
+
+- `services/campaign_service/app/main.py`: apply conservative legacy category/text inference in the in-memory knowledge listing path, preserving null for ambiguous/general/unfiled records.
+- `app/campaigns/page.tsx`: consume `groupedReferences` in rendered UI and retain scope/company/folder-ID grouping identity for duplicate names.
+- `services/campaign_service/test_folder_scope.py`: add listing-path unique and ambiguous/unfiled fallback coverage.
+- `scripts/test-folder-scope-review-contract.mjs`: assert rendered consumption of reference grouping and duplicate-safe folder identity.
+
+### TDD Evidence
+
+- RED: focused tests failed the in-memory unique legacy inference and the unused rendered reference grouping contract.
+- GREEN: `python -m pytest services/campaign_service/test_folder_scope.py services/campaign_service/test_reference_folder_association.py services/campaign_service/test_persistence_migrations.py services/campaign_service/test_reference_scope.py services/campaign_service/test_task6_routes.py -q` passed **42 tests**, skipped 1 optional database reload test, and emitted 2 framework deprecation warnings.
+- GREEN: `node scripts/test-folder-scope-review-contract.mjs` passed.
+- GREEN: `npm run lint` passed with 0 errors and 12 existing warnings.
+- GREEN: `npm run build` passed.
+- GREEN: `git diff --check` passed.
+
+### Concerns
+
+- The previously documented combined campaign-service full-suite 401-vs-422 environment-ordering failure remains pre-existing; it is not changed here.
+- The optional real reload test requires `CAMPAIGN_TEST_DATABASE_URL` and is skipped otherwise.
+- Secret scanning remains blocked by pre-existing weak/default local environment values; no secrets were added or exposed.
+- Unrelated worktree modifications remain unstaged and preserved.
+
 ## Final Reference Scope Fix Report
 
 ### Changed Files

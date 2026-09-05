@@ -1813,6 +1813,16 @@ export default function CampaignCenterPage() {
           </button>
         </div>
 
+        <div className="space-y-2 rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+          {Object.entries(groupedReferences).map(([folderKey, folderReferences]) => (
+            <div key={folderKey} className="flex items-center justify-between text-xs">
+              <span className="font-medium">{getKnowledgeFolderLabel(folderKey)}</span>
+              <span className="text-slate-500">{folderReferences.map((item) => item.file_name).join(", ")}</span>
+            </div>
+          ))}
+          {Object.keys(groupedReferences).length === 0 ? <span className="text-xs text-slate-500">No references</span> : null}
+        </div>
+
       </section>
 
       {editTarget ? (

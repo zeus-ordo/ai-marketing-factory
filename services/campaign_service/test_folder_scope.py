@@ -83,6 +83,27 @@ def test_in_memory_internal_folder_listing_matches_persistent_platform_scope(mon
     main.folders_cache.clear()
 
 
+def test_in_memory_knowledge_listing_infers_unique_legacy_folder_but_not_ambiguous_or_unfiled(monkeypatch):
+    def knowledge(item_id, category):
+        return main.KnowledgeItemRecord(item_id=item_id, company_id="company-a", title=item_id, source="manual", description="", metadata={"category": category}, folder_id=None, created_at=datetime.utcnow())
+
+    main.knowledge_items["company-a"] = [knowledge("unique", "Brand"), knowledge("ambiguous", "Shared"), knowledge("unfiled", "General")]
+    main.folders_cache.update({
+        "company-brand": {"folder_id": "company-brand", "scope": "company", "company_id": "company-a", "name": "Brand", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()},
+        "platform-shared": {"folder_id": "platform-shared", "scope": "platform", "company_id": None, "name": "Shared", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()},
+        "company-shared": {"folder_id": "company-shared", "scope": "company", "company_id": "company-a", "name": "Shared", "created_at": datetime.utcnow(), "updated_at": datetime.utcnow()},
+    })
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: type("Actor", (), {"company_id": "company-a"})())
+
+    result = main.list_knowledge_items(object())
+    by_id = {item.item_id: item.folder_id for item in result.items}
+    assert by_id == {"unique": "company-brand", "ambiguous": None, "unfiled": None}
+    main.knowledge_items.clear()
+    main.folders_cache.clear()
+
+
 def test_in_memory_knowledge_update_persists_selected_folder_id(monkeypatch):
     folder = {"folder_id": "target", "scope": "company", "company_id": "company-a", "name": "Target"}
     item = main.KnowledgeItemRecord(

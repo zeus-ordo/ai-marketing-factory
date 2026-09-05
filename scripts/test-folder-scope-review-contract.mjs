@@ -24,6 +24,9 @@ if (!campaigns.includes("getKnowledgeFolderKey(item, folderRecords)")) {
 if (!campaigns.includes("getReferenceFolderKey(item, folderRecords)")) {
   throw new Error("Reference grouping must use folder_id and scope keys");
 }
+if (!campaigns.includes("Object.entries(groupedReferences)")) {
+  throw new Error("Reference grouping result must drive rendered UI");
+}
 if (!campaigns.includes("folder.company_id")) {
   throw new Error("Folder UI contract must retain company scope keys for duplicate names");
 }

@@ -5680,6 +5680,8 @@ def list_knowledge_items(req: Request, company_id: str | None = None) -> Knowled
         items = [KnowledgeItemRecord(**row) for row in rows]
     else:
         items = knowledge_items.get(target_company_id, []) if is_platform_admin_request(req) else [*knowledge_items.get("platform", []), *knowledge_items.get(target_company_id, [])]
+        visible_folders = [folder for folder in folders_cache.values() if folder["scope"] == "platform" or folder.get("company_id") == target_company_id]
+        items = [KnowledgeItemRecord(**apply_legacy_folder_association(item.model_dump(mode="python"), visible_folders)) for item in items]
     return KnowledgeItemListResponse(items=items, total=len(items))
 
 
