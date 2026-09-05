@@ -12,5 +12,10 @@ assert.match(page, /member:manage/);
 assert.match(page, /updateMemberRoles\(user\.company_id, memberId, editingRoleIds\)/);
 assert.match(page, /role\.company_id === user\?\.company_id/);
 assert.match(page, /role\.is_system/);
+assert.match(page, /roleUpdateInvalid/);
+assert.match(page, /members\.forbiddenPlatformRole/);
+assert.match(page, /setRoleUpdateMsg\(t\("members\.updateFailure"\)\)/);
+assert.match(page, /setRoleUpdateMsg\(t\("members\.rolesUpdated"\)\)/);
+assert.doesNotMatch(page, /setRoleUpdateMsg\(err instanceof Error \? err\.message/);
 
-console.log("Frontend members contract: 7 passed, 0 failed");
+console.log("Frontend members contract: 11 passed, 0 failed");

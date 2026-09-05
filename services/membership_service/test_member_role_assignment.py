@@ -22,6 +22,7 @@ ACTOR_ID = uuid4()
 TARGET_ID = uuid4()
 ROLE_ID = uuid4()
 PLATFORM_ROLE_ID = uuid4()
+CROSS_COMPANY_ROLE_ID = uuid4()
 
 
 def member(member_id: UUID, company_id: UUID) -> Member:
@@ -34,13 +35,14 @@ def role(role_id: UUID, company_id: UUID | None, *, is_system: bool = False) -> 
 
 
 class FakeMembers:
-    def __init__(self, target_company_id=COMPANY_ID):
+    def __init__(self, target_company_id=COMPANY_ID, actor_company_id=COMPANY_ID):
         self.target_company_id = target_company_id
+        self.actor_company_id = actor_company_id
 
     async def get_by_id(self, member_id: UUID):
         return {
             TARGET_ID: member(TARGET_ID, self.target_company_id),
-            ACTOR_ID: member(ACTOR_ID, COMPANY_ID),
+            ACTOR_ID: member(ACTOR_ID, self.actor_company_id),
         }.get(member_id)
 
 
@@ -65,8 +67,12 @@ async def call_update(
     target_company_id=COMPANY_ID,
     role_ids=None,
 ):
-    roles = FakeRoles({ROLE_ID: role(ROLE_ID, COMPANY_ID), PLATFORM_ROLE_ID: role(PLATFORM_ROLE_ID, None, is_system=True)})
-    monkeypatch.setattr(company, "member_repo", FakeMembers(target_company_id))
+    roles = FakeRoles({
+        ROLE_ID: role(ROLE_ID, COMPANY_ID),
+        PLATFORM_ROLE_ID: role(PLATFORM_ROLE_ID, None, is_system=True),
+        CROSS_COMPANY_ROLE_ID: role(CROSS_COMPANY_ROLE_ID, OTHER_COMPANY_ID),
+    })
+    monkeypatch.setattr(company, "member_repo", FakeMembers(target_company_id, company_id))
     monkeypatch.setattr(company, "role_repo", roles)
     try:
         result = await company.update_member_roles(
@@ -94,6 +100,12 @@ async def test_cross_company_target_is_denied(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cross_company_actor_is_denied(monkeypatch):
+    result, _ = await call_update(monkeypatch, ["member:assign_role"], company_id=OTHER_COMPANY_ID)
+    assert result.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_platform_role_is_denied(monkeypatch):
     result, _ = await call_update(monkeypatch, ["member:assign_role"], role_ids=[PLATFORM_ROLE_ID])
     assert result.status_code == 422
@@ -103,6 +115,12 @@ async def test_platform_role_is_denied(monkeypatch):
 async def test_unknown_role_id_is_rejected(monkeypatch):
     result, _ = await call_update(monkeypatch, ["member:assign_role"], role_ids=[uuid4()])
     assert result.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cross_company_role_is_denied(monkeypatch):
+    result, _ = await call_update(monkeypatch, ["member:assign_role"], role_ids=[CROSS_COMPANY_ROLE_ID])
+    assert result.status_code == 403
 
 
 @pytest.mark.asyncio

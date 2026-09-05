@@ -34,3 +34,30 @@
 - `pytest-asyncio` emits its existing unset loop-scope deprecation warning.
 - `npm run check:secrets` reports weak/default values in pre-existing `.env.local` and `.env.test.local`; those files were not read or modified.
 - Next.js build warns that multiple lockfiles make workspace-root inference ambiguous; this predates Task 2.
+
+## Review Fix Report
+
+### Fixes
+
+- `app/members/page.tsx` now derives assignable roles only from the current company and non-system roles, filters submitted selections against that set, preserves valid existing roles, and blocks replacement with localized `forbiddenPlatformRole` feedback when hidden invalid assignments are present. Update failures always render localized `updateFailure`; successful saves retain visible `rolesUpdated` feedback.
+- `services/membership_service/test_member_role_assignment.py` now covers actor, target, and role cross-company isolation through the actual backend route function.
+- `services/membership_service/test_role_repository.py` verifies transactional link replacement, commit and rollback behavior, exact audit fields, and absence of password/token/secret data.
+- `scripts/test-members-contract.mjs` now checks role safety, localized failure/success feedback, and suppression of raw backend errors.
+
+### Red/Green Evidence
+
+- RED: focused review-fix run produced 9 passed and 2 failed: both repository tests failed because the repository had no explicit transaction context (`transaction_started=False`, `rollback_count=0`); the frontend contract failed because `roleUpdateInvalid` and localized safety handling were absent.
+- GREEN: `python -m pytest -q services/membership_service/test_member_role_assignment.py services/membership_service/test_role_repository.py` passed 11 tests with 0 failures.
+- GREEN: `node scripts/test-members-contract.mjs` passed 11 checks with 0 failures.
+
+### Review-Fix Verification
+
+- `python -m pytest -q services/membership_service`: 18 passed, 0 failures.
+- `node scripts/test-members-contract.mjs`: 11 passed, 0 failures.
+- `npm run lint`: passed with 0 errors; 13 existing warnings remain in unrelated files.
+- `npm run build`: passed with TypeScript compilation and 27 static pages generated.
+
+### Review-Fix Concerns
+
+- There is still no configured component-test runner, so frontend verification remains source-contract based.
+- Existing repository-level `pytest-asyncio` deprecation warning, i18n checker findings, secrets-checker findings, and Next.js multiple-lockfile warning remain unchanged.

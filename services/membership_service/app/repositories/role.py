@@ -171,34 +171,35 @@ class RoleRepository:
     ) -> None:
         def _do():
             with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("DELETE FROM member_roles WHERE member_id = %s", (member_id,))
-                    for role_id in role_ids:
-                        cur.execute(
-                            "INSERT INTO member_roles (member_id, role_id) VALUES (%s, %s)",
-                            (member_id, role_id),
-                        )
-                    if actor_id is not None and company_id is not None:
-                        cur.execute(
-                            """
-                            INSERT INTO audit_logs
-                                (member_id, company_id, action, resource_type, resource_id, metadata)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                actor_id,
-                                company_id,
-                                "member.roles.update",
-                                "member",
-                                str(member_id),
-                                json.dumps(
-                                    {
-                                        "actor_id": str(actor_id),
-                                        "member_id": str(member_id),
-                                        "role_ids": [str(role_id) for role_id in role_ids],
-                                        "result": "success",
-                                    }
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM member_roles WHERE member_id = %s", (member_id,))
+                        for role_id in role_ids:
+                            cur.execute(
+                                "INSERT INTO member_roles (member_id, role_id) VALUES (%s, %s)",
+                                (member_id, role_id),
+                            )
+                        if actor_id is not None and company_id is not None:
+                            cur.execute(
+                                """
+                                INSERT INTO audit_logs
+                                    (member_id, company_id, action, resource_type, resource_id, metadata)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    actor_id,
+                                    company_id,
+                                    "member.roles.update",
+                                    "member",
+                                    str(member_id),
+                                    json.dumps(
+                                        {
+                                            "actor_id": str(actor_id),
+                                            "member_id": str(member_id),
+                                            "role_ids": [str(role_id) for role_id in role_ids],
+                                            "result": "success",
+                                        }
+                                    ),
                                 ),
-                            ),
-                        )
+                            )
         await asyncio.to_thread(_do)
