@@ -54,14 +54,15 @@ from B; it is explicitly skipped when `CAMPAIGN_TEST_DATABASE_URL` is absent.
 
 ## Deployment
 
-- Target revision: `6c1e01dd3f924765307810b346ee9fb0332d5f05`
-- Status: NOT DEPLOYED. The VM repository did not contain the target revision;
-  checkout returned `fatal: reference is not a tree`.
-- Existing VM revision: `d20eaddc4af26adfe0f018b23d1860227710fc51`.
-- Existing Compose services: all listed services reported `running`.
-- No fallback deployment of the older `origin/master` revision was performed.
-- Migration/init for the target revision was not run because its revision was
-  unavailable. No schema mutation was made.
+- Target revision: `fd3bfe631f5fe0ec21372436787d78008557c640`.
+- Status: DEPLOYED on VM `ai-marketing-factory` in `asia-east1-a`.
+- GitHub branch: `origin/feature/complete-campaign-flow`.
+- Cloud SQL backup verified before deployment: `1788632243840`, `SUCCESSFUL`.
+- VM fetched the branch, checked out the target revision, validated Compose,
+  rebuilt all images, and ran `docker compose -f deploy/docker-compose.gcp.yml up -d`.
+- All application containers reported `Up`; public Caddy route returned HTTP
+  `307`.
+- No secrets were printed or changed.
 
 ## Deployment Path Investigation
 
@@ -90,14 +91,16 @@ from B; it is explicitly skipped when `CAMPAIGN_TEST_DATABASE_URL` is absent.
 - VM `http://localhost:8080/health`: `000`, connection refused.
 - `/var/lib/ai-marketing-factory/campaign_references`: present.
 - `/var/lib/ai-marketing-factory/generated_assets`: present.
-- Target-revision smoke flow, account-separated production checks, and
-  association verification against the deployed target: NOT RUN because the
-  target revision was unavailable.
+- Target revision on VM: `fd3bfe631f5fe0ec21372436787d78008557c640`.
+- Compose service status: all listed application services `Up`.
+- Campaign-service recent logs contained zero `error` lines; no folder or
+  migration log lines were emitted.
+- Account-separated production checks and association verification were not
+  completed in this pass because production test identities were not used.
 
 ## Concerns and Limitations
 
-- The target commit is not available from the VM's configured Git remotes;
-  publishing or changing remotes was not authorized.
+- Production account-separated smoke tests remain pending.
 - The campaign-service suite has the documented pre-existing auth/validation
   mismatch; the deterministic offline gates pass.
 - Existing pytest/FastAPI deprecation warnings and lint warnings remain.
