@@ -50,3 +50,11 @@ repository test-isolation limitation, not a passing full suite.
 ## Limitations
 
 Live GCP deployment, Cloud SQL task-specific backup creation, provider smoke, and authenticated upload batches remain pending an approved clean deployment commit and safe provider/account access. Local stores were preserved.
+
+## Review Remediation
+
+- Batch-blocking coverage now invokes the production `isCampaignStartEnabled` application seam through the TypeScript module. Partial failures cover 2- and 10-file batches; a separate 1-file successful upload case permits start.
+- Retry coverage performs real upload endpoint calls, retains the first successful reference ID, uploads only the failed logical file on retry, and verifies the production start gate permits the all-success state.
+- Valid image coverage reads the generated asset through the exposed download route and verifies persisted bytes, content type, and stored-path metadata.
+- Restart coverage uses an isolated SQLite file fixture and recreates the persistence object before listing metadata and downloading file bytes.
+- TDD evidence: the revised tests were run red before the fixture correction (`6 passed, 1 failed` due to the SQLite reserved table name), then green (`7 passed, 2 warnings`).

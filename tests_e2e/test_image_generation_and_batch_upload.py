@@ -7,6 +7,9 @@ seams.  No credentials, network calls, or live services are required.
 from __future__ import annotations
 
 import os
+import json
+import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +30,7 @@ from app.schemas import CampaignBrief, CampaignRecord, Deliverables, TaskRecord,
 
 
 IMAGE_DATA_URL = "data:image/png;base64,aGVsbG8="
+BATCH_UPLOAD_SOURCE = ROOT / "lib" / "api" / "batch-upload.ts"
 
 
 def make_campaign(campaign_id: str = "camp-image-upload") -> CampaignRecord:
@@ -83,18 +87,28 @@ class AssetPersistence:
         return [asset for asset in self.assets.values() if asset.campaign_id == campaign_id]
 
 
-class ReferencePersistence:
-    def __init__(self, rows: dict[str, dict[str, Any]] | None = None):
-        self.rows = rows if rows is not None else {}
+class FileReferencePersistence:
+    def __init__(self, database_path: Path):
+        self.database_path = database_path
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS reference_rows (reference_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
 
     def save_campaign_reference(self, **payload: Any) -> None:
-        self.rows[payload["reference_id"]] = payload
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO reference_rows(reference_id, payload) VALUES (?, ?)",
+                (payload["reference_id"], json.dumps(payload, default=str)),
+            )
 
     def list_campaign_references(self, campaign_id: str) -> list[dict[str, Any]]:
-        return [row for row in self.rows.values() if row["campaign_id"] == campaign_id]
+        with sqlite3.connect(self.database_path) as connection:
+            rows = connection.execute("SELECT payload FROM reference_rows").fetchall()
+        return [row for row in (json.loads(item[0]) for item in rows) if row["campaign_id"] == campaign_id]
 
     def get_campaign_reference(self, campaign_id: str, reference_id: str) -> dict[str, Any] | None:
-        row = self.rows.get(reference_id)
+        with sqlite3.connect(self.database_path) as connection:
+            result = connection.execute("SELECT payload FROM reference_rows WHERE reference_id = ?", (reference_id,)).fetchone()
+        row = json.loads(result[0]) if result else None
         return row if row and row["campaign_id"] == campaign_id else None
 
     def list_folders(self, _company_id: str) -> list[dict[str, Any]]:
@@ -103,6 +117,25 @@ class ReferencePersistence:
 
 def headers() -> dict[str, str]:
     return {"X-Internal-Api-Key": "test-key"}
+
+
+def assert_actual_campaign_start_gate(states: list[dict[str, Any]], expected: bool) -> None:
+    script = """
+import { readFile } from "node:fs/promises";
+import ts from "typescript";
+const source = await readFile(process.argv[1], "utf8");
+const moduleSource = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+const module = await import(`data:text/javascript;base64,${Buffer.from(moduleSource).toString("base64")}`);
+const actual = module.isCampaignStartEnabled(JSON.parse(process.argv[2]));
+if (actual !== JSON.parse(process.argv[3])) process.exit(1);
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(BATCH_UPLOAD_SOURCE), json.dumps(states), json.dumps(expected)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.fixture(autouse=True)
@@ -175,6 +208,12 @@ def test_valid_image_response_persists_asset(monkeypatch: pytest.MonkeyPatch):
     assert saved[0].asset_type == "image"
     assert saved[0].metadata["provider"] == "gemini"
     assert store.tasks[0].status == "passed"
+    asset_url = saved[0].url
+    downloaded = TestClient(campaign_main.app).get(asset_url, headers=headers())
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"hello"
+    assert downloaded.headers["content-type"].startswith("image/png")
+    assert saved[0].metadata["stored_path"]
 
 
 def upload(client: TestClient, campaign_id: str, name: str, body: bytes = b"brief"):
@@ -185,7 +224,7 @@ def upload(client: TestClient, campaign_id: str, name: str, body: bytes = b"brie
     )
 
 
-@pytest.mark.parametrize("batch_size", [1, 2, 10])
+@pytest.mark.parametrize("batch_size", [2, 10])
 def test_partial_batch_failure_blocks_campaign_start(monkeypatch: pytest.MonkeyPatch, batch_size: int):
     campaign = make_campaign(f"camp-partial-batch-{batch_size}")
     monkeypatch.setattr(campaign_main, "store", Store(campaign))
@@ -199,8 +238,21 @@ def test_partial_batch_failure_blocks_campaign_start(monkeypatch: pytest.MonkeyP
     assert failure.status_code == 400
     assert failure.json()["detail"] == "UNSUPPORTED_FILE_TYPE"
     assert len(client.get(f"/api/v1/campaigns/{campaign.campaign_id}/references", headers=headers()).json()["items"]) == batch_size - 1
-    upload_states = ["success"] * (batch_size - 1) + ["failed"]
-    assert all(state == "success" for state in upload_states) is False
+    upload_states = [{"file": {"name": f"brief-{index}.txt"}, "status": "success"} for index in range(batch_size - 1)]
+    upload_states.append({"file": {"name": f"brief-{batch_size}.exe"}, "status": "failed"})
+    assert_actual_campaign_start_gate(upload_states, False)
+
+
+def test_single_file_upload_allows_campaign_start(monkeypatch: pytest.MonkeyPatch):
+    campaign = make_campaign("camp-single-upload")
+    monkeypatch.setattr(campaign_main, "store", Store(campaign))
+    monkeypatch.setattr(campaign_main, "persistence", None)
+    client = TestClient(campaign_main.app)
+
+    uploaded = upload(client, campaign.campaign_id, "single.txt")
+    assert uploaded.status_code == 200
+    reference_id = uploaded.json()["reference_id"]
+    assert_actual_campaign_start_gate([{"file": {"name": "single.txt"}, "status": "success", "referenceId": reference_id}], True)
 
 
 def test_failed_file_retry_then_all_success_allows_start(monkeypatch: pytest.MonkeyPatch):
@@ -209,21 +261,28 @@ def test_failed_file_retry_then_all_success_allows_start(monkeypatch: pytest.Mon
     monkeypatch.setattr(campaign_main, "persistence", None)
     client = TestClient(campaign_main.app)
 
+    successful = upload(client, campaign.campaign_id, "keep.txt", b"keep-content")
+    assert successful.status_code == 200
+    kept_reference_id = successful.json()["reference_id"]
     failed = upload(client, campaign.campaign_id, "retry.exe")
     assert failed.status_code == 400
     retried = upload(client, campaign.campaign_id, "retry.txt", b"retry-content")
 
     assert retried.status_code == 200
-    upload_states = ["success", "success"]
-    assert all(state == "success" for state in upload_states) is True
+    retried_reference_id = retried.json()["reference_id"]
+    assert_actual_campaign_start_gate([
+        {"file": {"name": "keep.txt"}, "status": "success", "referenceId": kept_reference_id},
+        {"file": {"name": "retry.txt"}, "status": "success", "referenceId": retried_reference_id},
+    ], True)
     references = client.get(f"/api/v1/campaigns/{campaign.campaign_id}/references", headers=headers()).json()["items"]
-    assert [item["file_name"] for item in references] == ["retry.txt"]
+    assert {item["file_name"] for item in references} == {"keep.txt", "retry.txt"}
+    assert kept_reference_id in {item["reference_id"] for item in references}
 
 
 def test_restart_preserves_uploaded_file_and_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     campaign = make_campaign("camp-restart-upload")
-    shared_rows: dict[str, dict[str, Any]] = {}
-    first_persistence = ReferencePersistence(shared_rows)
+    database_path = tmp_path / "references.sqlite3"
+    first_persistence = FileReferencePersistence(database_path)
     monkeypatch.setattr(campaign_main, "store", Store(campaign))
     monkeypatch.setattr(campaign_main, "persistence", first_persistence)
     client = TestClient(campaign_main.app)
@@ -231,10 +290,10 @@ def test_restart_preserves_uploaded_file_and_metadata(monkeypatch: pytest.Monkey
     uploaded = upload(client, campaign.campaign_id, "brand.txt", b"brand-guidance")
     assert uploaded.status_code == 200
     reference_id = uploaded.json()["reference_id"]
-    stored_path = shared_rows[reference_id]["stored_path"]
+    stored_path = first_persistence.get_campaign_reference(campaign.campaign_id, reference_id)["stored_path"]
     assert Path(stored_path).read_bytes() == b"brand-guidance"
 
-    second_persistence = ReferencePersistence(shared_rows)
+    second_persistence = FileReferencePersistence(database_path)
     monkeypatch.setattr(campaign_main, "persistence", second_persistence)
     restarted_client = TestClient(campaign_main.app)
     listed = restarted_client.get(f"/api/v1/campaigns/{campaign.campaign_id}/references", headers=headers())
