@@ -126,6 +126,7 @@ def _validate_image_asset(asset: object, *, provider: str, status_code: int) -> 
 
 
 def _request_with_retry(request_fn: Callable[[], T], *, provider: str, max_attempts: int = MAX_PROVIDER_ATTEMPTS) -> T:
+    max_attempts = min(MAX_PROVIDER_ATTEMPTS, max(1, max_attempts))
     for attempt in range(1, max_attempts + 1):
         try:
             return request_fn()

@@ -188,7 +188,11 @@ def test_endpoint_provider_error_is_sanitized():
 
     assert FAKE_API_KEY not in str(error.value.detail)
     assert FULL_PROVIDER_BODY not in str(error.value.detail)
-    assert "provider=gemini" in str(error.value.detail)
+    detail = str(error.value.detail)
+    assert "provider=gemini" in detail
+    assert "status=502" in detail
+    assert "retryable=True" in detail
+    assert "attempts=3" in detail
 
 
 def test_endpoint_rejects_invalid_real_asset():
@@ -203,6 +207,47 @@ def test_endpoint_rejects_invalid_real_asset():
 
     assert error.value.status_code == 502
     assert "invalid image data URL" in str(error.value.detail)
+    assert "data:image/svg+xml" not in str(error.value.detail)
+
+
+def test_retry_cannot_exceed_three_attempts_when_override_is_requested():
+    attempts = 0
+
+    def always_fails() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise main.ProviderError("gemini", 500, True, 1, "Provider request failed")
+
+    with patch.object(main.time, "sleep"):
+        with pytest.raises(main.ProviderError) as error:
+            main._request_with_retry(always_fails, provider="gemini", max_attempts=10)
+
+    assert attempts == 3
+    assert error.value.attempts == 3
+
+
+def test_future_http_date_retry_after_is_honored_within_cap():
+    fixed_now = 1_000_000.0
+    retry_at = datetime.fromtimestamp(fixed_now + 3, timezone.utc)
+    response = _response(429, {}, {"Retry-After": format_datetime(retry_at, usegmt=True)})
+    success = _response(200, {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U=", "mime_type": "image/png"}]}]})
+    with patch.object(main.httpx, "Client", return_value=_client_for([response, success])):
+        with patch.object(main.time, "time", return_value=fixed_now), patch.object(main.time, "sleep") as sleep:
+            main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert sleep.call_args.args[0] == 3
+    assert sleep.call_args.args[0] <= main.MAX_RETRY_DELAY_SECONDS
+
+
+@pytest.mark.parametrize("retry_after", ["999999", format_datetime(datetime(2099, 1, 1, tzinfo=timezone.utc), usegmt=True)])
+def test_oversized_retry_after_is_capped(retry_after: str):
+    response = _response(429, {}, {"Retry-After": retry_after})
+    success = _response(200, {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U=", "mime_type": "image/png"}]}]})
+    with patch.object(main.httpx, "Client", return_value=_client_for([response, success])):
+        with patch.object(main.time, "sleep") as sleep:
+            main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert sleep.call_args.args[0] == main.MAX_RETRY_DELAY_SECONDS
 
 
 def test_provider_429_retries_and_honors_retry_after():

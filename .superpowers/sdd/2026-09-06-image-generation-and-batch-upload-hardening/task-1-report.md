@@ -112,3 +112,51 @@ Compile result: exit code 0, no output or errors.
 - Pytest continues to emit the existing `pytest-asyncio` deprecation warning about an unset `asyncio_default_fixture_loop_scope`.
 - Retry-After HTTP-date tests use a current UTC date and verify the bounded delay; no live provider calls were made.
 - Campaign-service persistence validation remains covered by the later task, not this worker-only change.
+
+## Re-review Fixes
+
+### Changes
+
+- Clamped `_request_with_retry` caller overrides to the plan-mandated maximum of three attempts.
+- Added coverage for future HTTP-date `Retry-After`, oversized numeric/date retry hints, and caller overrides above the attempt limit.
+- Strengthened endpoint assertions for provider, status, retryability, attempts, sanitization, and absence of fallback SVG output for invalid real assets.
+- Preserved provider validation, retry behavior, and explicit stub fallback behavior.
+
+### TDD Evidence
+
+Red before the production retry-limit change:
+
+```text
+python -m pytest services/worker_image/test_provider_contract.py -q
+1 failed, 23 passed
+```
+
+The failure showed a caller-provided `max_attempts=10` produced 10 attempts instead of the required maximum of three.
+
+Green after the fix:
+
+```text
+python -m pytest services/worker_image/test_provider_contract.py -q
+24 passed in 0.44s
+```
+
+### Verification
+
+Exact commands and results:
+
+```bash
+python -m pytest services/worker_image/test_provider_contract.py -q
+24 passed in 0.44s
+
+python -m pytest services/worker_image/test_provider_contract.py services/worker_image/test_prompt.py -q
+27 passed in 0.45s
+
+python -m compileall -q services/worker_image
+```
+
+Compile result: exit code 0, no output or errors.
+
+### Concerns
+
+- Pytest continues to emit the existing `pytest-asyncio` deprecation warning about an unset `asyncio_default_fixture_loop_scope`.
+- Verification remains offline with mocked provider responses; no live provider calls were made.
