@@ -970,6 +970,25 @@ REFERENCE_ALLOWED_MIME_TYPES = {
     "video/x-matroska",
     "video/webm",
 }
+REFERENCE_EXTENSION_MIME_TYPES = {
+    ".pdf": {"application/pdf"},
+    ".txt": {"text/plain"},
+    ".md": {"text/markdown", "text/plain"},
+    ".doc": {"application/msword", "application/octet-stream"},
+    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream"},
+    ".ppt": {"application/vnd.ms-powerpoint", "application/octet-stream"},
+    ".pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/octet-stream"},
+    ".png": {"image/png"},
+    ".jpg": {"image/jpeg"},
+    ".jpeg": {"image/jpeg"},
+    ".webp": {"image/webp"},
+    ".gif": {"image/gif"},
+    ".mp4": {"video/mp4"},
+    ".mov": {"video/quicktime"},
+    ".avi": {"video/x-msvideo"},
+    ".mkv": {"video/x-matroska"},
+    ".webm": {"video/webm"},
+}
 os.makedirs(CAMPAIGN_REFERENCES_DIR, exist_ok=True)
 os.makedirs(GENERATED_ASSETS_DIR, exist_ok=True)
 
@@ -3283,10 +3302,27 @@ def to_reference_record(base_url: str, payload: dict[str, Any]) -> CampaignRefer
 def validate_reference_upload(file_name: str, file_type: str, file_size: int) -> None:
     ext = os.path.splitext(file_name)[1].lower()
     if ext not in REFERENCE_ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Unsupported file extension")
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
 
     if file_size > REFERENCE_MAX_SIZE_BYTES:
-        raise HTTPException(status_code=400, detail="File size exceeds upload limit")
+        raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+
+    if file_type not in REFERENCE_ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
+    expected_types = REFERENCE_EXTENSION_MIME_TYPES.get(ext, set())
+    if file_type != "application/octet-stream" and expected_types and file_type not in expected_types:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
+
+
+def cleanup_reference_upload(stored_path: str) -> None:
+    try:
+        if os.path.exists(stored_path):
+            os.remove(stored_path)
+        parent = os.path.dirname(stored_path)
+        if parent and os.path.isdir(parent) and not os.listdir(parent):
+            os.rmdir(parent)
+    except OSError:
+        logger.warning("Reference upload cleanup failed")
 
 
 def get_reference_payload_or_404(campaign_id: str, reference_id: str) -> dict[str, Any]:
@@ -7835,12 +7871,19 @@ def upload_campaign_reference(
     campaign = store.get_campaign(campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    require_campaign_access(req, campaign)
+    try:
+        require_campaign_access(req, campaign)
+    except HTTPException as exc:
+        if exc.status_code in {401, 403}:
+            raise HTTPException(status_code=exc.status_code, detail="CAMPAIGN_ACCESS_DENIED") from exc
+        raise
     target_folder = resolve_folder_for_actor(req, folder_id)
 
     reference_id = f"ref_{uuid4().hex[:12]}"
     original_name = os.path.basename(file.filename or "upload.bin")
     _, ext = os.path.splitext(original_name)
+    file_type = file.content_type or "application/octet-stream"
+    validate_reference_upload(original_name, file_type, 0)
 
     campaign_dir = os.path.join(CAMPAIGN_REFERENCES_DIR, campaign_id)
     os.makedirs(campaign_dir, exist_ok=True)
@@ -7848,17 +7891,27 @@ def upload_campaign_reference(
     stored_name = f"{reference_id}{ext}"
     stored_path = os.path.join(campaign_dir, stored_name)
 
-    with open(stored_path, "wb") as target:
-        shutil.copyfileobj(file.file, target)
-
-    file_size = os.path.getsize(stored_path)
-    file_type = file.content_type or "application/octet-stream"
     try:
+        file_size = 0
+        with open(stored_path, "wb") as target:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > REFERENCE_MAX_SIZE_BYTES:
+                    raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+                target.write(chunk)
         validate_reference_upload(original_name, file_type, file_size)
-    except HTTPException as exc:
-        if os.path.exists(stored_path):
-            os.remove(stored_path)
-        raise exc
+    except HTTPException:
+        cleanup_reference_upload(stored_path)
+        raise
+    except TimeoutError as exc:
+        cleanup_reference_upload(stored_path)
+        raise HTTPException(status_code=504, detail="UPLOAD_TIMEOUT") from exc
+    except OSError as exc:
+        cleanup_reference_upload(stored_path)
+        raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
 
     uploaded_at_dt = now_utc()
     uploaded_at = uploaded_at_dt.isoformat()
@@ -7891,14 +7944,12 @@ def upload_campaign_reference(
                 folder=record.folder,
                 folder_id=record.folder_id,
             )
-        except Exception:
-            campaign_references.setdefault(campaign_id, []).append(record)
-            campaign_references[campaign_id] = sorted(
-                campaign_references[campaign_id],
-                key=lambda item: item.uploaded_at,
-                reverse=True,
-            )
-            campaign_reference_files.setdefault(campaign_id, {})[reference_id] = stored_path
+        except TimeoutError as exc:
+            cleanup_reference_upload(stored_path)
+            raise HTTPException(status_code=504, detail="UPLOAD_TIMEOUT") from exc
+        except Exception as exc:
+            cleanup_reference_upload(stored_path)
+            raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
     else:
         campaign_references.setdefault(campaign_id, []).append(record)
         campaign_references[campaign_id] = sorted(
