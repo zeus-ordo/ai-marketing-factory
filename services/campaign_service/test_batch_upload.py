@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from starlette.datastructures import Headers, UploadFile
 
 os.environ.setdefault("CAMPAIGN_REQUIRE_POSTGRES", "false")
@@ -88,6 +89,24 @@ def configured(monkeypatch, tmp_path):
     main.campaign_references.clear()
     main.campaign_reference_files.clear()
     return campaign, persistence, tmp_path
+
+
+def test_upload_policy_route_precedes_dynamic_campaign_route(configured, monkeypatch):
+    campaign, _, _ = configured
+    monkeypatch.setattr(main, "derive_campaign_status", lambda item: item.status)
+    monkeypatch.setattr(main, "enrich_campaign_diagnostics", lambda item: item)
+    client = TestClient(main.app)
+
+    policy_response = client.get("/api/v1/campaigns/upload-policy")
+    assert policy_response.status_code == 200
+    policy = policy_response.json()
+    assert policy["maxBytes"] == main.REFERENCE_MAX_SIZE_BYTES
+    assert ".pdf" in policy["allowedExtensions"]
+    assert "application/pdf" in policy["mimeTypes"][".pdf"]
+
+    campaign_response = client.get(f"/api/v1/campaigns/{campaign.campaign_id}")
+    assert campaign_response.status_code == 200
+    assert campaign_response.json()["campaign_id"] == campaign.campaign_id
 
 
 def test_same_company_reference_upload_succeeds(configured):

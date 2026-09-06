@@ -70,6 +70,28 @@ The pre-existing change in `services/campaign_service/app/persistence.py` was no
 - The page intentionally blocks if `/api/v1/campaigns/upload-policy` is unavailable; no production fallback can silently diverge from backend policy.
 - Existing lint, FastAPI deprecation, and Next.js workspace-root warnings remain.
 
+## Route Re-review Fix
+
+- Moved `GET /api/v1/campaigns/upload-policy` before `GET /api/v1/campaigns/{campaign_id}` so the literal policy path cannot be captured as a campaign ID.
+- Added a real FastAPI `TestClient` regression covering the backend max-size, allowed extensions, MIME map, and dynamic lookup of a real campaign ID.
+- The existing frontend contract continues to execute the policy-shaped response through client preflight and verifies boundary rejection before upload.
+
+## Route Verification
+
+- RED command: `python -m pytest services/campaign_service/test_batch_upload.py -q`
+- RED result: 1 failed, 12 passed; policy request returned 404 because the dynamic campaign route captured `upload-policy`.
+- GREEN command: `python -m pytest services/campaign_service/test_batch_upload.py -q`
+- GREEN result: 13 passed, 2 existing deprecation warnings.
+- `node scripts/test-batch-upload-contract.mjs`: PASS, 19 assertions and 6 executable scenarios.
+- `npm run lint`: PASS, 0 errors and 11 existing warnings.
+- `npm run build`: PASS, TypeScript and production build completed; existing multiple-lockfile workspace-root warning remains.
+- `git diff --check`: PASS.
+
+## Route Concerns
+
+- The policy endpoint remains intentionally public because it exposes validation metadata only; upload authorization remains enforced by the existing upload endpoint.
+- Existing lint, FastAPI deprecation, and Next.js workspace-root warnings remain.
+
 ## Implementation
 
 - Added typed `pending | uploading | success | failed` file state.

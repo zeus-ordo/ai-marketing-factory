@@ -4646,6 +4646,15 @@ def create_campaign(req: Request, brief: CampaignBrief) -> CampaignCreatedRespon
     return CampaignCreatedResponse(campaign_id=campaign.campaign_id, company_id=campaign.company_id, status=campaign.status)
 
 
+@app.get("/api/v1/campaigns/upload-policy")
+def campaign_upload_policy() -> dict[str, Any]:
+    return {
+        "maxBytes": REFERENCE_MAX_SIZE_BYTES,
+        "allowedExtensions": sorted(REFERENCE_ALLOWED_EXTENSIONS),
+        "mimeTypes": {extension: sorted(types) for extension, types in REFERENCE_EXTENSION_MIME_TYPES.items()},
+    }
+
+
 @app.get(
     "/api/v1/campaigns/{campaign_id}",
     response_model=CampaignRecord,
@@ -4786,15 +4795,6 @@ def delete_campaign(req: Request, campaign_id: str) -> CampaignDeleteResponse:
 
     deleted = store.delete_campaign(campaign_id)
     return CampaignDeleteResponse(campaign_id=campaign_id, deleted=deleted)
-
-
-@app.get("/api/v1/campaigns/upload-policy")
-def campaign_upload_policy() -> dict[str, Any]:
-    return {
-        "maxBytes": REFERENCE_MAX_SIZE_BYTES,
-        "allowedExtensions": sorted(REFERENCE_ALLOWED_EXTENSIONS),
-        "mimeTypes": {extension: sorted(types) for extension, types in REFERENCE_EXTENSION_MIME_TYPES.items()},
-    }
 
 
 @app.get("/api/v1/campaigns", response_model=CampaignListResponse)
