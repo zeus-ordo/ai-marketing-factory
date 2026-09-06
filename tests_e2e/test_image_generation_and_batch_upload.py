@@ -138,6 +138,53 @@ if (actual !== JSON.parse(process.argv[3])) process.exit(1);
     assert result.returncode == 0, result.stderr
 
 
+def run_production_batch_state_machine(batch_size: int, *, retry_failed: bool, fail_first: bool = True, failed_name: str | None = None) -> dict[str, Any]:
+    script = """
+import { readFile } from "node:fs/promises";
+import ts from "typescript";
+const source = await readFile(process.argv[1], "utf8");
+const moduleSource = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+const batchModule = await import(`data:text/javascript;base64,${Buffer.from(moduleSource).toString("base64")}`);
+const batchSize = Number(process.argv[2]);
+const shouldRetry = JSON.parse(process.argv[3]);
+const shouldFailFirst = JSON.parse(process.argv[4]);
+const requestedFailedName = process.argv[5] || `brief-${batchSize - 1}.txt`;
+const calls = [];
+const initialCalls = [];
+const retryCalls = [];
+const failedName = requestedFailedName;
+let attempt = 0;
+const upload = async (file, callLog) => {
+  callLog.push(file.name);
+  calls.push(file.name);
+  if (shouldFailFirst && file.name === failedName && attempt++ === 0) throw new Error("UPLOAD_FAILED");
+  return { referenceId: `ref-${file.name}` };
+};
+const items = Array.from({ length: batchSize }, (_, index) => ({ file: { name: index === batchSize - 1 ? failedName : `brief-${index}.txt` }, status: "pending" }));
+const initial = await batchModule.uploadBatchItems(items, (file) => upload(file, initialCalls), 3);
+let final = initial;
+if (shouldRetry) {
+  const retryItems = initial.filter((item) => item.status === "failed").map((item) => ({ ...item, status: "pending" }));
+  final = await batchModule.uploadBatchItems(retryItems, (file) => upload(file, retryCalls), 3);
+}
+console.log(JSON.stringify({
+  calls,
+  initial_calls: initialCalls,
+  retry_calls: retryCalls,
+  failed_names: initial.filter((item) => item.status === "failed").map((item) => item.file.name),
+  finalStatuses: final.map((item) => item.status),
+}));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script, str(BATCH_UPLOAD_SOURCE), str(batch_size), json.dumps(retry_failed), json.dumps(fail_first), failed_name or ""],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
 @pytest.fixture(autouse=True)
 def reset_campaign_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     campaign_main.asset_cache.clear()
@@ -231,12 +278,16 @@ def test_partial_batch_failure_blocks_campaign_start(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(campaign_main, "persistence", None)
     client = TestClient(campaign_main.app)
 
+    failed_name = f"brief-{batch_size}.exe"
+    batch = run_production_batch_state_machine(batch_size, retry_failed=False, failed_name=failed_name)
     successes = [upload(client, campaign.campaign_id, f"brief-{index}.txt") for index in range(batch_size - 1)]
     failure = upload(client, campaign.campaign_id, f"brief-{batch_size}.exe")
 
     assert all(response.status_code == 200 for response in successes)
     assert failure.status_code == 400
     assert failure.json()["detail"] == "UNSUPPORTED_FILE_TYPE"
+    assert batch["failed_names"] == [f"brief-{batch_size}.exe"]
+    assert batch["calls"] == [f"brief-{index}.txt" for index in range(batch_size - 1)] + [failed_name]
     assert len(client.get(f"/api/v1/campaigns/{campaign.campaign_id}/references", headers=headers()).json()["items"]) == batch_size - 1
     upload_states = [{"file": {"name": f"brief-{index}.txt"}, "status": "success"} for index in range(batch_size - 1)]
     upload_states.append({"file": {"name": f"brief-{batch_size}.exe"}, "status": "failed"})
@@ -252,6 +303,8 @@ def test_single_file_upload_allows_campaign_start(monkeypatch: pytest.MonkeyPatc
     uploaded = upload(client, campaign.campaign_id, "single.txt")
     assert uploaded.status_code == 200
     reference_id = uploaded.json()["reference_id"]
+    batch = run_production_batch_state_machine(1, retry_failed=False, fail_first=False)
+    assert batch["calls"] == ["brief-0.txt"]
     assert_actual_campaign_start_gate([{"file": {"name": "single.txt"}, "status": "success", "referenceId": reference_id}], True)
 
 
@@ -261,6 +314,7 @@ def test_failed_file_retry_then_all_success_allows_start(monkeypatch: pytest.Mon
     monkeypatch.setattr(campaign_main, "persistence", None)
     client = TestClient(campaign_main.app)
 
+    batch = run_production_batch_state_machine(2, retry_failed=True)
     successful = upload(client, campaign.campaign_id, "keep.txt", b"keep-content")
     assert successful.status_code == 200
     kept_reference_id = successful.json()["reference_id"]
@@ -269,6 +323,10 @@ def test_failed_file_retry_then_all_success_allows_start(monkeypatch: pytest.Mon
     retried = upload(client, campaign.campaign_id, "retry.txt", b"retry-content")
 
     assert retried.status_code == 200
+    assert batch["failed_names"] == ["brief-1.txt"]
+    assert batch["initial_calls"] == ["brief-0.txt", "brief-1.txt"]
+    assert batch["retry_calls"] == ["brief-1.txt"]
+    assert "brief-0.txt" not in batch["retry_calls"]
     retried_reference_id = retried.json()["reference_id"]
     assert_actual_campaign_start_gate([
         {"file": {"name": "keep.txt"}, "status": "success", "referenceId": kept_reference_id},

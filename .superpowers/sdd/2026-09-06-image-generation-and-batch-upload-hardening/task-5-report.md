@@ -58,3 +58,5 @@ Live GCP deployment, Cloud SQL task-specific backup creation, provider smoke, an
 - Valid image coverage reads the generated asset through the exposed download route and verifies persisted bytes, content type, and stored-path metadata.
 - Restart coverage uses an isolated SQLite file fixture and recreates the persistence object before listing metadata and downloading file bytes.
 - TDD evidence: the revised tests were run red before the fixture correction (`6 passed, 1 failed` due to the SQLite reserved table name), then green (`7 passed, 2 warnings`).
+- Latest TDD evidence: the batch-seam assertions were run red (`4 failed, 3 passed`) before adding the production `uploadBatchItems` harness; the corrected state-machine expectations then passed (`7 passed, 2 warnings`).
+- The 2- and 10-file scenarios now execute the production `uploadBatchItems` initial/retry state machine. Instrumented calls show the failed logical file is retried once and successful files are not re-uploaded; the original successful reference ID is retained.
