@@ -1,4 +1,6 @@
 from unittest.mock import MagicMock, Mock, patch
+from datetime import datetime, timezone
+from email.utils import format_datetime
 
 import httpx
 import pytest
@@ -12,7 +14,7 @@ FAKE_API_KEY = "fake-provider-key"
 FULL_PROVIDER_BODY = "provider body containing sensitive diagnostic details"
 
 
-def _response(status_code: int, body: dict, headers: dict[str, str] | None = None) -> Mock:
+def _response(status_code: int, body: object, headers: dict[str, str] | None = None) -> Mock:
     response = Mock()
     response.status_code = status_code
     response.headers = headers or {}
@@ -69,10 +71,144 @@ def test_gemini_alternate_content_shape_is_rejected_without_secret_logging():
     assert FULL_PROVIDER_BODY not in str(error.value)
 
 
+@pytest.mark.parametrize("image_data", ["not-base64!", ""])
+def test_gemini_invalid_base64_is_retryable(image_data: str):
+    response = _response(
+        200,
+        {"steps": [{"content": [{"type": "image", "data": image_data, "mime_type": "image/png"}]}]},
+    )
+    client = _client_for([response, response, response])
+    with patch.object(main.httpx, "Client", return_value=client), patch.object(main.time, "sleep"):
+        with pytest.raises(main.ProviderError) as error:
+            main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert error.value.retryable is True
+    assert error.value.attempts == 3
+    assert client.post.call_count == 3
+
+
+def test_gemini_unsupported_mime_is_retryable():
+    response = _response(
+        200,
+        {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U=", "mime_type": "text/plain"}]}]},
+    )
+    with patch.object(main.httpx, "Client", return_value=_client_for([response, response, response])):
+        with patch.object(main.time, "sleep"):
+            with pytest.raises(main.ProviderError) as error:
+                main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert error.value.retryable is True
+
+
+def test_minimax_malformed_url_is_retryable():
+    response = _response(200, {"base_resp": {}, "data": {"image_urls": ["not a url"]}})
+    client = _client_for([response, response, response])
+    with patch.object(main.httpx, "Client", return_value=client), patch.object(main.time, "sleep"):
+        with pytest.raises(main.ProviderError) as error:
+            main._generate_minimax_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert error.value.provider == "minimax"
+    assert error.value.retryable is True
+    assert error.value.attempts == 3
+    assert client.post.call_count == 3
+
+
+def test_minimax_malformed_response_shape_is_typed_and_sanitized():
+    response = _response(200, {"base_resp": "unexpected", "data": {"image_urls": []}})
+    with patch.object(main.httpx, "Client", return_value=_client_for([response, response, response])):
+        with patch.object(main.time, "sleep"):
+            with pytest.raises(main.ProviderError) as error:
+                main._generate_minimax_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert error.value.provider == "minimax"
+    assert error.value.retryable is True
+    assert FAKE_API_KEY not in str(error.value)
+    assert FULL_PROVIDER_BODY not in str(error.value)
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+def test_provider_auth_and_not_found_errors_do_not_retry(status_code: int):
+    response = _response(status_code, {"detail": FULL_PROVIDER_BODY, "api_key": FAKE_API_KEY})
+    client = _client_for([response])
+    with patch.object(main.httpx, "Client", return_value=client), patch.object(main.time, "sleep") as sleep:
+        with pytest.raises(main.ProviderError) as error:
+            main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert error.value.status_code == status_code
+    assert error.value.retryable is False
+    assert error.value.attempts == 1
+    assert client.post.call_count == 1
+    assert sleep.call_count == 0
+    assert FAKE_API_KEY not in str(error.value)
+    assert FULL_PROVIDER_BODY not in str(error.value)
+
+
+def test_provider_timeout_retries():
+    response = _response(200, {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U=", "mime_type": "image/png"}]}]})
+    client = _client_for([httpx.TimeoutException("provider timeout"), response])
+    with patch.object(main.httpx, "Client", return_value=client), patch.object(main.time, "sleep") as sleep:
+        result = main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert result.startswith("data:image/")
+    assert client.post.call_count == 2
+    assert sleep.call_args.args[0] <= main.MAX_RETRY_DELAY_SECONDS
+
+
+def test_provider_connection_error_retries():
+    response = _response(200, {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U=", "mime_type": "image/png"}]}]})
+    client = _client_for([httpx.ConnectError("connection failed"), response])
+    with patch.object(main.httpx, "Client", return_value=client), patch.object(main.time, "sleep"):
+        result = main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert result.startswith("data:image/")
+    assert client.post.call_count == 2
+
+
+def test_provider_http_date_retry_after_is_honored_and_bounded():
+    retry_at = datetime.now(timezone.utc).replace(microsecond=0)
+    response = _response(429, {}, {"Retry-After": format_datetime(retry_at, usegmt=True)})
+    success = _response(200, {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U=", "mime_type": "image/png"}]}]})
+    with patch.object(main.httpx, "Client", return_value=_client_for([response, success])):
+        with patch.object(main.time, "sleep") as sleep:
+            main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
+
+    assert 0 <= sleep.call_args.args[0] <= main.MAX_RETRY_DELAY_SECONDS
+
+
+def test_endpoint_provider_error_is_sanitized():
+    payload = ImageRunRequest(
+        task_id="task-1", campaign_id="campaign-1", company_id="company-1",
+        prompt="safe prompt", sizes=["1024x1024"],
+    )
+    provider_error = main.ProviderError("gemini", 502, True, 3, "Provider request failed")
+    with patch.object(main, "STRICT_REAL_MODE", True), patch.object(main, "_active_api_key", return_value=FAKE_API_KEY):
+        with patch.object(main, "_generate_image_asset_url", side_effect=provider_error):
+            with pytest.raises(HTTPException) as error:
+                main.run_image_worker(payload)
+
+    assert FAKE_API_KEY not in str(error.value.detail)
+    assert FULL_PROVIDER_BODY not in str(error.value.detail)
+    assert "provider=gemini" in str(error.value.detail)
+
+
+def test_endpoint_rejects_invalid_real_asset():
+    payload = ImageRunRequest(
+        task_id="task-1", campaign_id="campaign-1", company_id="company-1",
+        prompt="safe prompt", sizes=["1024x1024"],
+    )
+    with patch.object(main, "STRICT_REAL_MODE", True), patch.object(main, "_active_api_key", return_value=FAKE_API_KEY):
+        with patch.object(main, "_generate_image_asset_url", return_value="data:image/png;base64,not-base64!"):
+            with pytest.raises(HTTPException) as error:
+                main.run_image_worker(payload)
+
+    assert error.value.status_code == 502
+    assert "invalid image data URL" in str(error.value.detail)
+
+
 def test_provider_429_retries_and_honors_retry_after():
     responses = [
         _response(429, {}, {"Retry-After": "0.25"}),
-        _response(200, {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U="}]}]}),
+        _response(200, {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U=", "mime_type": "image/png"}]}]}),
     ]
     client = _client_for(responses)
     with patch.object(main.httpx, "Client", return_value=client):

@@ -1,8 +1,11 @@
 import os
 import time
 import json as _json
+import base64
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Callable, TypeVar
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from fastapi import FastAPI, HTTPException
 import httpx
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
@@ -53,6 +56,7 @@ GEMINI_IMAGE_API_BASE = os.getenv("GEMINI_IMAGE_API_BASE", "https://generativela
 STRICT_REAL_MODE = os.getenv("WORKER_STRICT_REAL_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
 MAX_PROVIDER_ATTEMPTS = 3
 MAX_RETRY_DELAY_SECONDS = 8.0
+SUPPORTED_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 
 T = TypeVar("T")
 
@@ -88,9 +92,37 @@ def _retry_after(headers: object) -> float | None:
         value = headers.get("Retry-After")  # type: ignore[union-attr]
         if value is None:
             return None
-        return min(MAX_RETRY_DELAY_SECONDS, max(0.0, float(value)))
-    except (AttributeError, TypeError, ValueError):
+        try:
+            delay = float(value)
+        except (TypeError, ValueError):
+            retry_at = parsedate_to_datetime(str(value))
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            delay = retry_at.timestamp() - time.time()
+        return min(MAX_RETRY_DELAY_SECONDS, max(0.0, delay))
+    except (AttributeError, TypeError, ValueError, OverflowError):
         return None
+
+
+def _validate_image_asset(asset: object, *, provider: str, status_code: int) -> str:
+    if not isinstance(asset, str) or not asset.strip():
+        raise ProviderError(provider, status_code, True, 1, "Provider returned no usable image asset")
+    value = asset.strip()
+    if value.startswith("data:"):
+        header, separator, payload = value.partition(",")
+        mime_type = header[5:].split(";", 1)[0].lower()
+        if not separator or not header.lower().endswith(";base64") or mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+            raise ProviderError(provider, status_code, True, 1, "Provider returned an invalid image data URL")
+        try:
+            if not payload or not base64.b64decode(payload, validate=True):
+                raise ValueError
+        except (ValueError, TypeError, base64.binascii.Error):
+            raise ProviderError(provider, status_code, True, 1, "Provider returned an invalid image data URL")
+        return value
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or any(character.isspace() for character in value):
+        raise ProviderError(provider, status_code, True, 1, "Provider returned an invalid image URL")
+    return value
 
 
 def _request_with_retry(request_fn: Callable[[], T], *, provider: str, max_attempts: int = MAX_PROVIDER_ATTEMPTS) -> T:
@@ -229,9 +261,11 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
 
     for size in payload.sizes:
         try:
-            generated_url = _generate_image_asset_url(payload.prompt, size, api_key)
-            if not generated_url.strip():
-                raise ProviderError(_active_provider(), 200, True, 1, "Provider returned no usable image asset")
+            generated_url = _validate_image_asset(
+                _generate_image_asset_url(payload.prompt, size, api_key),
+                provider=_active_provider(),
+                status_code=200,
+            )
         except ProviderError as exc:
             REQUEST_LATENCY.observe(time.perf_counter() - t0)
             REQUEST_COUNT.labels(status="error").inc()
@@ -245,7 +279,7 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
             REQUEST_COUNT.labels(status="error").inc()
             raise HTTPException(
                 status_code=502,
-                detail=f"Image generation failed ({size}): {exc}",
+                detail=f"Image generation failed for size {size}",
             ) from exc
 
         assets.append(
@@ -301,9 +335,11 @@ def regenerate_image(payload: RevisionRequest) -> ImageRunResponse:
 
     for size in payload.sizes:
         try:
-            generated_url = _generate_image_asset_url(revised_prompt, size, api_key)
-            if not generated_url.strip():
-                raise ProviderError(_active_provider(), 200, True, 1, "Provider returned no usable image asset")
+            generated_url = _validate_image_asset(
+                _generate_image_asset_url(revised_prompt, size, api_key),
+                provider=_active_provider(),
+                status_code=200,
+            )
         except ProviderError as exc:
             REQUEST_LATENCY.observe(time.perf_counter() - t0)
             REGENERATE_COUNT.labels(status="error").inc()
@@ -317,7 +353,7 @@ def regenerate_image(payload: RevisionRequest) -> ImageRunResponse:
             REGENERATE_COUNT.labels(status="error").inc()
             raise HTTPException(
                 status_code=502,
-                detail=f"Image regeneration failed ({size}): {exc}",
+                detail=f"Image regeneration failed for size {size}",
             ) from exc
 
         assets.append(
@@ -367,13 +403,14 @@ def _generate_stability_image(prompt: str, size: str, api_key: str) -> str:
             if resp.status_code != 200:
                 raise _provider_response_error("stability", resp)
             try:
-                artifacts = resp.json().get("artifacts", [])
+                data = resp.json()
+                artifacts = data.get("artifacts", [])
                 base64_image = artifacts[0].get("base64") if artifacts else None
-            except (AttributeError, IndexError, TypeError, ValueError):
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError):
                 base64_image = None
             if not base64_image:
                 raise ProviderError("stability", resp.status_code, True, 1, "Provider returned no usable image asset")
-            return f"data:image/png;base64,{base64_image}"
+            return _validate_image_asset(f"data:image/png;base64,{base64_image}", provider="stability", status_code=resp.status_code)
 
         return _request_with_retry(request, provider="stability")
 
@@ -402,12 +439,15 @@ def _generate_minimax_image(prompt: str, size: str, api_key: str) -> str:
             try:
                 data = resp.json()
                 base_resp = data.get("base_resp") or {}
-                image_urls = (data.get("data") or {}).get("image_urls") or []
-            except (AttributeError, TypeError, ValueError):
+                response_data = data.get("data") or {}
+                image_urls = response_data.get("image_urls") or []
+                if not isinstance(base_resp, dict) or not isinstance(response_data, dict) or not isinstance(image_urls, list):
+                    raise TypeError
+            except (AttributeError, KeyError, TypeError, ValueError):
                 base_resp, image_urls = {}, []
-            if base_resp.get("status_code") not in {None, 0, "0"} or not image_urls or not str(image_urls[0]).strip():
+            if base_resp.get("status_code") not in {None, 0, "0"} or not image_urls:
                 raise ProviderError("minimax", resp.status_code, True, 1, "Provider returned no usable image asset")
-            return str(image_urls[0])
+            return _validate_image_asset(image_urls[0], provider="minimax", status_code=resp.status_code)
 
         return _request_with_retry(request, provider="minimax")
 
@@ -442,15 +482,15 @@ def _generate_gemini_image(prompt: str, size: str, api_key: str) -> str:
                     for item in step.get("content", []):
                         if isinstance(item, dict) and item.get("type") == "image" and isinstance(item.get("data"), str) and item["data"].strip():
                             image_data = item["data"]
-                            mime_type = item.get("mime_type", "image/png")
+                            mime_type = item.get("mime_type")
                             break
                     if image_data:
                         break
-            except (AttributeError, TypeError, ValueError):
+            except (AttributeError, KeyError, TypeError, ValueError):
                 image_data = ""
-            if not image_data:
+            if not image_data or not isinstance(mime_type, str):
                 raise ProviderError("gemini", resp.status_code, True, 1, "Provider returned no usable image asset")
-            return f"data:{mime_type};base64,{image_data}"
+            return _validate_image_asset(f"data:{mime_type};base64,{image_data}", provider="gemini", status_code=resp.status_code)
 
         return _request_with_retry(request, provider="gemini")
 
