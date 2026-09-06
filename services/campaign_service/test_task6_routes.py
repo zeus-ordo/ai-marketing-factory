@@ -197,7 +197,7 @@ def test_primary_worker_assets_preserve_provider_model_metadata(monkeypatch):
     monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: captured.extend(assets))
     now = datetime.utcnow()
     main._save_copy_worker_result({"task_id": "copy", "campaign_id": "camp", "company_id": "co", "variants": [{"body": "copy"}], "provider": "p", "model_name": "m"}, now)
-    main._save_image_worker_result({"task_id": "image", "campaign_id": "camp", "company_id": "co", "image_assets": [{"url": "data:image/svg+xml,test", "size": "1:1"}], "provider": "p", "model_name": "m"}, now)
+    main._save_image_worker_result({"task_id": "image", "campaign_id": "camp", "company_id": "co", "image_assets": [{"url": "data:image/png;base64,dGVzdA==", "size": "1:1"}], "provider": "p", "model_name": "m"}, now)
     main._save_ads_worker_result({"task_id": "ads", "campaign_id": "camp", "company_id": "co", "ads_plan": {"social": {}}, "provider": "p", "model_name": "m"}, now)
     assert len(captured) == 3
     assert all(asset.metadata["provider"] == "p" and asset.metadata["model_name"] == "m" for asset in captured)

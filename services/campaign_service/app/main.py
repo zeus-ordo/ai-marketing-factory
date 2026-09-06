@@ -1058,6 +1058,33 @@ def sanitize_worker_error_detail(message: str) -> str:
     return text[:2000]
 
 
+def worker_failure_trace_payload(
+    message: str,
+    *,
+    task_id: str,
+    task_type: str,
+    attempt: int,
+    retryable: bool,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    error_code = classify_worker_error(RuntimeError(message))
+    status_match = re.search(r"\b(?:http\s+)?(\d{3})\b", message or "", re.IGNORECASE)
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "task_type": task_type,
+        "attempt": attempt,
+        "attempts": attempt,
+        "retryable": retryable,
+        "error_code": error_code,
+        "message": "Worker request failed",
+    }
+    if status_match:
+        payload["status_code"] = int(status_match.group(1))
+    if isinstance(provider, str) and provider.strip():
+        payload["provider"] = provider.strip()[:64]
+    return payload
+
+
 def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dict[str, Any]) -> list[TaskRecord]:
     """Apply one worker result while isolating dependent branches."""
     by_id = {task.task_id: task for task in tasks}
@@ -1123,24 +1150,22 @@ def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaig
             metrics.inc("worker_dispatch_failed_total")
             error_text = str(exc)
             error_code = classify_worker_error(exc)
-            error_detail = sanitize_worker_error_detail(_extract_worker_error_detail(error_text))
+            retryable = error_code in {"quota", "rate_limit", "timeout", "provider_error"}
+            trace_payload = worker_failure_trace_payload(
+                error_text,
+                task_id=task_id,
+                task_type=task_type,
+                attempt=attempt,
+                retryable=retryable,
+                provider=payload.get("provider"),
+            )
             append_trace_event(
                 campaign_id=campaign_id,
                 event_type="worker_dispatch_retrying" if attempt < WORKER_RETRY_MAX_ATTEMPTS else "worker_dispatch_failed",
                 actor_id="system",
                 actor_role="system",
                 summary=f"Worker request failed (attempt {attempt}/{WORKER_RETRY_MAX_ATTEMPTS}) for {task_id}",
-                payload={
-                    "task_id": task_id,
-                    "task_type": task_type,
-                    "attempt": attempt,
-                    "attempts": attempt,
-                    "retryable": error_code in {"quota", "rate_limit", "timeout", "provider_error"},
-                    "error_code": error_code,
-                    "error": error_detail,
-                    "error_detail": error_detail,
-                    "worker_url": url,
-                },
+                payload=trace_payload,
                 source="workers",
                 company_id=company_id,
             )
@@ -1799,6 +1824,8 @@ def cache_generated_asset_url(
     elif value.startswith("file://"):
         file_path = value[7:]  # strip "file://"
         file_path = parse.unquote(file_path)
+        if os.name == "nt" and file_path.startswith("/") and len(file_path) > 2 and file_path[2] == ":":
+            file_path = file_path[1:]
         if not os.path.isabs(file_path):
             file_path = os.path.abspath(file_path)
         if not os.path.exists(file_path):
@@ -1852,8 +1879,11 @@ def is_openable_asset_url(url: str) -> bool:
         return True
     if value.startswith("data:image/"):
         header, separator, data = value.partition(",")
-        if not separator or not data or ";base64" not in header:
-            return bool(separator and data)
+        mime_type = header[5:].split(";", 1)[0].lower()
+        if mime_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            return False
+        if not separator or not data or not header.lower().endswith(";base64"):
+            return False
         try:
             return bool(base64.b64decode(data, validate=True))
         except (ValueError, binascii.Error):
@@ -2918,7 +2948,7 @@ def generate_outputs_via_workers(
             if strict:
                 raise
 
-        if strict and len(assets) == asset_count_before:
+        if len(assets) == asset_count_before:
             raise RuntimeError(f"Worker returned no displayable assets for task {task.task_id}")
 
     if generation_context_id:
@@ -7344,7 +7374,14 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
             actor_id="system",
             actor_role="system",
             summary=f"Worker retry failed for task {task.task_id}",
-            payload={"task_type": task.task_type, "error": sanitize_worker_error_detail(str(exc))},
+            payload=worker_failure_trace_payload(
+                str(exc),
+                task_id=task.task_id,
+                task_type=task.task_type,
+                attempt=task.retry_count,
+                retryable=True,
+                provider=task.provider,
+            ),
             source="workers",
             company_id=campaign.company_id,
         )
@@ -8149,6 +8186,7 @@ def _save_image_worker_result(result: dict[str, Any], now: datetime) -> dict[str
             metadata.update(cached_metadata)
         except Exception as exc:
             logger.warning(f"Failed to cache image worker result {asset_id}: {exc}")
+            continue
         asset = AssetOutput(
             company_id=company_id,
             asset_id=asset_id,
