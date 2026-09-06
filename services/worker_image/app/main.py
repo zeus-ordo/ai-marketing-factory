@@ -1,6 +1,7 @@
 import os
 import time
 import json as _json
+from typing import Callable, TypeVar
 from urllib.parse import quote
 from fastapi import FastAPI, HTTPException
 import httpx
@@ -50,6 +51,78 @@ MINIMAX_IMAGE_API_BASE = os.getenv("MINIMAX_IMAGE_API_BASE", "https://api.minima
 MINIMAX_IMAGE_MODEL = os.getenv("MINIMAX_IMAGE_MODEL", "image-01").strip()
 GEMINI_IMAGE_API_BASE = os.getenv("GEMINI_IMAGE_API_BASE", "https://generativelanguage.googleapis.com").strip().rstrip("/")
 STRICT_REAL_MODE = os.getenv("WORKER_STRICT_REAL_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+MAX_PROVIDER_ATTEMPTS = 3
+MAX_RETRY_DELAY_SECONDS = 8.0
+
+T = TypeVar("T")
+
+
+class ProviderError(Exception):
+    def __init__(
+        self,
+        provider: str,
+        status_code: int | None,
+        retryable: bool,
+        attempts: int,
+        message: str,
+        retry_after: float | None = None,
+    ) -> None:
+        self.provider = provider
+        self.status_code = status_code
+        self.retryable = retryable
+        self.attempts = attempts
+        self.message = message
+        self.retry_after = retry_after
+        super().__init__(self._format_message())
+
+    def _format_message(self) -> str:
+        status = f", status={self.status_code}" if self.status_code is not None else ""
+        return (
+            f"{self.message} (provider={self.provider}{status}, "
+            f"retryable={self.retryable}, attempts={self.attempts})"
+        )
+
+
+def _retry_after(headers: object) -> float | None:
+    try:
+        value = headers.get("Retry-After")  # type: ignore[union-attr]
+        if value is None:
+            return None
+        return min(MAX_RETRY_DELAY_SECONDS, max(0.0, float(value)))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _request_with_retry(request_fn: Callable[[], T], *, provider: str, max_attempts: int = MAX_PROVIDER_ATTEMPTS) -> T:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return request_fn()
+        except ProviderError as exc:
+            exc.attempts = attempt
+            exc.args = (exc._format_message(),)
+            if not exc.retryable or attempt >= max_attempts:
+                raise
+            delay = exc.retry_after if exc.retry_after is not None else min(
+                MAX_RETRY_DELAY_SECONDS, 0.5 * (2 ** (attempt - 1))
+            )
+            time.sleep(delay)
+        except (httpx.TimeoutException, httpx.RequestError) as exc:
+            if attempt >= max_attempts:
+                raise ProviderError(provider, None, True, attempt, "Provider request failed") from exc
+            time.sleep(min(MAX_RETRY_DELAY_SECONDS, 0.5 * (2 ** (attempt - 1))))
+    raise AssertionError("unreachable")
+
+
+def _provider_response_error(provider: str, response: httpx.Response) -> ProviderError:
+    status_code = response.status_code
+    return ProviderError(
+        provider,
+        status_code,
+        status_code == 429 or status_code in {500, 502, 503, 504},
+        1,
+        "Provider request returned an unsuccessful response",
+        _retry_after(response.headers),
+    )
 
 
 def _has_real_key(value: str) -> bool:
@@ -157,6 +230,12 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
     for size in payload.sizes:
         try:
             generated_url = _generate_image_asset_url(payload.prompt, size, api_key)
+            if not generated_url.strip():
+                raise ProviderError(_active_provider(), 200, True, 1, "Provider returned no usable image asset")
+        except ProviderError as exc:
+            REQUEST_LATENCY.observe(time.perf_counter() - t0)
+            REQUEST_COUNT.labels(status="error").inc()
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         except HTTPException:
             REQUEST_LATENCY.observe(time.perf_counter() - t0)
             REQUEST_COUNT.labels(status="error").inc()
@@ -169,14 +248,15 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
                 detail=f"Image generation failed ({size}): {exc}",
             ) from exc
 
-        sanitized_size = size.replace("x", "_")
         assets.append(
             ImageAsset(
-                url=generated_url or _fallback_svg_data_url(payload.campaign_id, payload.task_id, size, "Image preview"),
+                url=generated_url,
                 size=size,
             )
         )
 
+    if not assets:
+        raise HTTPException(status_code=502, detail="Provider returned no usable image assets")
     REQUEST_LATENCY.observe(time.perf_counter() - t0)
     REQUEST_COUNT.labels(status="success").inc()
     return ImageRunResponse(
@@ -222,6 +302,12 @@ def regenerate_image(payload: RevisionRequest) -> ImageRunResponse:
     for size in payload.sizes:
         try:
             generated_url = _generate_image_asset_url(revised_prompt, size, api_key)
+            if not generated_url.strip():
+                raise ProviderError(_active_provider(), 200, True, 1, "Provider returned no usable image asset")
+        except ProviderError as exc:
+            REQUEST_LATENCY.observe(time.perf_counter() - t0)
+            REGENERATE_COUNT.labels(status="error").inc()
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         except HTTPException:
             REQUEST_LATENCY.observe(time.perf_counter() - t0)
             REGENERATE_COUNT.labels(status="error").inc()
@@ -234,14 +320,15 @@ def regenerate_image(payload: RevisionRequest) -> ImageRunResponse:
                 detail=f"Image regeneration failed ({size}): {exc}",
             ) from exc
 
-        sanitized_size = size.replace("x", "_")
         assets.append(
             ImageAsset(
-                url=generated_url or _fallback_svg_data_url(payload.campaign_id, payload.task_id, size, "Revised image"),
+                url=generated_url,
                 size=size,
             )
         )
 
+    if not assets:
+        raise HTTPException(status_code=502, detail="Provider returned no usable image assets")
     REQUEST_LATENCY.observe(time.perf_counter() - t0)
     REGENERATE_COUNT.labels(status="success").inc()
     return ImageRunResponse(
@@ -252,7 +339,7 @@ def regenerate_image(payload: RevisionRequest) -> ImageRunResponse:
     )
 
 
-def _generate_image_asset_url(prompt: str, size: str, api_key: str) -> str | None:
+def _generate_image_asset_url(prompt: str, size: str, api_key: str) -> str:
     if _active_provider() == "minimax":
         return _generate_minimax_image(prompt, size, api_key)
     if _active_provider() == "gemini":
@@ -262,101 +349,110 @@ def _generate_image_asset_url(prompt: str, size: str, api_key: str) -> str | Non
 
 def _generate_stability_image(prompt: str, size: str, api_key: str) -> str:
     with httpx.Client(timeout=120.0) as client:
-        resp = client.post(
-            f"{IMAGE_API_BASE.rstrip('/')}/generation/{IMAGE_ENGINE}/text-to-image",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json={
-                "text_prompts": [{"text": prompt}],
-                "width": _parse_width(size),
-                "height": _parse_height(size),
-                "samples": 1,
-            },
-        )
-    resp.raise_for_status()
-    data = resp.json()
-    artifacts = data.get("artifacts", [])
-    if not artifacts or not artifacts[0].get("base64"):
-        raise HTTPException(
-            status_code=502,
-            detail=f"Image generation returned no usable Stability artifact for size {size}.",
-        )
-    base64_image = artifacts[0]["base64"]
-    return f"data:image/png;base64,{base64_image}"
+        def request() -> str:
+            resp = client.post(
+                f"{IMAGE_API_BASE.rstrip('/')}/generation/{IMAGE_ENGINE}/text-to-image",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={
+                    "text_prompts": [{"text": prompt}],
+                    "width": _parse_width(size),
+                    "height": _parse_height(size),
+                    "samples": 1,
+                },
+            )
+            if resp.status_code != 200:
+                raise _provider_response_error("stability", resp)
+            try:
+                artifacts = resp.json().get("artifacts", [])
+                base64_image = artifacts[0].get("base64") if artifacts else None
+            except (AttributeError, IndexError, TypeError, ValueError):
+                base64_image = None
+            if not base64_image:
+                raise ProviderError("stability", resp.status_code, True, 1, "Provider returned no usable image asset")
+            return f"data:image/png;base64,{base64_image}"
+
+        return _request_with_retry(request, provider="stability")
 
 
 def _generate_minimax_image(prompt: str, size: str, api_key: str) -> str:
     with httpx.Client(timeout=120.0) as client:
-        resp = client.post(
-            f"{MINIMAX_IMAGE_API_BASE}/v1/image_generation",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json={
-                "model": MINIMAX_IMAGE_MODEL,
-                "prompt": fit_minimax_prompt(prompt),
-                "aspect_ratio": _size_to_aspect_ratio(size),
-                "response_format": "url",
-                "n": 1,
-                "prompt_optimizer": True,
-            },
-        )
-    resp.raise_for_status()
-    data = resp.json()
-    base_resp = data.get("base_resp") or {}
-    if base_resp.get("status_code") not in {None, 0, "0"}:
-        raise HTTPException(
-            status_code=502,
-            detail=f"MiniMax image generation failed: {base_resp.get('status_msg', 'unknown error')}",
-        )
-    image_urls = (data.get("data") or {}).get("image_urls") or []
-    if not image_urls:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Image generation returned no usable MiniMax URL for size {size}.",
-        )
-    return str(image_urls[0])
+        def request() -> str:
+            resp = client.post(
+                f"{MINIMAX_IMAGE_API_BASE}/v1/image_generation",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={
+                    "model": MINIMAX_IMAGE_MODEL,
+                    "prompt": fit_minimax_prompt(prompt),
+                    "aspect_ratio": _size_to_aspect_ratio(size),
+                    "response_format": "url",
+                    "n": 1,
+                    "prompt_optimizer": True,
+                },
+            )
+            if resp.status_code != 200:
+                raise _provider_response_error("minimax", resp)
+            try:
+                data = resp.json()
+                base_resp = data.get("base_resp") or {}
+                image_urls = (data.get("data") or {}).get("image_urls") or []
+            except (AttributeError, TypeError, ValueError):
+                base_resp, image_urls = {}, []
+            if base_resp.get("status_code") not in {None, 0, "0"} or not image_urls or not str(image_urls[0]).strip():
+                raise ProviderError("minimax", resp.status_code, True, 1, "Provider returned no usable image asset")
+            return str(image_urls[0])
+
+        return _request_with_retry(request, provider="minimax")
 
 
 def _generate_gemini_image(prompt: str, size: str, api_key: str) -> str:
     aspect_ratio = _size_to_aspect_ratio(size)
     with httpx.Client(timeout=120.0) as client:
-        resp = client.post(
-            f"{GEMINI_IMAGE_API_BASE}/v1beta/interactions",
-            headers={
-                "x-goog-api-key": api_key,
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gemini-3.1-flash-image",
-                "input": [{"type": "text", "text": prompt}],
-                "response_format": {
-                    "type": "image",
-                    "aspect_ratio": aspect_ratio,
-                    "image_size": "1K",
+        def request() -> str:
+            resp = client.post(
+                f"{GEMINI_IMAGE_API_BASE}/v1beta/interactions",
+                headers={
+                    "x-goog-api-key": api_key,
+                    "Content-Type": "application/json",
                 },
-            },
-        )
-    resp.raise_for_status()
-    data = resp.json()
-    image_data = ""
-    mime_type = "image/png"
-    for step in data.get("steps", []):
-        for item in step.get("content", []):
-            if isinstance(item, dict) and item.get("type") == "image" and item.get("data"):
-                image_data = item["data"]
-                mime_type = item.get("mime_type", "image/jpeg")
-                break
-        if image_data:
-            break
-    if not image_data:
-        raise HTTPException(status_code=502, detail="Gemini image generation returned no image data")
-    return f"data:{mime_type};base64,{image_data}"
+                json={
+                    "model": "gemini-3.1-flash-image",
+                    "input": [{"type": "text", "text": prompt}],
+                    "response_format": {
+                        "type": "image",
+                        "aspect_ratio": aspect_ratio,
+                        "image_size": "1K",
+                    },
+                },
+            )
+            if resp.status_code != 200:
+                raise _provider_response_error("gemini", resp)
+            image_data = ""
+            mime_type = "image/png"
+            try:
+                data = resp.json()
+                for step in data.get("steps", []):
+                    for item in step.get("content", []):
+                        if isinstance(item, dict) and item.get("type") == "image" and isinstance(item.get("data"), str) and item["data"].strip():
+                            image_data = item["data"]
+                            mime_type = item.get("mime_type", "image/png")
+                            break
+                    if image_data:
+                        break
+            except (AttributeError, TypeError, ValueError):
+                image_data = ""
+            if not image_data:
+                raise ProviderError("gemini", resp.status_code, True, 1, "Provider returned no usable image asset")
+            return f"data:{mime_type};base64,{image_data}"
+
+        return _request_with_retry(request, provider="gemini")
 
 
 def _parse_width(size: str) -> int:
