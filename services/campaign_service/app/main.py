@@ -1,4 +1,5 @@
 import base64
+import binascii
 import ast
 import json
 import logging
@@ -1133,11 +1134,12 @@ def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaig
                     "task_id": task_id,
                     "task_type": task_type,
                     "attempt": attempt,
+                    "attempts": attempt,
+                    "retryable": error_code in {"quota", "rate_limit", "timeout", "provider_error"},
                     "error_code": error_code,
                     "error": error_detail,
                     "error_detail": error_detail,
                     "worker_url": url,
-                    "worker_payload": sanitize_worker_error_detail(json.dumps(payload)),
                 },
                 source="workers",
                 company_id=company_id,
@@ -1846,8 +1848,16 @@ def is_openable_asset_url(url: str) -> bool:
         return False
     if value.startswith(("stub://", "minimax-quota://", "minimax://")):
         return False
-    if value.startswith(("http://", "https://", "data:image/", "file://")):
+    if value.startswith(("http://", "https://", "file://")):
         return True
+    if value.startswith("data:image/"):
+        header, separator, data = value.partition(",")
+        if not separator or not data or ";base64" not in header:
+            return bool(separator and data)
+        try:
+            return bool(base64.b64decode(data, validate=True))
+        except (ValueError, binascii.Error):
+            return False
     if value.startswith("/api/"):
         return True
     return False
@@ -2783,6 +2793,7 @@ def generate_outputs_via_workers(
                         metadata.update(cached_metadata)
                     except Exception as exc:
                         logger.warning(f"Failed to cache generated image asset {asset_id}: {exc}")
+                        continue
                     asset = AssetOutput(
                         company_id=company_id,
                         asset_id=asset_id,
@@ -8154,8 +8165,10 @@ def _save_image_worker_result(result: dict[str, Any], now: datetime) -> dict[str
             assets.append(asset)
             append_validation_for_asset(validations, company_id, campaign_id, asset_id, now, run_id=run_id)
 
-    if assets:
-        save_assets_and_validations(assets, validations)
+    if not assets:
+        return {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": "worker returned no displayable assets"}
+
+    save_assets_and_validations(assets, validations)
 
     return {"status": "accepted", "assets_saved": str(len(assets)), "asset_ids": ",".join(asset.asset_id for asset in assets)}
 
