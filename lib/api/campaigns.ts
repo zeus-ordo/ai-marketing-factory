@@ -1,3 +1,8 @@
+import { preflightCampaignReferenceFiles, uploadBatchItems, REFERENCE_MAX_SIZE_BYTES, REFERENCE_ALLOWED_EXTENSIONS, type BatchUploadFileState } from "./batch-upload";
+
+export { preflightCampaignReferenceFiles, uploadBatchItems, REFERENCE_MAX_SIZE_BYTES, REFERENCE_ALLOWED_EXTENSIONS };
+export type { BatchUploadFileState, BatchUploadStatus } from "./batch-upload";
+
 export type CampaignStatus = "draft" | "running" | "completed" | "failed";
 
 export type CampaignTask = {
@@ -1139,90 +1144,18 @@ export async function uploadCampaignReference(
   });
 }
 
-export type BatchUploadStatus = "pending" | "uploading" | "success" | "failed";
-
-export type BatchUploadFileState = {
-  file: File;
-  status: BatchUploadStatus;
-  referenceId?: string;
-  folderId?: string | null;
-  error?: string;
-};
-
-export const REFERENCE_MAX_SIZE_BYTES = 50 * 1024 * 1024;
-export const REFERENCE_ALLOWED_EXTENSIONS = new Set([
-  ".pdf", ".txt", ".md", ".doc", ".docx", ".ppt", ".pptx",
-  ".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".mov",
-  ".avi", ".mkv", ".webm",
-]);
-const REFERENCE_EXTENSION_MIME_TYPES: Record<string, Set<string>> = {
-  ".pdf": new Set(["application/pdf"]),
-  ".txt": new Set(["text/plain"]),
-  ".md": new Set(["text/markdown", "text/plain"]),
-  ".doc": new Set(["application/msword"]),
-  ".docx": new Set(["application/vnd.openxmlformats-officedocument.wordprocessingml.document"]),
-  ".ppt": new Set(["application/vnd.ms-powerpoint"]),
-  ".pptx": new Set(["application/vnd.openxmlformats-officedocument.presentationml.presentation"]),
-  ".png": new Set(["image/png"]),
-  ".jpg": new Set(["image/jpeg"]),
-  ".jpeg": new Set(["image/jpeg"]),
-  ".webp": new Set(["image/webp"]),
-  ".gif": new Set(["image/gif"]),
-  ".mp4": new Set(["video/mp4"]),
-  ".mov": new Set(["video/quicktime"]),
-  ".avi": new Set(["video/x-msvideo"]),
-  ".mkv": new Set(["video/x-matroska"]),
-  ".webm": new Set(["video/webm"]),
-};
-
-export function preflightCampaignReferenceFiles(files: File[], maxBytes = REFERENCE_MAX_SIZE_BYTES): BatchUploadFileState[] {
-  return files.map((file) => {
-    const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
-    const error = file.size > maxBytes
-      ? "FILE_TOO_LARGE"
-      : !REFERENCE_ALLOWED_EXTENSIONS.has(extension)
-        ? "UNSUPPORTED_FILE_TYPE"
-        : file.type && REFERENCE_EXTENSION_MIME_TYPES[extension] && !REFERENCE_EXTENSION_MIME_TYPES[extension].has(file.type)
-          ? "UNSUPPORTED_FILE_TYPE"
-          : undefined;
-    return { file, status: error ? "failed" : "pending", error };
-  });
-}
-
 export async function uploadCampaignReferences(
   campaignId: string,
   files: BatchUploadFileState[],
   operator = "admin",
   folderId?: string | null,
   concurrency = 3,
+  onStateChange?: (states: BatchUploadFileState[]) => void,
 ): Promise<BatchUploadFileState[]> {
-  const results = files.map((item) => ({ ...item }));
-  const pendingIndexes = results.map((item, index) => item.status === "pending" ? index : -1).filter((index) => index >= 0);
-  let nextIndex = 0;
-  const uploadOne = async (index: number) => {
-    const item = results[index];
-    item.status = "uploading";
-    try {
-      const reference = await uploadCampaignReference(campaignId, item.file, operator, folderId);
-      item.status = "success";
-      item.referenceId = reference.reference_id;
-      item.folderId = reference.folder_id ?? folderId ?? null;
-      delete item.error;
-    } catch (error) {
-      item.status = "failed";
-      item.error = error instanceof Error ? error.message : "UPLOAD_FAILED";
-    }
-  };
-  const worker = async () => {
-    while (nextIndex < pendingIndexes.length) {
-      const index = pendingIndexes[nextIndex];
-      nextIndex += 1;
-      await uploadOne(index);
-    }
-  };
-  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), pendingIndexes.length) }, () => worker());
-  await Promise.allSettled(workers);
-  return results;
+  return uploadBatchItems(files, (file) => uploadCampaignReference(campaignId, file, operator, folderId).then((reference) => ({
+    referenceId: reference.reference_id,
+    folderId: reference.folder_id ?? folderId ?? null,
+  })), concurrency, onStateChange);
 }
 
 export async function attachCampaignReferenceText(params: {
