@@ -24,6 +24,28 @@ The pre-existing change in `services/campaign_service/app/persistence.py` was no
 - `npm run build`: PASS, production build and TypeScript completed. Next.js reported the existing multiple-lockfile workspace-root warning.
 - `git diff --check`: PASS.
 
+## Re-review Fixes
+
+- Added `GET /api/v1/campaigns/upload-policy`, returning the campaign service's configured size, extensions, and MIME map. The client fetches this policy before preflight; the documented fallback is used only by the standalone helper when no policy is supplied.
+- Added executable configured-limit boundary coverage: exactly-at-limit is accepted and one byte over is rejected.
+- Added executable campaign-start coverage: only all-success selected states enable start; uploading and failed states remain disabled.
+- Preserved bounded concurrency, nested failure propagation, immediate state callbacks, knowledge retry/removal, localized stable error codes, and reference/folder IDs.
+
+## Re-review Verification
+
+- RED command: `node scripts/test-batch-upload-contract.mjs`
+- RED result: failed as expected with `configured-size boundary contract failed` before policy-object support and start-gate implementation.
+- GREEN command: `node scripts/test-batch-upload-contract.mjs`
+- GREEN result: `batch upload contract test passed (14 assertions)` and `executable helper assertions passed (5 scenarios)`.
+- `npm run lint`: PASS, 0 errors and 11 existing warnings.
+- `npm run build`: PASS, TypeScript and production build completed; existing multiple-lockfile workspace-root warning remains.
+- `python -m pytest services/campaign_service/test_batch_upload.py -q`: PASS, 12 passed, 2 existing deprecation warnings.
+
+## Re-review Concerns
+
+- The standalone helper fallback remains 50 MiB for non-HTTP/test callers; the campaign page does not use it silently because policy fetch failure blocks preflight with a localized error.
+- Existing lint warnings, FastAPI deprecation warnings, and the Next.js multiple-lockfile warning remain.
+
 ## Implementation
 
 - Added typed `pending | uploading | success | failed` file state.

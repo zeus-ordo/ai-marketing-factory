@@ -1,7 +1,7 @@
-import { preflightCampaignReferenceFiles, uploadBatchItems, REFERENCE_MAX_SIZE_BYTES, REFERENCE_ALLOWED_EXTENSIONS, type BatchUploadFileState } from "./batch-upload";
+import { preflightCampaignReferenceFiles, uploadBatchItems, isCampaignStartEnabled, REFERENCE_MAX_SIZE_BYTES, REFERENCE_ALLOWED_EXTENSIONS, type BatchUploadFileState, type UploadPolicy } from "./batch-upload";
 
-export { preflightCampaignReferenceFiles, uploadBatchItems, REFERENCE_MAX_SIZE_BYTES, REFERENCE_ALLOWED_EXTENSIONS };
-export type { BatchUploadFileState, BatchUploadStatus } from "./batch-upload";
+export { preflightCampaignReferenceFiles, uploadBatchItems, isCampaignStartEnabled, REFERENCE_MAX_SIZE_BYTES, REFERENCE_ALLOWED_EXTENSIONS };
+export type { BatchUploadFileState, BatchUploadStatus, UploadPolicy } from "./batch-upload";
 
 export type CampaignStatus = "draft" | "running" | "completed" | "failed";
 
@@ -1115,6 +1115,10 @@ export async function listCampaignReferences(campaignId: string): Promise<Campai
 export async function listFolders(): Promise<FolderRecord[]> {
   const data = await request<{ items: FolderRecord[]; total: number }>("/api/v1/folders");
   return data.items;
+}
+
+export async function getCampaignUploadPolicy(): Promise<UploadPolicy> {
+  return request<UploadPolicy>("/api/v1/campaigns/upload-policy");
 }
 
 export async function createFolder(name: string): Promise<FolderRecord> {

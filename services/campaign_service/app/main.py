@@ -4788,6 +4788,15 @@ def delete_campaign(req: Request, campaign_id: str) -> CampaignDeleteResponse:
     return CampaignDeleteResponse(campaign_id=campaign_id, deleted=deleted)
 
 
+@app.get("/api/v1/campaigns/upload-policy")
+def campaign_upload_policy() -> dict[str, Any]:
+    return {
+        "maxBytes": REFERENCE_MAX_SIZE_BYTES,
+        "allowedExtensions": sorted(REFERENCE_ALLOWED_EXTENSIONS),
+        "mimeTypes": {extension: sorted(types) for extension, types in REFERENCE_EXTENSION_MIME_TYPES.items()},
+    }
+
+
 @app.get("/api/v1/campaigns", response_model=CampaignListResponse)
 def list_campaigns(req: Request, company_id: str | None = None) -> CampaignListResponse:
     # Internal call: use explicit company_id param

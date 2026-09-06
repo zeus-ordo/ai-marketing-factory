@@ -13,7 +13,7 @@ const assertions = [
   [helperSource.includes("REFERENCE_EXTENSION_MIME_TYPES"), "preflight must enforce MIME compatibility"],
   [api.includes("uploadCampaignReferences") && helperSource.includes("concurrency"), "bounded batch upload helper is required"],
   [helperSource.includes("while (nextIndex < pendingIndexes.length)"), "batch uploads must use a bounded worker queue"],
-  [page.includes("fileStates.some((item) => item.status === \"failed\" || item.status === \"uploading\")"), "failed or incomplete uploads must block campaign start"],
+  [page.includes("isCampaignStartEnabled") && page.includes("hasUploadFailure"), "failed or incomplete uploads must block campaign start"],
   [page.includes("Promise.allSettled") && page.includes("result.status === \"rejected\""), "allSettled results must be inspected"],
   [page.includes('item.status === "failed"') && page.includes('item.status === "success"'), "page must retain per-file result state"],
   [page.includes("filter((item) => item.status === \"failed\")"), "retry must select failed files only"],
@@ -82,4 +82,14 @@ if (!page.includes("uploadBatchItems(knowledgeUploadStates") || !page.includes("
   throw new Error("knowledge retry/removal and localized stable error contract failed");
 }
 
-console.log("executable helper assertions passed (3 scenarios)");
+const boundary = helper.preflightCampaignReferenceFiles([file("boundary.txt", "text/plain", 100), file("over.txt", "text/plain", 101)], { maxBytes: 100 });
+if (boundary[0].status !== "pending" || boundary[1].errorCode !== "FILE_TOO_LARGE") {
+  throw new Error("configured-size boundary contract failed");
+}
+
+for (const statuses of [["success", "success"], ["success", "uploading"], ["success", "failed"]]) {
+  const enabled = helper.isCampaignStartEnabled(statuses.map((status, index) => ({ file: file(`${index}.txt`, "text/plain"), status })));
+  if (enabled !== (statuses.every((status) => status === "success"))) throw new Error("campaign start gate contract failed");
+}
+
+console.log("executable helper assertions passed (5 scenarios)");

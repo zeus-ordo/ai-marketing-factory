@@ -8,7 +8,16 @@ export type BatchUploadFileState<T = File> = {
   errorCode?: string;
 };
 
-export const REFERENCE_MAX_SIZE_BYTES = Number(process.env.NEXT_PUBLIC_REFERENCE_MAX_SIZE_BYTES || 50 * 1024 * 1024);
+export type UploadPolicy = { maxBytes: number; allowedExtensions: string[]; mimeTypes: Record<string, string[]> };
+export const DEFAULT_UPLOAD_POLICY: UploadPolicy = {
+  maxBytes: 50 * 1024 * 1024,
+  allowedExtensions: [
+    ".pdf", ".txt", ".md", ".doc", ".docx", ".ppt", ".pptx", ".png", ".jpg", ".jpeg", ".webp", ".gif",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+  ],
+  mimeTypes: {},
+};
+export const REFERENCE_MAX_SIZE_BYTES = DEFAULT_UPLOAD_POLICY.maxBytes;
 export const REFERENCE_ALLOWED_EXTENSIONS = new Set([
   ".pdf", ".txt", ".md", ".doc", ".docx", ".ppt", ".pptx", ".png", ".jpg", ".jpeg", ".webp", ".gif",
   ".mp4", ".mov", ".avi", ".mkv", ".webm",
@@ -21,14 +30,20 @@ const REFERENCE_EXTENSION_MIME_TYPES: Record<string, Set<string>> = {
   ".mp4": new Set(["video/mp4"]), ".mov": new Set(["video/quicktime"]), ".avi": new Set(["video/x-msvideo"]), ".mkv": new Set(["video/x-matroska"]), ".webm": new Set(["video/webm"]),
 };
 
-export function preflightCampaignReferenceFiles(files: File[], maxBytes = REFERENCE_MAX_SIZE_BYTES): BatchUploadFileState<File>[] {
+export function preflightCampaignReferenceFiles(files: File[], policy: UploadPolicy | number = DEFAULT_UPLOAD_POLICY): BatchUploadFileState<File>[] {
+  const configuredPolicy = typeof policy === "number" ? { ...DEFAULT_UPLOAD_POLICY, maxBytes: policy } : { ...DEFAULT_UPLOAD_POLICY, ...policy };
   return files.map((file) => {
     const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
-    const errorCode = file.size > maxBytes ? "FILE_TOO_LARGE" : !REFERENCE_ALLOWED_EXTENSIONS.has(extension)
-      ? "UNSUPPORTED_FILE_TYPE" : file.type && !REFERENCE_EXTENSION_MIME_TYPES[extension]?.has(file.type)
+    const mimeTypes = configuredPolicy.mimeTypes[extension] ?? [...(REFERENCE_EXTENSION_MIME_TYPES[extension] ?? [])];
+    const errorCode = file.size > configuredPolicy.maxBytes ? "FILE_TOO_LARGE" : !configuredPolicy.allowedExtensions.includes(extension)
+      ? "UNSUPPORTED_FILE_TYPE" : file.type && !mimeTypes.includes(file.type)
         ? "UNSUPPORTED_FILE_TYPE" : undefined;
     return { file, status: errorCode ? "failed" : "pending", errorCode };
   });
+}
+
+export function isCampaignStartEnabled<T>(states: BatchUploadFileState<T>[]): boolean {
+  return states.length > 0 && states.every((item) => item.status === "success");
 }
 
 export async function uploadBatchItems<T>(

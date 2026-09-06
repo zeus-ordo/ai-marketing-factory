@@ -23,6 +23,8 @@ import {
   updateCampaign,
   updateCampaignReference,
   updateKnowledgeItem,
+  getCampaignUploadPolicy,
+  isCampaignStartEnabled,
   preflightCampaignReferenceFiles,
   uploadCampaignReferences,
   uploadBatchItems,
@@ -609,7 +611,14 @@ export default function CampaignCenterPage() {
       return;
     }
 
-    const preflightStates = preflightCampaignReferenceFiles(createReferenceFiles);
+    let uploadPolicy;
+    try {
+      uploadPolicy = await getCampaignUploadPolicy();
+    } catch {
+      setMessage(t("campaigns.form.uploadPolicyFailed"));
+      return;
+    }
+    const preflightStates = preflightCampaignReferenceFiles(createReferenceFiles, uploadPolicy);
     setCreateReferenceUploadStates(preflightStates);
     setKnowledgeUploadStates(knowledgeItems.filter((item) => selectedReferenceItemIds.includes(item.item_id)).map((item) => ({ file: item, status: "pending" })));
     if (preflightStates.some((item) => item.status === "failed")) {
@@ -690,7 +699,7 @@ export default function CampaignCenterPage() {
         const fileResult = uploadResults[1];
         const fileStates = fileResult?.status === "fulfilled" && Array.isArray(fileResult.value) ? fileResult.value : createReferenceUploadStates.map((item) => ({ ...item, status: "failed" as const, errorCode: "UPLOAD_FAILED" }));
         setCreateReferenceUploadStates(fileStates);
-        const hasUploadFailure = uploadResults.some((result) => result.status === "rejected") || knowledgeStates.some((item) => item.status === "failed" || item.status === "uploading") || fileStates.some((item) => item.status === "failed" || item.status === "uploading");
+        const hasUploadFailure = uploadResults.some((result) => result.status === "rejected") || (knowledgeStates.length > 0 && !isCampaignStartEnabled(knowledgeStates)) || (fileStates.length > 0 && !isCampaignStartEnabled(fileStates));
         if (hasUploadFailure) {
           setCreatedCampaignForUpload(created.campaign_id);
           setMessage(t("campaigns.form.campaignStartBlocked"));
