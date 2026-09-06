@@ -929,6 +929,7 @@ MANUAL_ASSETS_DIR = os.getenv("MANUAL_ASSETS_DIR", os.path.join(os.getcwd(), "ma
 GENERATED_ASSETS_DIR = os.getenv("GENERATED_ASSETS_DIR", os.path.join(os.getcwd(), "generated_assets"))
 KNOWLEDGE_UPLOADS_DIR = os.getenv("KNOWLEDGE_UPLOADS_DIR", os.path.join(os.getcwd(), "knowledge_uploads"))
 REFERENCE_MAX_SIZE_BYTES = int(os.getenv("REFERENCE_MAX_SIZE_BYTES", str(50 * 1024 * 1024)))
+REFERENCE_UPLOAD_TIMEOUT_SECONDS = float(os.getenv("REFERENCE_UPLOAD_TIMEOUT_SECONDS", "60"))
 LLM_USAGE_BUFFER_KEY = "llm_usage_buffer"
 LLM_USAGE_FLUSH_INTERVAL = 60  # seconds
 
@@ -989,6 +990,7 @@ REFERENCE_EXTENSION_MIME_TYPES = {
     ".mkv": {"video/x-matroska"},
     ".webm": {"video/webm"},
 }
+REFERENCE_OCTET_STREAM_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx"}
 os.makedirs(CAMPAIGN_REFERENCES_DIR, exist_ok=True)
 os.makedirs(GENERATED_ASSETS_DIR, exist_ok=True)
 
@@ -3310,6 +3312,8 @@ def validate_reference_upload(file_name: str, file_type: str, file_size: int) ->
     if file_type not in REFERENCE_ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
     expected_types = REFERENCE_EXTENSION_MIME_TYPES.get(ext, set())
+    if file_type == "application/octet-stream" and ext not in REFERENCE_OCTET_STREAM_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
     if file_type != "application/octet-stream" and expected_types and file_type not in expected_types:
         raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
 
@@ -3323,6 +3327,18 @@ def cleanup_reference_upload(stored_path: str) -> None:
             os.rmdir(parent)
     except OSError:
         logger.warning("Reference upload cleanup failed")
+
+
+def cleanup_persisted_reference(campaign_id: str, reference_id: str) -> None:
+    if persistence is None:
+        return
+    delete_reference = getattr(persistence, "delete_campaign_reference", None)
+    if not callable(delete_reference):
+        return
+    try:
+        delete_reference(campaign_id, reference_id)
+    except Exception:
+        logger.warning("Reference persistence cleanup failed")
 
 
 def get_reference_payload_or_404(campaign_id: str, reference_id: str) -> dict[str, Any]:
@@ -7886,16 +7902,20 @@ def upload_campaign_reference(
     validate_reference_upload(original_name, file_type, 0)
 
     campaign_dir = os.path.join(CAMPAIGN_REFERENCES_DIR, campaign_id)
-    os.makedirs(campaign_dir, exist_ok=True)
-
     stored_name = f"{reference_id}{ext}"
     stored_path = os.path.join(campaign_dir, stored_name)
 
     try:
+        os.makedirs(campaign_dir, exist_ok=True)
         file_size = 0
+        deadline = time.monotonic() + REFERENCE_UPLOAD_TIMEOUT_SECONDS
         with open(stored_path, "wb") as target:
             while True:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
                 chunk = file.file.read(1024 * 1024)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
                 if not chunk:
                     break
                 file_size += len(chunk)
@@ -7909,7 +7929,7 @@ def upload_campaign_reference(
     except TimeoutError as exc:
         cleanup_reference_upload(stored_path)
         raise HTTPException(status_code=504, detail="UPLOAD_TIMEOUT") from exc
-    except OSError as exc:
+    except Exception as exc:
         cleanup_reference_upload(stored_path)
         raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
 
@@ -7945,9 +7965,11 @@ def upload_campaign_reference(
                 folder_id=record.folder_id,
             )
         except TimeoutError as exc:
+            cleanup_persisted_reference(campaign_id, reference_id)
             cleanup_reference_upload(stored_path)
             raise HTTPException(status_code=504, detail="UPLOAD_TIMEOUT") from exc
         except Exception as exc:
+            cleanup_persisted_reference(campaign_id, reference_id)
             cleanup_reference_upload(stored_path)
             raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
     else:

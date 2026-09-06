@@ -51,3 +51,21 @@ Completed successfully with no output. `git diff --check` also completed success
 - The folder association integration test remains skipped unless `CAMPAIGN_TEST_DATABASE_URL` is configured.
 - Pytest reports the existing `pytest-asyncio` loop-scope warning and FastAPI `on_event` deprecation warnings.
 - Full campaign-service and end-to-end suites were not run because this task brief specifies the focused upload/scope/folder verification commands.
+
+## Review Findings Follow-Up
+
+Added regression coverage for directory creation failure, generic stream failure, upload deadline timeout, octet-stream incompatibility, and partial database persistence cleanup. The upload directory creation now runs inside the sanitized cleanup boundary; all generic stream/write exceptions return `PERSISTENCE_ERROR`; the bounded loop enforces `REFERENCE_UPLOAD_TIMEOUT_SECONDS` and returns `UPLOAD_TIMEOUT`; octet-stream is limited to an explicit office-document extension allowlist; and persistence failures invoke the repository delete hook before returning.
+
+Red run before the follow-up production changes:
+
+```text
+python -m pytest services/campaign_service/test_batch_upload.py services/campaign_service/test_reference_scope.py services/campaign_service/test_reference_folder_association.py -q
+6 failed, 11 passed, 1 skipped, 2 warnings
+```
+
+Green follow-up run:
+
+```text
+python -m pytest services/campaign_service/test_batch_upload.py services/campaign_service/test_reference_scope.py services/campaign_service/test_reference_folder_association.py -q
+17 passed, 1 skipped, 2 warnings
+```

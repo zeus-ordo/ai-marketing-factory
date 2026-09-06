@@ -47,12 +47,19 @@ class Store:
 class Persistence:
     def __init__(self, failure=None):
         self.saved = []
+        self.rows = {}
+        self.deleted = []
         self.failure = failure
 
     def save_campaign_reference(self, **payload):
         self.saved.append(payload)
+        self.rows[payload["reference_id"]] = payload
         if self.failure:
             raise self.failure
+
+    def delete_campaign_reference(self, campaign_id, reference_id):
+        self.deleted.append((campaign_id, reference_id))
+        self.rows.pop(reference_id, None)
 
 
 def request():
@@ -149,8 +156,62 @@ def test_persistence_failure_returns_persistence_error_without_orphan_file(confi
     assert exc.value.detail == "PERSISTENCE_ERROR"
     assert main.campaign_references.get(campaign.campaign_id, []) == []
     assert main.campaign_reference_files.get(campaign.campaign_id, {}) == {}
+    assert persistence.rows == {}
     assert list(tmp_path.rglob("*")) == []
     assert "database secret" not in str(exc.value.detail)
+
+
+def test_directory_creation_failure_returns_sanitized_persistence_error(configured, monkeypatch):
+    campaign, persistence, tmp_path = configured
+    original_makedirs = main.os.makedirs
+
+    def fail_campaign_directory(path, *args, **kwargs):
+        if str(path).startswith(str(tmp_path)):
+            raise OSError("secret local path")
+        return original_makedirs(path, *args, **kwargs)
+
+    monkeypatch.setattr(main.os, "makedirs", fail_campaign_directory)
+
+    with pytest.raises(HTTPException) as exc:
+        main.upload_campaign_reference(campaign.campaign_id, request(), upload(), operator=None, folder_id=None)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "PERSISTENCE_ERROR"
+    assert "secret local path" not in str(exc.value.detail)
+    assert persistence.rows == {}
+
+
+def test_generic_stream_failure_returns_sanitized_persistence_error(configured):
+    campaign, persistence, tmp_path = configured
+
+    class BrokenStream:
+        def read(self, *_args):
+            raise RuntimeError("provider secret body")
+
+    file = UploadFile(filename="guide.txt", file=BrokenStream(), headers=Headers({"content-type": "text/plain"}))
+    with pytest.raises(HTTPException) as exc:
+        main.upload_campaign_reference(campaign.campaign_id, request(), file, operator=None, folder_id=None)
+
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "PERSISTENCE_ERROR"
+    assert "provider secret body" not in str(exc.value.detail)
+    assert persistence.rows == {}
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_upload_timeout_returns_upload_timeout_and_cleans_file(configured, monkeypatch):
+    campaign, persistence, tmp_path = configured
+    clock = iter((100.0, 100.0, 101.0))
+    monkeypatch.setattr(main, "REFERENCE_UPLOAD_TIMEOUT_SECONDS", 0.5, raising=False)
+    monkeypatch.setattr(main.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(HTTPException) as exc:
+        main.upload_campaign_reference(campaign.campaign_id, request(), upload(), operator=None, folder_id=None)
+
+    assert exc.value.status_code == 504
+    assert exc.value.detail == "UPLOAD_TIMEOUT"
+    assert persistence.rows == {}
+    assert list(tmp_path.rglob("*")) == []
 
 
 def test_upload_result_contains_reference_id_and_folder_id(configured, monkeypatch):
@@ -180,4 +241,36 @@ def test_mismatched_mime_returns_unsupported_file_type(configured):
     assert exc.value.status_code == 400
     assert exc.value.detail == "UNSUPPORTED_FILE_TYPE"
     assert persistence.saved == []
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_octet_stream_must_match_explicit_safe_extension_allowlist(configured):
+    campaign, persistence, tmp_path = configured
+
+    with pytest.raises(HTTPException) as exc:
+        main.upload_campaign_reference(
+            campaign.campaign_id,
+            request(),
+            upload(name="guide.txt", content_type="application/octet-stream"),
+            operator=None,
+            folder_id=None,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "UNSUPPORTED_FILE_TYPE"
+    assert persistence.rows == {}
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_partial_database_persistence_is_deleted_after_failure(configured, monkeypatch):
+    campaign, _, tmp_path = configured
+    persistence = Persistence(RuntimeError("database failure"))
+    monkeypatch.setattr(main, "persistence", persistence)
+
+    with pytest.raises(HTTPException) as exc:
+        main.upload_campaign_reference(campaign.campaign_id, request(), upload(), operator=None, folder_id=None)
+
+    assert exc.value.detail == "PERSISTENCE_ERROR"
+    assert persistence.rows == {}
+    assert len(persistence.deleted) == 1
     assert list(tmp_path.rglob("*")) == []
