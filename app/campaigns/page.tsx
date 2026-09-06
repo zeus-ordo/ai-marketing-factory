@@ -23,10 +23,12 @@ import {
   updateCampaign,
   updateCampaignReference,
   updateKnowledgeItem,
-  uploadCampaignReference,
+  preflightCampaignReferenceFiles,
+  uploadCampaignReferences,
   uploadKnowledgeItem,
   type CampaignBrief,
   type CampaignReferenceRecord,
+  type BatchUploadFileState,
   type KnowledgeItemRecord,
   type CampaignRecord,
   type CampaignStatus,
@@ -271,6 +273,8 @@ export default function CampaignCenterPage() {
     adsStrategy: false,
   });
   const [createReferenceFiles, setCreateReferenceFiles] = useState<File[]>([]);
+  const [createReferenceUploadStates, setCreateReferenceUploadStates] = useState<BatchUploadFileState[]>([]);
+  const [createdCampaignForUpload, setCreatedCampaignForUpload] = useState<string | null>(null);
   const [createReferenceInputKey, setCreateReferenceInputKey] = useState(0);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItemRecord[]>([]);
   const [selectedKnowledgeItemIds, setSelectedKnowledgeItemIds] = useState<string[]>([]);
@@ -602,6 +606,13 @@ export default function CampaignCenterPage() {
       return;
     }
 
+    const preflightStates = preflightCampaignReferenceFiles(createReferenceFiles);
+    setCreateReferenceUploadStates(preflightStates);
+    if (preflightStates.some((item) => item.status === "failed")) {
+      setMessage(t("campaigns.form.partialUploadFailure"));
+      return;
+    }
+
     setPendingCreateDraft({
       campaignName,
       productName,
@@ -628,6 +639,10 @@ export default function CampaignCenterPage() {
     if (!pendingCreateDraft) return;
 
     const draft = pendingCreateDraft;
+    if (createdCampaignForUpload) {
+      await retryFailedCampaignUploads(createdCampaignForUpload);
+      return;
+    }
     setCreatingCampaign(true);
     try {
       const created = await createCampaign({
@@ -662,9 +677,17 @@ export default function CampaignCenterPage() {
       if (draft.referenceFiles.length > 0 || selectedKnowledgeItems.length > 0) {
         const uploadResults = await Promise.allSettled([
           ...selectedKnowledgeItems.map((item) => attachKnowledgeItemToCampaign(created.campaign_id, item)),
-          ...draft.referenceFiles.map((file) => uploadCampaignReference(created.campaign_id, file, "admin", knowledgeCategoryFilter || null)),
+          uploadCampaignReferences(created.campaign_id, createReferenceUploadStates, "admin", knowledgeCategoryFilter || null),
         ]);
-        
+        const fileResult = uploadResults.at(-1);
+        const fileStates = fileResult?.status === "fulfilled" && Array.isArray(fileResult.value) ? fileResult.value : createReferenceUploadStates.map((item) => ({ ...item, status: "failed" as const, error: "UPLOAD_FAILED" }));
+        setCreateReferenceUploadStates(fileStates);
+        const hasUploadFailure = uploadResults.some((result) => result.status === "rejected") || fileStates.some((item) => item.status === "failed" || item.status === "uploading");
+        if (hasUploadFailure) {
+          setCreatedCampaignForUpload(created.campaign_id);
+          setMessage(t("campaigns.form.campaignStartBlocked"));
+          return;
+        }
       }
 
       await runCampaign(created.campaign_id);
@@ -673,6 +696,8 @@ export default function CampaignCenterPage() {
       setCampaignForm((prev) => ({ ...prev, campaignName: "", productName: "", industryCategory: "", projectDescription: "", audiencePersona: "", budget: "", brandTone: "", copyVariants: "", imageAssets: "", shortVideoAssets: "" }));
       setSelectedDeliverables([]);
       setCreateReferenceFiles([]);
+      setCreateReferenceUploadStates([]);
+      setCreatedCampaignForUpload(null);
       setSelectedKnowledgeItemIds([]);
       setSelectedKnowledgeFolderNames([]);
       setExpandedKnowledgeFolderNames([]);
@@ -760,6 +785,35 @@ export default function CampaignCenterPage() {
     } finally {
       setRunningCampaign(false);
     }
+  }
+
+  async function retryFailedCampaignUploads(campaignId: string) {
+    const failedFiles = createReferenceUploadStates.filter((item) => item.status === "failed");
+    if (failedFiles.length === 0) return;
+    setCreatingCampaign(true);
+    try {
+      const retried = await uploadCampaignReferences(campaignId, failedFiles.map((item) => ({ ...item, status: "pending" as const, error: undefined })), "admin", knowledgeCategoryFilter || null);
+      const retryByFile = new Map(retried.map((item) => [item.file, item]));
+      const merged = createReferenceUploadStates.map((item) => retryByFile.get(item.file) ?? item);
+      setCreateReferenceUploadStates(merged);
+      if (merged.some((item) => item.status === "failed" || item.status === "uploading")) {
+        setMessage(t("campaigns.form.campaignStartBlocked"));
+        return;
+      }
+      await runCampaign(campaignId);
+      setPendingCreateDraft(null);
+      setCreatedCampaignForUpload(null);
+      setMessage(`${t("campaigns.created", { id: campaignId })} ${t("campaigns.started", { id: campaignId })}`);
+    } catch {
+      setMessage(t("campaigns.form.campaignStartBlocked"));
+    } finally {
+      setCreatingCampaign(false);
+    }
+  }
+
+  function removeCreateReference(file: File) {
+    setCreateReferenceFiles((files) => files.filter((item) => item !== file));
+    setCreateReferenceUploadStates((items) => items.filter((item) => item.file !== file));
   }
 
   async function handleRetryTask(campaignId: string, taskId: string) {
@@ -1268,7 +1322,11 @@ export default function CampaignCenterPage() {
               id="create-reference-files"
               type="file"
               multiple
-              onChange={(event) => setCreateReferenceFiles(Array.from(event.target.files ?? []))}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                setCreateReferenceFiles(files);
+                setCreateReferenceUploadStates(preflightCampaignReferenceFiles(files));
+              }}
               aria-label={t("campaigns.form.referenceFiles")}
               className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
             />
@@ -1277,6 +1335,20 @@ export default function CampaignCenterPage() {
                 ? t("campaigns.form.referenceFilesSelected", { count: createReferenceFiles.length })
                 : t("campaigns.form.referenceFilesHelp")}
             </p>
+            {createReferenceUploadStates.length > 0 ? (
+              <ul className="space-y-1 text-xs" aria-label={t("campaigns.form.uploadStatus")}>
+                {createReferenceUploadStates.map((item) => (
+                  <li key={`${item.file.name}-${item.file.lastModified}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
+                    <span className="min-w-0 truncate">{item.file.name}</span>
+                    <span className={item.status === "failed" ? "text-red-600" : item.status === "success" ? "text-emerald-600" : "text-slate-500"}>
+                      {item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : `${item.error === "FILE_TOO_LARGE" ? t("campaigns.form.invalidFileSize") : t("campaigns.form.invalidFileType")} ${item.error ?? ""}`}
+                    </span>
+                    {item.status === "failed" && createdCampaignForUpload ? <button type="button" onClick={() => { void handleConfirmCreateCampaign(); }} className="font-medium text-blue-600">{t("campaigns.form.retryUpload")}</button> : null}
+                    <button type="button" onClick={() => removeCreateReference(item.file)} disabled={creatingCampaign} className="font-medium text-slate-600">{t("campaigns.form.removeUpload")}</button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
           <div className="space-y-2 xl:col-span-3">
             <div className="flex items-center justify-between gap-3">
@@ -1424,7 +1496,7 @@ export default function CampaignCenterPage() {
                 disabled={creatingCampaign}
                 className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700"
               >
-                {creatingCampaign ? t("common.loading") : t("campaigns.form.submit")}
+                {creatingCampaign ? t("common.loading") : createdCampaignForUpload ? t("campaigns.form.retryUpload") : t("campaigns.form.submit")}
               </button>
             </div>
           </div>
