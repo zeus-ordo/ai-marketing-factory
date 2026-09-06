@@ -46,6 +46,30 @@ The pre-existing change in `services/campaign_service/app/persistence.py` was no
 - The standalone helper fallback remains 50 MiB for non-HTTP/test callers; the campaign page does not use it silently because policy fetch failure blocks preflight with a localized error.
 - Existing lint warnings, FastAPI deprecation warnings, and the Next.js multiple-lockfile warning remain.
 
+## Final Re-review Fixes
+
+- Removed the runtime frontend environment and hardcoded 50 MiB fallback from the page/helper preflight path. The page fetches the backend upload policy before preflight; policy failure is localized and blocks the flow. `preflightCampaignReferenceFiles` now requires an explicit policy object.
+- Added executable policy-path coverage using a backend-shaped policy: exact limit is accepted, over-limit is rejected before upload, and the page fetch/use path is asserted.
+- Added executable start-gate coverage for all-success, uploading, and failed states.
+- Added `mergeBatchUploadStates` and used functional state updates for initial and retry callbacks so successful entries and IDs remain present during failed-file retries.
+- Added UTF-8 assertions for Traditional Chinese and Japanese strings and verified the page selects the localized keys.
+
+## Final Re-review Verification
+
+- RED command: `node scripts/test-batch-upload-contract.mjs`
+- RED result: failed as expected with `retry updates must merge into the complete state` before the merge helper was implemented.
+- GREEN command: `node scripts/test-batch-upload-contract.mjs`
+- GREEN result: `batch upload contract test passed (19 assertions)` and `executable helper assertions passed (6 scenarios)`.
+- `npm run lint`: PASS, 0 errors and 11 existing warnings.
+- `npm run build`: PASS, TypeScript and production build completed; existing multiple-lockfile workspace-root warning remains.
+- `python -m pytest services/campaign_service/test_batch_upload.py -q`: PASS, 12 passed, 2 existing deprecation warnings.
+- `git diff --check`: PASS.
+
+## Final Concerns
+
+- The page intentionally blocks if `/api/v1/campaigns/upload-policy` is unavailable; no production fallback can silently diverge from backend policy.
+- Existing lint, FastAPI deprecation, and Next.js workspace-root warnings remain.
+
 ## Implementation
 
 - Added typed `pending | uploading | success | failed` file state.

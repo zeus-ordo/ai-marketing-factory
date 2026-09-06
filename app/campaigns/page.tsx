@@ -28,6 +28,7 @@ import {
   preflightCampaignReferenceFiles,
   uploadCampaignReferences,
   uploadBatchItems,
+  mergeBatchUploadStates,
   uploadKnowledgeItem,
   type CampaignBrief,
   type CampaignReferenceRecord,
@@ -688,10 +689,10 @@ export default function CampaignCenterPage() {
 
       const selectedKnowledgeItems = knowledgeItems.filter((item) => draft.knowledgeItemIds.includes(item.item_id));
       if (draft.referenceFiles.length > 0 || selectedKnowledgeItems.length > 0) {
-        const knowledgeResultPromise = uploadBatchItems(knowledgeUploadStates, (item) => attachKnowledgeItemToCampaign(created.campaign_id, item).then((reference) => ({ referenceId: reference.reference_id, folderId: reference.folder_id })), 3, setKnowledgeUploadStates);
+        const knowledgeResultPromise = uploadBatchItems(knowledgeUploadStates, (item) => attachKnowledgeItemToCampaign(created.campaign_id, item).then((reference) => ({ referenceId: reference.reference_id, folderId: reference.folder_id })), 3, (updates) => setKnowledgeUploadStates((current) => mergeBatchUploadStates(current, updates)));
         const uploadResults = await Promise.allSettled([
           knowledgeResultPromise,
-          uploadCampaignReferences(created.campaign_id, createReferenceUploadStates, "admin", knowledgeCategoryFilter || null, 3, setCreateReferenceUploadStates),
+          uploadCampaignReferences(created.campaign_id, createReferenceUploadStates, "admin", knowledgeCategoryFilter || null, 3, (updates) => setCreateReferenceUploadStates((current) => mergeBatchUploadStates(current, updates))),
         ]);
         const knowledgeResult = uploadResults[0];
         const knowledgeStates = knowledgeResult?.status === "fulfilled" ? knowledgeResult.value : knowledgeUploadStates.map((item) => ({ ...item, status: "failed" as const, errorCode: "UPLOAD_FAILED" }));
@@ -812,8 +813,8 @@ export default function CampaignCenterPage() {
     setCreatingCampaign(true);
     try {
       const [retried, retriedKnowledge] = await Promise.all([
-        uploadCampaignReferences(campaignId, failedFiles.map((item) => ({ ...item, status: "pending" as const, errorCode: undefined })), "admin", knowledgeCategoryFilter || null, 3, setCreateReferenceUploadStates),
-        uploadBatchItems(failedKnowledge.map((item) => ({ ...item, status: "pending" as const, errorCode: undefined })), (item) => attachKnowledgeItemToCampaign(campaignId, item).then((reference) => ({ referenceId: reference.reference_id, folderId: reference.folder_id })), 3, setKnowledgeUploadStates),
+        uploadCampaignReferences(campaignId, failedFiles.map((item) => ({ ...item, status: "pending" as const, errorCode: undefined })), "admin", knowledgeCategoryFilter || null, 3, (updates) => setCreateReferenceUploadStates((current) => mergeBatchUploadStates(current, updates))),
+        uploadBatchItems(failedKnowledge.map((item) => ({ ...item, status: "pending" as const, errorCode: undefined })), (item) => attachKnowledgeItemToCampaign(campaignId, item).then((reference) => ({ referenceId: reference.reference_id, folderId: reference.folder_id })), 3, (updates) => setKnowledgeUploadStates((current) => mergeBatchUploadStates(current, updates))),
       ]);
       const retryByFile = new Map(retried.map((item) => [item.file, item]));
       const merged = createReferenceUploadStates.map((item) => retryByFile.get(item.file) ?? item);
@@ -1373,7 +1374,7 @@ export default function CampaignCenterPage() {
               onChange={(event) => {
                 const files = Array.from(event.target.files ?? []);
                 setCreateReferenceFiles(files);
-                setCreateReferenceUploadStates(preflightCampaignReferenceFiles(files));
+                setCreateReferenceUploadStates(files.map((file) => ({ file, status: "pending" as const })));
               }}
               aria-label={t("campaigns.form.referenceFiles")}
               className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"

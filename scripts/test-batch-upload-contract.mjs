@@ -9,8 +9,9 @@ const translations = await readFile(new URL("../lib/i18n/translations.ts", impor
 const assertions = [
   [helperSource.includes("export type BatchUploadStatus = \"pending\" | \"uploading\" | \"success\" | \"failed\""), "typed per-file upload states are required"],
   [helperSource.includes("preflightCampaignReferenceFiles"), "preflight validation helper is required"],
-  [helperSource.includes("REFERENCE_MAX_SIZE_BYTES") && helperSource.includes("REFERENCE_ALLOWED_EXTENSIONS"), "preflight must enforce configured size and extensions"],
-  [helperSource.includes("REFERENCE_EXTENSION_MIME_TYPES"), "preflight must enforce MIME compatibility"],
+  [helperSource.includes("policy.maxBytes") && helperSource.includes("allowedExtensions"), "preflight must enforce configured size and extensions"],
+  [!helperSource.includes("process.env.NEXT_PUBLIC_REFERENCE_MAX_SIZE_BYTES"), "runtime helper must not silently read a separate frontend size"],
+  [helperSource.includes("policy.mimeTypes"), "preflight must enforce MIME compatibility"],
   [api.includes("uploadCampaignReferences") && helperSource.includes("concurrency"), "bounded batch upload helper is required"],
   [helperSource.includes("while (nextIndex < pendingIndexes.length)"), "batch uploads must use a bounded worker queue"],
   [page.includes("isCampaignStartEnabled") && page.includes("hasUploadFailure"), "failed or incomplete uploads must block campaign start"],
@@ -21,6 +22,10 @@ const assertions = [
   [page.includes("Retry") || translations.includes("retryUpload"), "retry feedback/action is required"],
   [translations.includes("invalidFileType") && translations.includes("invalidFileSize") && translations.includes("uploading"), "upload validation and progress translations are required"],
   [translations.includes("partialUploadFailure") && translations.includes("campaignStartBlocked") && translations.includes("removeUpload"), "partial failure, blocked start, and remove translations are required"],
+  [/[\u3400-\u9fff]/u.test(translations) && !/[\ufffd]|Ã|æ|ç|ã/.test(translations), "translations must remain valid localized UTF-8"],
+  [translations.includes('invalidFileType: "不支援的檔案類型。"') && translations.includes('invalidFileType: "対応していないファイル形式です。"') && page.includes('t("campaigns.form.invalidFileType")'), "Traditional Chinese and Japanese failure strings must be selected by the page"],
+  [page.includes("getCampaignUploadPolicy()") && page.includes("preflightCampaignReferenceFiles(createReferenceFiles, uploadPolicy)"), "page must fetch and use backend upload policy"],
+  [helperSource.includes("mergeBatchUploadStates"), "retry updates must merge into the complete state"],
 ];
 
 for (const [condition, message] of assertions) {
@@ -35,10 +40,11 @@ const helperModule = ts.transpileModule(helperSource, {
 const helper = await import(`data:text/javascript;base64,${Buffer.from(helperModule).toString("base64")}`);
 
 const file = (name, type, size = 10) => ({ name, type, size });
+const backendPolicy = { maxBytes: 100, allowedExtensions: [".txt", ".docx", ".png"], mimeTypes: { ".txt": ["text/plain"], ".docx": ["application/octet-stream"], ".png": ["image/png"] } };
 const office = helper.preflightCampaignReferenceFiles([
   file("brief.docx", "application/octet-stream"),
   file("image.png", "text/plain"),
-]);
+], backendPolicy);
 if (office[0].status !== "pending" || office[1].errorCode !== "UNSUPPORTED_FILE_TYPE") {
   throw new Error("executable MIME preflight contract failed");
 }
@@ -82,9 +88,19 @@ if (!page.includes("uploadBatchItems(knowledgeUploadStates") || !page.includes("
   throw new Error("knowledge retry/removal and localized stable error contract failed");
 }
 
-const boundary = helper.preflightCampaignReferenceFiles([file("boundary.txt", "text/plain", 100), file("over.txt", "text/plain", 101)], { maxBytes: 100 });
+const boundary = helper.preflightCampaignReferenceFiles([file("boundary.txt", "text/plain", 100), file("over.txt", "text/plain", 101)], backendPolicy);
 if (boundary[0].status !== "pending" || boundary[1].errorCode !== "FILE_TOO_LARGE") {
   throw new Error("configured-size boundary contract failed");
+}
+
+const okFile = file("ok.txt", "text/plain");
+const retryFile = file("retry.txt", "text/plain");
+const merged = helper.mergeBatchUploadStates(
+  [{ file: okFile, status: "success", referenceId: "ref-ok" }, { file: retryFile, status: "failed", errorCode: "UPLOAD_FAILED" }],
+  [{ file: retryFile, status: "uploading" }],
+);
+if (merged.length !== 2 || merged[0].referenceId !== "ref-ok" || merged[1].status !== "uploading") {
+  throw new Error("executable complete-state merge contract failed");
 }
 
 for (const statuses of [["success", "success"], ["success", "uploading"], ["success", "failed"]]) {
@@ -92,4 +108,4 @@ for (const statuses of [["success", "success"], ["success", "uploading"], ["succ
   if (enabled !== (statuses.every((status) => status === "success"))) throw new Error("campaign start gate contract failed");
 }
 
-console.log("executable helper assertions passed (5 scenarios)");
+console.log("executable helper assertions passed (6 scenarios)");
