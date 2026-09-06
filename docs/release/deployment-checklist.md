@@ -130,6 +130,17 @@ Data actions:
 - After restart, confirm consumer groups, pending-message reclamation, and
   generation-context hydration before accepting new runs.
 
+## 5.1) Image Generation and Batch Upload Hardening
+- [ ] Run `python -m pytest tests_e2e/test_image_generation_and_batch_upload.py -q`
+- [ ] Confirm empty real image responses fail and valid image responses persist an asset.
+- [ ] Confirm 1-, 2-, and 10-file batches, including an intentional failure, keep campaign start blocked until retry succeeds.
+- [ ] Confirm a persistence/service restart preserves uploaded metadata and file bytes.
+- [ ] Create and verify a Cloud SQL backup before any production persistence/schema change:
+  `gcloud sql backups create --project=market-factory --instance=ai-marketing-postgres --description="image-batch-pre-deploy-${COMMIT}"`
+- [ ] Deploy the approved commit only through `deploy/docker-compose.gcp.yml`; do not print environment values.
+- [ ] Record Compose service status, public route health, neutral image smoke provider/status/attempts/asset count, and upload batch results in `task-5-report.md`.
+- [ ] Keep local reference/generated stores until backend persistence and restart readability are verified.
+
 ---
 
 ## 6) Sign-off

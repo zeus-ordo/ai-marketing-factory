@@ -109,3 +109,40 @@ Keep `lib/server/folders-store.ts` and local folder directories in place until
 backend persistence and read verification have passed. Only then can local
 folder-store deprecation be considered, and the decision must be recorded in
 the rollout report.
+
+## Image Generation and Batch Upload Rollout
+
+Run the deterministic acceptance file before any live action:
+
+```bash
+python -m pytest tests_e2e/test_image_generation_and_batch_upload.py -q
+python -m pytest services/worker_image -q
+python -m pytest services/campaign_service -q
+npm run lint
+npm run build
+git diff --check
+```
+
+The E2E file uses mocked provider responses and deterministic files. It covers
+empty real image failure, valid asset persistence, partial batch blocking,
+failed-file-only retry, and metadata/file readability after recreating the
+persistence object.
+
+Before a production persistence or schema change, capture and verify a backup
+using the approved commit and never print environment values:
+
+```bash
+COMMIT="$(git rev-parse HEAD)"
+gcloud sql backups create --project=market-factory --instance=ai-marketing-postgres --description="image-batch-pre-deploy-${COMMIT}"
+gcloud sql backups list --project=market-factory --instance=ai-marketing-postgres --filter="description=image-batch-pre-deploy-${COMMIT}" --format="table(id,status,description)"
+```
+
+Deploy only through `deploy/docker-compose.gcp.yml`. Verify all services with
+`docker compose -f deploy/docker-compose.gcp.yml ps`, then verify the public
+route and service health. A neutral image smoke may report only provider, HTTP
+status, attempt count, and asset count. Run 1-, 2-, and 10-file upload batches,
+including one intentional failure; campaign start must remain blocked until the
+failed file is retried successfully. Compare persisted metadata and file bytes,
+recreate the relevant service/persistence object, and verify readability before
+deprecating local storage. Record every command/result and any unavailable live
+provider/account limitation in `task-5-report.md`.
