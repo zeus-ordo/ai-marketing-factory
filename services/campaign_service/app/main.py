@@ -1076,12 +1076,17 @@ def worker_failure_trace_payload(
         "attempts": attempt,
         "retryable": retryable,
         "error_code": error_code,
+        "error": "Worker request failed",
+        "error_detail": "Worker request failed",
+        "worker_url": None,
         "message": "Worker request failed",
     }
     if status_match:
         payload["status_code"] = int(status_match.group(1))
-    if isinstance(provider, str) and provider.strip():
-        payload["provider"] = provider.strip()[:64]
+    if isinstance(provider, str) and provider.strip().lower() in {"gemini", "minimax", "stability"}:
+        payload["provider"] = provider.strip().lower()
+    else:
+        payload["provider"] = "unknown"
     return payload
 
 
@@ -1817,7 +1822,7 @@ def cache_generated_asset_url(
     if value.startswith("data:"):
         header, _, data = value.partition(",")
         content_type = header.removeprefix("data:").split(";", 1)[0] or ("video/mp4" if asset_type == "video" else "image/png")
-        if ";base64" in header:
+        if ";base64" in header.lower():
             payload = base64.b64decode(data)
         else:
             payload = parse.unquote_to_bytes(data)

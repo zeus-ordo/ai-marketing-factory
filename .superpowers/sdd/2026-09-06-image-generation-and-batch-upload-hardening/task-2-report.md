@@ -100,3 +100,37 @@ The standalone final contract run also passed: `9 passed, 2 warnings in 0.72s`.
 
 - The same two existing deprecation warnings remain: unset `pytest-asyncio` loop scope and FastAPI `on_event`.
 - Focused suites passed; the full repository suite was not run.
+
+## Re-Review Fix Report
+
+### Fixes
+
+- Restored `error`, `error_detail`, and `worker_url` in worker failure traces with fixed safe messages and null URL values.
+- Normalized provider labels through the Task 1 allowlist (`gemini`, `minimax`, `stability`), using `unknown` for hostile or unsupported values.
+- Made data URL base64 detection case-insensitive and verified actual decoded image bytes are written to the generated cache.
+- Added regression coverage for trace-schema compatibility, hostile providers, uppercase base64 markers, valid PNG bytes, and existing retry/DLQ-compatible metadata.
+
+### TDD Evidence
+
+Red command:
+
+```text
+python -m pytest services/campaign_service/test_image_generation_contract.py -q
+```
+
+Result: `3 failed, 8 passed, 2 warnings`.
+
+The failures covered missing compatible trace fields, unnormalized hostile providers, and uppercase base64 being cached as literal text.
+
+Green command:
+
+```text
+python -m pytest services/campaign_service/test_image_generation_contract.py services/campaign_service/test_worker_result_state.py services/campaign_service/test_task6_routes.py -q
+```
+
+Result: `49 passed, 2 warnings in 0.79s`.
+
+### Concerns
+
+- Existing pytest-asyncio and FastAPI deprecation warnings remain.
+- The full repository suite was not run.

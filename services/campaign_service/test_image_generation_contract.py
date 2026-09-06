@@ -81,10 +81,44 @@ def test_worker_502_records_retryable_failure_trace(monkeypatch):
     assert traces
     assert all(event["payload"]["retryable"] is True for event in traces)
     assert all(event["payload"]["attempts"] == event["payload"]["attempt"] for event in traces)
-    assert all(set(event["payload"]) <= {"task_id", "task_type", "attempt", "attempts", "retryable", "error_code", "status_code", "provider", "message"} for event in traces)
+    assert all(set(event["payload"]) <= {"task_id", "task_type", "attempt", "attempts", "retryable", "error_code", "status_code", "provider", "message", "error", "error_detail", "worker_url"} for event in traces)
     assert all("secret prompt" not in str(event["payload"]) for event in traces)
     assert all("provider-token" not in str(event["payload"]) for event in traces)
     assert all("worker/internal" not in str(event["payload"]) for event in traces)
+    assert all(event["payload"]["error"] == "Worker request failed" for event in traces)
+    assert all(event["payload"]["error_detail"] == "Worker request failed" for event in traces)
+    assert all(event["payload"]["worker_url"] is None for event in traces)
+
+
+def test_worker_failure_trace_preserves_legacy_retry_fields_safely():
+    payload = main.worker_failure_trace_payload(
+        "HTTP 502 provider=https://evil.example credential=secret",
+        task_id="task",
+        task_type="image_generation",
+        attempt=1,
+        retryable=True,
+        provider="https://evil.example/token",
+    )
+
+    assert payload["error"] == "Worker request failed"
+    assert payload["error_detail"] == "Worker request failed"
+    assert payload["worker_url"] is None
+    assert payload["provider"] == "unknown"
+    assert "evil.example" not in str(payload)
+
+
+def test_uppercase_base64_image_data_url_with_valid_bytes_is_accepted(tmp_path, monkeypatch):
+    png = b"\x89PNG\r\n\x1a\n" + b"minimal-image"
+    monkeypatch.setattr(main, "GENERATED_ASSETS_DIR", str(tmp_path / "generated"))
+    persisted = []
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: persisted.extend(assets))
+    encoded = __import__("base64").b64encode(png).decode("ascii")
+
+    response = main._save_image_worker_result(image_result([{"url": f"data:image/png;BASE64,{encoded}"}]), datetime.utcnow())
+
+    assert response["status"] == "accepted"
+    assert len(persisted) == 1
+    assert Path(persisted[0].metadata["stored_path"]).read_bytes() == png
 
 
 def test_worker_failure_trace_payload_is_bounded_and_safe():
@@ -104,6 +138,9 @@ def test_worker_failure_trace_payload_is_bounded_and_safe():
         "attempts": 2,
         "retryable": True,
         "error_code": "provider_error",
+        "error": "Worker request failed",
+        "error_detail": "Worker request failed",
+        "worker_url": None,
         "status_code": 502,
         "provider": "gemini",
         "message": "Worker request failed",
@@ -142,7 +179,7 @@ def test_successful_image_asset_persists_and_reports_positive_count(monkeypatch)
 
 def test_local_image_file_is_downloaded_to_generated_cache(tmp_path, monkeypatch):
     source = tmp_path / "source.png"
-    source.write_bytes(b"image bytes")
+    source.write_bytes(b"\x89PNG\r\n\x1a\nminimal-image")
     monkeypatch.setattr(main, "GENERATED_ASSETS_DIR", str(tmp_path / "generated"))
     persisted = []
     monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: persisted.extend(assets))
@@ -154,4 +191,4 @@ def test_local_image_file_is_downloaded_to_generated_cache(tmp_path, monkeypatch
     stored_path = persisted[0].metadata["stored_path"]
     assert persisted[0].url.startswith("/api/v1/campaigns/campaign/assets/generated-files/")
     assert Path(stored_path).is_file()
-    assert Path(stored_path).read_bytes() == b"image bytes"
+    assert Path(stored_path).read_bytes() == b"\x89PNG\r\n\x1a\nminimal-image"
