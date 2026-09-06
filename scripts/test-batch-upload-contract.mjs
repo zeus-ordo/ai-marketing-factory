@@ -26,6 +26,9 @@ const assertions = [
   [translations.includes('invalidFileType: "不支援的檔案類型。"') && translations.includes('invalidFileType: "対応していないファイル形式です。"') && page.includes('t("campaigns.form.invalidFileType")'), "Traditional Chinese and Japanese failure strings must be selected by the page"],
   [page.includes("getCampaignUploadPolicy()") && page.includes("preflightCampaignReferenceFiles(createReferenceFiles, uploadPolicy)"), "page must fetch and use backend upload policy"],
   [helperSource.includes("mergeBatchUploadStates"), "retry updates must merge into the complete state"],
+  [helperSource.includes("CAMPAIGN_ACCESS_DENIED") && helperSource.includes("UPLOAD_TIMEOUT") && helperSource.includes("PERSISTENCE_ERROR"), "all stable upload error codes must be preserved"],
+  [page.includes("removeCreateReference") && page.includes("startCampaignAfterUploads"), "removing failed reference files must leave an actionable start path"],
+  [helperSource.includes("canStartAfterUploadRemoval"), "removal startability helper is required"],
 ];
 
 for (const [condition, message] of assertions) {
@@ -102,6 +105,23 @@ const merged = helper.mergeBatchUploadStates(
 if (merged.length !== 2 || merged[0].referenceId !== "ref-ok" || merged[1].status !== "uploading") {
   throw new Error("executable complete-state merge contract failed");
 }
+
+const stableCodes = ["FILE_TOO_LARGE", "UNSUPPORTED_FILE_TYPE", "CAMPAIGN_ACCESS_DENIED", "UPLOAD_TIMEOUT", "PERSISTENCE_ERROR"];
+for (const code of stableCodes) {
+  const codeStates = await helper.uploadBatchItems(
+    [{ file: file(`${code}.txt`, "text/plain"), status: "pending" }],
+    async () => { throw new Error(code); },
+  );
+  if (codeStates[0].errorCode !== code) throw new Error(`stable error code was collapsed: ${code}`);
+}
+
+if (!helper.canStartAfterUploadRemoval(
+  [{ file: okFile, status: "success" }],
+  [],
+) || helper.canStartAfterUploadRemoval(
+  [{ file: retryFile, status: "failed" }],
+  [],
+)) throw new Error("removing the final failed file must produce an actionable start state");
 
 for (const statuses of [["success", "success"], ["success", "uploading"], ["success", "failed"]]) {
   const enabled = helper.isCampaignStartEnabled(statuses.map((status, index) => ({ file: file(`${index}.txt`, "text/plain"), status })));

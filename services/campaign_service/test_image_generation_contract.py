@@ -57,6 +57,54 @@ def test_cache_failure_fails_generation_without_persisting_provider_url(monkeypa
     assert not generated_dir.exists()
 
 
+def test_cached_image_metadata_never_persists_provider_query_tokens(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "GENERATED_ASSETS_DIR", str(tmp_path / "generated"))
+
+    class Response:
+        headers = {"content-type": "image/png"}
+
+        def read(self):
+            return b"\x89PNG\r\n\x1a\nminimal-image"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(main.request, "urlopen", lambda *args, **kwargs: Response())
+
+    persisted = []
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: persisted.extend(assets))
+    response = main._save_image_worker_result(
+        image_result([{"url": "https://provider.example/image.png?token=super-secret&signature=private"}]),
+        datetime.utcnow(),
+    )
+
+    assert response["status"] == "accepted"
+    assert persisted
+    metadata_text = str(persisted[0].metadata)
+    assert "token=super-secret" not in metadata_text
+    assert "signature=private" not in metadata_text
+    assert "original_url" not in persisted[0].metadata
+
+
+def test_mixed_valid_and_invalid_image_assets_fail_atomically(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "GENERATED_ASSETS_DIR", str(tmp_path / "generated"))
+    persisted = []
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: persisted.extend(assets))
+    valid = "data:image/png;base64,aW1hZ2U="
+
+    response = main._save_image_worker_result(
+        image_result([{"url": valid}, {"url": "data:image/png;base64:not-valid"}]),
+        datetime.utcnow(),
+    )
+
+    assert response["status"] == "failed"
+    assert response["assets_saved"] == "0"
+    assert persisted == []
+
+
 def test_non_base64_image_data_url_fails_generation(monkeypatch):
     persisted = []
     monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: persisted.extend(assets))
@@ -163,6 +211,30 @@ def test_non_strict_empty_image_result_fails_without_success_path(monkeypatch):
         assert "no displayable assets" in str(exc)
     else:
         raise AssertionError("empty non-strict generation must fail")
+
+
+def test_worker_generation_rejects_mixed_image_assets_without_partial_persistence(monkeypatch):
+    campaign = CampaignRecord(
+        company_id="company", campaign_id="campaign", created_at=datetime.utcnow(),
+        brief=CampaignBrief(campaign_name="Campaign", product_name="Product", objective="awareness",
+            target_audience={"age_range": "all", "gender": "all", "persona": "all"}, platforms=["social"],
+            budget=1, brand_tone=[], deliverables=Deliverables(image_assets=2), deadline=datetime.utcnow()),
+    )
+    task = TaskRecord(company_id="company", campaign_id="campaign", task_id="image-task", task_type="image_generation", status="planned", priority=1, acceptance=[])
+    persisted = []
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: persisted.extend(assets))
+    monkeypatch.setattr(main, "_worker_post_json", lambda *args, **kwargs: {"image_assets": [
+        {"url": "data:image/png;base64,aW1hZ2U="},
+        {"url": "data:image/png;base64:not-valid"},
+    ]})
+
+    try:
+        main.generate_outputs_via_workers("company", "campaign", campaign, [task], strict=False)
+    except RuntimeError as exc:
+        assert "no displayable assets" in str(exc)
+    else:
+        raise AssertionError("mixed image generation must fail")
+    assert persisted == []
 
 
 def test_successful_image_asset_persists_and_reports_positive_count(monkeypatch):

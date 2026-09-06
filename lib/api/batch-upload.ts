@@ -10,6 +10,23 @@ export type BatchUploadFileState<T = File> = {
 
 export type UploadPolicy = { maxBytes: number; allowedExtensions: string[]; mimeTypes: Record<string, string[]> };
 
+const STABLE_UPLOAD_ERROR_CODES = [
+  "FILE_TOO_LARGE",
+  "UNSUPPORTED_FILE_TYPE",
+  "CAMPAIGN_ACCESS_DENIED",
+  "UPLOAD_TIMEOUT",
+  "PERSISTENCE_ERROR",
+] as const;
+
+function stableUploadErrorCode(reason: unknown): string {
+  const candidates = [
+    reason instanceof Error ? reason.message : "",
+    reason && typeof reason === "object" && "detail" in reason ? String(reason.detail) : "",
+    reason && typeof reason === "object" && "errorCode" in reason ? String(reason.errorCode) : "",
+  ];
+  return STABLE_UPLOAD_ERROR_CODES.find((code) => candidates.some((value) => value === code || value.includes(code))) ?? "UPLOAD_FAILED";
+}
+
 export function preflightCampaignReferenceFiles(files: File[], policy: UploadPolicy): BatchUploadFileState<File>[] {
   return files.map((file) => {
     const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
@@ -26,6 +43,14 @@ export function mergeBatchUploadStates<T>(existing: BatchUploadFileState<T>[], u
 
 export function isCampaignStartEnabled<T>(states: BatchUploadFileState<T>[]): boolean {
   return states.length > 0 && states.every((item) => item.status === "success");
+}
+
+export function hasBlockingBatchUploadStates<T>(states: BatchUploadFileState<T>[]): boolean {
+  return states.some((item) => item.status !== "success");
+}
+
+export function canStartAfterUploadRemoval<T, U>(referenceStates: BatchUploadFileState<T>[], knowledgeStates: BatchUploadFileState<U>[]): boolean {
+  return !hasBlockingBatchUploadStates(referenceStates) && !hasBlockingBatchUploadStates(knowledgeStates);
 }
 
 export async function uploadBatchItems<T>(
@@ -52,7 +77,7 @@ export async function uploadBatchItems<T>(
         delete results[index].errorCode;
       } else {
         results[index].status = "failed";
-        results[index].errorCode = result.reason instanceof Error && result.reason.message.startsWith("FILE_") ? result.reason.message : "UPLOAD_FAILED";
+        results[index].errorCode = stableUploadErrorCode(result.reason);
       }
       notify();
     }

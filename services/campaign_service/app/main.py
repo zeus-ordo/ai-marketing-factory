@@ -1890,7 +1890,6 @@ def cache_generated_asset_url(
         "stored_path": stored_path,
         "file_name": safe_file,
         "content_type": content_type,
-        "original_url": value,
         "file_size": len(payload),
     }
 
@@ -2830,12 +2829,14 @@ def generate_outputs_via_workers(
                     task.task_id,
                     company_id,
                 )
-                for image_item in image_resp.get("image_assets", []):
-                    if not isinstance(image_item, dict):
-                        continue
+                image_items = image_resp.get("image_assets", [])
+                if not isinstance(image_items, list) or not image_items or any(
+                    not isinstance(image_item, dict) or not is_openable_asset_url(str(image_item.get("url", "")).strip())
+                    for image_item in image_items
+                ):
+                    raise RuntimeError("worker returned invalid image assets")
+                for image_item in image_items:
                     image_url = str(image_item.get("url", "")).strip()
-                    if not is_openable_asset_url(image_url):
-                        continue
                     asset_id = f"ast_{uuid4().hex[:10]}"
                     metadata = {"size": image_item.get("size"), "task_type": task.task_type, "priority": task.priority, "provider": image_resp.get("provider"), "model_name": image_resp.get("model_name")}
                     try:
@@ -2847,9 +2848,9 @@ def generate_outputs_via_workers(
                             source_url=image_url,
                         )
                         metadata.update(cached_metadata)
-                    except Exception as exc:
-                        logger.warning(f"Failed to cache generated image asset {asset_id}: {exc}")
-                        continue
+                    except Exception:
+                        logger.warning("Failed to cache generated image asset %s", asset_id)
+                        raise RuntimeError("image asset cache failed") from None
                     asset = AssetOutput(
                         company_id=company_id,
                         asset_id=asset_id,
@@ -8251,15 +8252,17 @@ def _save_image_worker_result(result: dict[str, Any], now: datetime) -> dict[str
     if not task_id or not campaign_id:
         raise HTTPException(status_code=400, detail="Missing task_id or campaign_id")
 
+    if not isinstance(image_assets, list) or not image_assets or any(
+        not isinstance(item, dict) or not is_openable_asset_url(str(item.get("url", "")).strip())
+        for item in image_assets
+    ):
+        return {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": "worker returned invalid image assets"}
+
     assets: list[AssetOutput] = []
     validations: list[ValidationResult] = []
 
     for item in image_assets:
-        if not isinstance(item, dict):
-            continue
         image_url = str(item.get("url", "")).strip()
-        if not is_openable_asset_url(image_url):
-            continue
         asset_id = f"ast_{uuid4().hex[:10]}"
         metadata = apply_regeneration_metadata({"size": item.get("size"), "task_type": "image_generation"}, result)
         try:
@@ -8272,8 +8275,8 @@ def _save_image_worker_result(result: dict[str, Any], now: datetime) -> dict[str
             )
             metadata.update(cached_metadata)
         except Exception as exc:
-            logger.warning(f"Failed to cache image worker result {asset_id}: {exc}")
-            continue
+            logger.warning("Failed to cache image worker result %s", asset_id)
+            return {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": "image asset cache failed"}
         asset = AssetOutput(
             company_id=company_id,
             asset_id=asset_id,

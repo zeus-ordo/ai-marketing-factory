@@ -1,6 +1,6 @@
-import { preflightCampaignReferenceFiles, uploadBatchItems, isCampaignStartEnabled, mergeBatchUploadStates, type BatchUploadFileState, type UploadPolicy } from "./batch-upload";
+import { preflightCampaignReferenceFiles, uploadBatchItems, isCampaignStartEnabled, mergeBatchUploadStates, canStartAfterUploadRemoval, type BatchUploadFileState, type UploadPolicy } from "./batch-upload";
 
-export { preflightCampaignReferenceFiles, uploadBatchItems, isCampaignStartEnabled, mergeBatchUploadStates };
+export { preflightCampaignReferenceFiles, uploadBatchItems, isCampaignStartEnabled, mergeBatchUploadStates, canStartAfterUploadRemoval };
 export type { BatchUploadFileState, BatchUploadStatus, UploadPolicy } from "./batch-upload";
 
 export type CampaignStatus = "draft" | "running" | "completed" | "failed";

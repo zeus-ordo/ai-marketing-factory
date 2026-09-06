@@ -62,3 +62,37 @@ Live GCP deployment, Cloud SQL task-specific backup creation, provider smoke, an
 - The 2- and 10-file scenarios now execute the production `uploadBatchItems` initial/retry state machine. Instrumented calls show the failed logical file is retried once and successful files are not re-uploaded; the original successful reference ID is retained.
 - Exact batch coverage: the 1-file case is an initial successful upload only; the 2- and 10-file cases each perform an initial partial failure, assert campaign start is blocked, retry the failed file through `uploadBatchItems`, and assert campaign start is allowed after all success. Both cases assert successful reference IDs are unchanged and retry calls contain only the failed file.
 - Latest TDD evidence: adding the 2/10 initial-blocked and post-retry assertions was red (`2 failed, 5 passed`) due to missing state snapshots; after adding those snapshots, the E2E suite was green (`7 passed, 2 warnings`).
+
+## Final Fix Wave
+
+- Removed provider `original_url` from generated image metadata. Remote image bytes are cached before persistence, and cache failure returns a failed result without persisting metadata. Cache logging excludes exception text that could contain signed query data.
+- Image generation now validates the complete selected asset list before caching and rejects the entire result if any asset is invalid or caching fails. Valid subsets are not persisted.
+- Removing the last failed reference or knowledge upload now invokes the existing start transition through `canStartAfterUploadRemoval`; the already-created campaign cannot remain silently dead after blocker removal.
+- Batch upload error normalization preserves `FILE_TOO_LARGE`, `UNSUPPORTED_FILE_TYPE`, `CAMPAIGN_ACCESS_DENIED`, `UPLOAD_TIMEOUT`, and `PERSISTENCE_ERROR` in per-file client state.
+- Added executable regressions for signed-query secrecy, mixed-asset atomic rejection, final-blocker removal startability, and all stable upload error codes.
+
+### Final Fix TDD Evidence
+
+- Image red: `2 failed, 11 passed`; failures were provider query metadata and mixed valid/invalid subset persistence.
+- Batch red: failed on stable-code preservation before the normalizer was added.
+- Generation-path red: `1 failed, 13 passed`; failure was the worker-generation mixed-asset path before whole-result validation.
+- Final focused green: `python -m pytest services/campaign_service/test_image_generation_contract.py services/campaign_service/test_batch_upload.py services/campaign_service/test_task6_routes.py -q` -> `49 passed, 2 warnings`.
+- Final contract green: `node scripts/test-batch-upload-contract.mjs` -> `22 assertions`, `6 scenarios`.
+
+### Final Verification
+
+- `python -m pytest tests_e2e/test_image_generation_and_batch_upload.py -q` -> `7 passed, 2 warnings`.
+- `python -m pytest services/worker_image -q` -> `27 passed`.
+- `python -m pytest services/campaign_service -q` -> `144 passed, 1 skipped, 2 failed`.
+- `node scripts/test-batch-upload-contract.mjs` -> passed, `22 assertions`, `6 scenarios`.
+- `npm run lint` -> passed, `0 errors`, `11 existing warnings`.
+- `npm run build` -> passed; TypeScript and production build completed. Existing multiple-lockfile workspace-root warning remains.
+- `python -m compileall -q services/campaign_service services/worker_image` -> passed.
+- `git diff --check` -> passed; Git emitted only existing LF-to-CRLF working-copy warnings.
+
+### Final Concerns
+
+- No deployment, live provider smoke, authenticated live upload batch, or production-readiness claim was made.
+- The unrelated dirty `services/campaign_service/app/persistence.py` was preserved and is excluded from the fix commit.
+- Full campaign-service failures remain the previously documented auth-ordering test and unmocked `https://new` regeneration test.
+- Existing lint, pytest deprecation, and Next.js workspace-root warnings remain.

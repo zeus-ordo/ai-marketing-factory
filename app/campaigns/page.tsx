@@ -25,6 +25,7 @@ import {
   updateKnowledgeItem,
   getCampaignUploadPolicy,
   isCampaignStartEnabled,
+  canStartAfterUploadRemoval,
   preflightCampaignReferenceFiles,
   uploadCampaignReferences,
   uploadBatchItems,
@@ -839,14 +840,18 @@ export default function CampaignCenterPage() {
 
   function removeCreateReference(file: File) {
     setCreateReferenceFiles((files) => files.filter((item) => item !== file));
-    setCreateReferenceUploadStates((items) => items.filter((item) => item.file !== file));
+    const remaining = createReferenceUploadStates.filter((item) => item.file !== file);
+    setCreateReferenceUploadStates(remaining);
+    if (createdCampaignForUpload && canStartAfterUploadRemoval(remaining, knowledgeUploadStates)) {
+      void startCampaignAfterUploads(createdCampaignForUpload);
+    }
   }
 
   function removeKnowledgeUpload(item: KnowledgeItemRecord) {
     const remaining = knowledgeUploadStates.filter((entry) => entry.file !== item);
     setKnowledgeUploadStates(remaining);
     setSelectedKnowledgeItemIds((items) => items.filter((id) => id !== item.item_id));
-    if (createdCampaignForUpload && !remaining.some((entry) => entry.status === "failed" || entry.status === "uploading") && !createReferenceUploadStates.some((entry) => entry.status === "failed" || entry.status === "uploading")) {
+    if (createdCampaignForUpload && canStartAfterUploadRemoval(createReferenceUploadStates, remaining)) {
       void startCampaignAfterUploads(createdCampaignForUpload);
     }
   }
