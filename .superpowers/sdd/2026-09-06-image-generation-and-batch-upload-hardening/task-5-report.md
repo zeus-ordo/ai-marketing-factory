@@ -96,3 +96,20 @@ Live GCP deployment, Cloud SQL task-specific backup creation, provider smoke, an
 - The unrelated dirty `services/campaign_service/app/persistence.py` was preserved and is excluded from the fix commit.
 - Full campaign-service failures remain the previously documented auth-ordering test and unmocked `https://new` regeneration test.
 - Existing lint, pytest deprecation, and Next.js workspace-root warnings remain.
+
+## Post-Review GCP Deployment Update
+
+- GitHub branch `feature/complete-campaign-flow` was pushed through commit
+  `ee97186f8df7fb3908348f0b606f8bed7a46cf9d`.
+- Cloud SQL backup created and verified before deployment:
+  `1788683723727`, `SUCCESSFUL`, description
+  `image-batch-hardening-pre-deploy-ee97186`.
+- VM `ai-marketing-factory` fetched and checked out the approved commit;
+  Compose config validation, image builds, and `docker compose -f
+  deploy/docker-compose.gcp.yml up -d` completed successfully.
+- Public route returned HTTP `307`; all listed Compose services reported `Up`.
+- Controlled neutral image smoke returned HTTP `200`, provider `Google AI
+  Studio`, model `gemini-3.1-flash-image`, and `asset_count: 1`.
+- No API keys or environment values were printed.
+- Authenticated live upload batches and restart persistence verification remain
+  pending because no safe production test account was used.
