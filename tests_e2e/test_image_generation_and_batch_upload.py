@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -165,14 +166,17 @@ const initial = await batchModule.uploadBatchItems(items, (file) => upload(file,
 let final = initial;
 if (shouldRetry) {
   const retryItems = initial.filter((item) => item.status === "failed").map((item) => ({ ...item, status: "pending" }));
-  final = await batchModule.uploadBatchItems(retryItems, (file) => upload(file, retryCalls), 3);
+  const retryResult = await batchModule.uploadBatchItems(retryItems, (file) => upload(file, retryCalls), 3);
+  final = initial.map((item) => retryResult.find((retryItem) => retryItem.file.name === item.file.name) ?? item);
 }
+const publicState = (item) => ({ file: { name: item.file.name }, status: item.status, referenceId: item.referenceId });
 console.log(JSON.stringify({
   calls,
   initial_calls: initialCalls,
   retry_calls: retryCalls,
   failed_names: initial.filter((item) => item.status === "failed").map((item) => item.file.name),
-  finalStatuses: final.map((item) => item.status),
+  initial_states: initial.map(publicState),
+  final_states: final.map(publicState),
 }));
 """
     result = subprocess.run(
@@ -278,20 +282,38 @@ def test_partial_batch_failure_blocks_campaign_start(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(campaign_main, "persistence", None)
     client = TestClient(campaign_main.app)
 
-    failed_name = f"brief-{batch_size}.exe"
-    batch = run_production_batch_state_machine(batch_size, retry_failed=False, failed_name=failed_name)
+    failed_name = f"brief-{batch_size - 1}.txt"
+    batch = run_production_batch_state_machine(batch_size, retry_failed=True, failed_name=failed_name)
+    original_validate = campaign_main.validate_reference_upload
+    failed_once = True
+
+    def fail_one_upload(file_name: str, file_type: str, file_size: int) -> None:
+        nonlocal failed_once
+        if file_name == failed_name and failed_once:
+            failed_once = False
+            raise HTTPException(status_code=400, detail="UPLOAD_FAILED")
+        original_validate(file_name, file_type, file_size)
+
+    monkeypatch.setattr(campaign_main, "validate_reference_upload", fail_one_upload)
     successes = [upload(client, campaign.campaign_id, f"brief-{index}.txt") for index in range(batch_size - 1)]
-    failure = upload(client, campaign.campaign_id, f"brief-{batch_size}.exe")
+    successful_reference_ids = [response.json()["reference_id"] for response in successes]
+    failure = upload(client, campaign.campaign_id, failed_name)
 
     assert all(response.status_code == 200 for response in successes)
     assert failure.status_code == 400
-    assert failure.json()["detail"] == "UNSUPPORTED_FILE_TYPE"
-    assert batch["failed_names"] == [f"brief-{batch_size}.exe"]
-    assert batch["calls"] == [f"brief-{index}.txt" for index in range(batch_size - 1)] + [failed_name]
+    assert failure.json()["detail"] == "UPLOAD_FAILED"
+    assert batch["failed_names"] == [failed_name]
+    assert batch["initial_calls"] == [f"brief-{index}.txt" for index in range(batch_size - 1)] + [failed_name]
+    assert batch["retry_calls"] == [failed_name]
+    assert failed_name not in batch["initial_calls"][:-1]
     assert len(client.get(f"/api/v1/campaigns/{campaign.campaign_id}/references", headers=headers()).json()["items"]) == batch_size - 1
-    upload_states = [{"file": {"name": f"brief-{index}.txt"}, "status": "success"} for index in range(batch_size - 1)]
-    upload_states.append({"file": {"name": f"brief-{batch_size}.exe"}, "status": "failed"})
-    assert_actual_campaign_start_gate(upload_states, False)
+    assert_actual_campaign_start_gate(batch["initial_states"], False)
+
+    retried = upload(client, campaign.campaign_id, failed_name)
+    assert retried.status_code == 200
+    references = client.get(f"/api/v1/campaigns/{campaign.campaign_id}/references", headers=headers()).json()["items"]
+    assert {item["reference_id"] for item in references if item["file_name"] != failed_name} == set(successful_reference_ids)
+    assert_actual_campaign_start_gate(batch["final_states"], True)
 
 
 def test_single_file_upload_allows_campaign_start(monkeypatch: pytest.MonkeyPatch):
