@@ -22,16 +22,18 @@ def check_permission(payload: dict, permission: str) -> None:
 async def get_member_roles(member_id: UUID) -> list[RoleResponse]:
     # Get roles from DB via member_roles join
     from app.database import get_connection
-    async with get_connection() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT r.role_id, r.company_id, r.name, r.is_system, r.permissions, r.created_at
-            FROM roles r
-            JOIN member_roles mr ON r.role_id = mr.role_id
-            WHERE mr.member_id = $1
-            """,
-            member_id,
-        )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT r.role_id, r.company_id, r.name, r.is_system, r.permissions, r.created_at
+                FROM roles r
+                JOIN member_roles mr ON r.role_id = mr.role_id
+                WHERE mr.member_id = %s
+                """,
+                (member_id,),
+            )
+            rows = cur.fetchall()
         return [
             RoleResponse(
                 role_id=row["role_id"],
@@ -92,11 +94,14 @@ async def list_members(
     if str(payload.get("company_id")) != str(company_id):
         raise HTTPException(status_code=403, detail="Cannot view members of another company")
 
-    async with __import__("app.database", fromlist=["get_connection"]).get_connection() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM members WHERE company_id = $1 ORDER BY created_at DESC",
-            company_id,
-        )
+    from app.database import get_connection
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM members WHERE company_id = %s ORDER BY created_at DESC",
+                (company_id,),
+            )
+            rows = cur.fetchall()
         items = []
         for row in rows:
             roles = await get_member_roles(row["member_id"])
@@ -125,11 +130,13 @@ async def remove_member(
     if str(payload.get("company_id")) != str(company_id):
         raise HTTPException(status_code=403, detail="Cannot remove members of another company")
 
-    async with __import__("app.database", fromlist=["get_connection"]).get_connection() as conn:
-        await conn.execute(
-            "UPDATE members SET company_id = NULL, is_active = FALSE WHERE member_id = $1",
-            member_id,
-        )
+    from app.database import get_connection
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE members SET company_id = NULL, is_active = FALSE WHERE member_id = %s",
+                (member_id,),
+            )
 
 
 @router.put("/members/{member_id}/roles")
