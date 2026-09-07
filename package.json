@@ -17,6 +17,7 @@
     "providers:check": "powershell -ExecutionPolicy Bypass -File scripts/check-providers.ps1",
     "lint": "eslint",
     "dev:doctor": "node scripts/dev-doctor.mjs",
+    "check:campaign-label": "node scripts/check-campaign-industry-label.mjs",
     "dev:up": "node scripts/dev-up.mjs",
     "dev:bootstrap:win": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap-dev.ps1",
     "check:i18n": "node scripts/check-i18n.mjs",

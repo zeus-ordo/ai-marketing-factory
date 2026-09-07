@@ -1308,8 +1308,8 @@ export default function CampaignCenterPage() {
           <input
             value={campaignForm.industryCategory}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, industryCategory: event.target.value }))}
-            aria-label={t("campaigns.knowledge.category")}
-            placeholder={t("campaigns.knowledge.category")}
+            aria-label={t("campaigns.form.industryCategory")}
+            placeholder={t("campaigns.form.industryCategory")}
             required
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           />
@@ -1518,7 +1518,7 @@ export default function CampaignCenterPage() {
                 value={t(`campaigns.objectives.${pendingCreateDraft.objective === "conversion" ? "conversion" : pendingCreateDraft.objective === "engagement" ? "engagement" : "awareness"}` as "campaigns.objectives.conversion" | "campaigns.objectives.engagement" | "campaigns.objectives.awareness")}
               />
               <ReviewField label={t("campaigns.form.platforms")} value={pendingCreateDraft.platforms.join(", ")} />
-              <ReviewField label={t("campaigns.knowledge.category")} value={pendingCreateDraft.industryCategory} />
+              <ReviewField label={t("campaigns.form.industryCategory")} value={pendingCreateDraft.industryCategory} />
               <ReviewField label={t("campaigns.form.audience")} value={pendingCreateDraft.audiencePersona} />
               <ReviewField label={t("campaigns.form.brandTone")} value={pendingCreateDraft.brandTone.length > 0 ? pendingCreateDraft.brandTone.join(", ") : "—"} />
               <ReviewField label={t("campaigns.form.budget")} value={pendingCreateDraft.budget > 0 ? formatCurrencyUSD(locale, pendingCreateDraft.budget) : "—"} />
