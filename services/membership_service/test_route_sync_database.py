@@ -24,8 +24,9 @@ ROLE_ID = UUID("33333333-3333-3333-3333-333333333333")
 
 
 class FakeCursor:
-    def __init__(self, fetchall_rows=None):
+    def __init__(self, fetchall_rows=None, fetchone_rows=None):
         self.fetchall_rows = list(fetchall_rows or [])
+        self.fetchone_rows = list(fetchone_rows or [])
         self.executed = []
 
     def __enter__(self):
@@ -38,7 +39,7 @@ class FakeCursor:
         self.executed.append((query, params))
 
     def fetchone(self):
-        return None
+        return self.fetchone_rows.pop(0) if self.fetchone_rows else None
 
     def fetchall(self):
         return self.fetchall_rows.pop(0) if self.fetchall_rows else []
@@ -132,6 +133,42 @@ async def test_company_member_listing_with_qa_jwt_payload_uses_sync_cursor(monke
 
     assert response.total == 1
     assert response.items[0].email == "member@example.com"
+
+
+@pytest.mark.asyncio
+async def test_same_company_member_removal_checks_ownership_and_mutates_target(monkeypatch):
+    cursor = FakeCursor(fetchone_rows=[member_row()])
+    monkeypatch.setattr(database, "get_connection", lambda: FakeConnection(cursor))
+
+    await company.remove_member(
+        COMPANY_ID,
+        MEMBER_ID,
+        {"company_id": str(COMPANY_ID), "permissions": ["member:manage"]},
+    )
+
+    assert len(cursor.executed) == 2
+    query, params = cursor.executed[1]
+    assert "UPDATE members" in query
+    assert "member_id = %s" in query
+    assert "company_id = %s" in query
+    assert params == (MEMBER_ID, COMPANY_ID)
+
+
+@pytest.mark.asyncio
+async def test_cross_company_member_removal_is_denied_without_mutation(monkeypatch):
+    other_company_id = UUID("44444444-4444-4444-4444-444444444444")
+    cursor = FakeCursor(fetchone_rows=[member_row(company_id=other_company_id)])
+    monkeypatch.setattr(database, "get_connection", lambda: FakeConnection(cursor))
+
+    with pytest.raises(HTTPException) as error:
+        await company.remove_member(
+            COMPANY_ID,
+            MEMBER_ID,
+            {"company_id": str(COMPANY_ID), "permissions": ["member:manage"]},
+        )
+
+    assert error.value.status_code == 403
+    assert len(cursor.executed) == 1
 
 
 @pytest.mark.asyncio

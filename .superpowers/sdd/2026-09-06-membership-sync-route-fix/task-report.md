@@ -49,3 +49,25 @@ The route audit found no remaining `async with get_connection`, awaited sync DB 
 
 - Async route handlers now perform the existing synchronous DB operations directly, matching the requested existing DB API but potentially blocking the event loop during database I/O.
 - Pytest emits the repository's existing `pytest-asyncio` deprecation warning about an unset fixture loop scope.
+
+## Review Fix: Member Removal Isolation
+
+Root cause: `remove_member` authorized the caller's company but updated any member matching only `member_id`. It did not verify the target's company, allowing a cross-company removal if the endpoint was called with the caller's company ID.
+
+Red command:
+
+```text
+python -m pytest test_route_sync_database.py -q
+```
+
+Exact result before the production change: `2 failed, 5 passed in 0.56s`. The same-company test showed only one unconstrained update, and the cross-company test did not raise 403.
+
+Green command:
+
+```text
+python -m pytest test_route_sync_database.py -q
+```
+
+Exact result after the production change: `7 passed in 0.50s`.
+
+The route now selects the target company first, returns 404 for a missing member and 403 for a different or null company, and updates with both `member_id` and `company_id` predicates. The cross-company test confirms no update is executed.

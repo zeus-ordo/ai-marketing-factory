@@ -133,9 +133,15 @@ async def remove_member(
     from app.database import get_connection
     with get_connection() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT company_id FROM members WHERE member_id = %s", (member_id,))
+            target = cur.fetchone()
+            if not target:
+                raise HTTPException(status_code=404, detail="Member not found")
+            if target["company_id"] is None or str(target["company_id"]) != str(company_id):
+                raise HTTPException(status_code=403, detail="Cannot remove a member of another company")
             cur.execute(
-                "UPDATE members SET company_id = NULL, is_active = FALSE WHERE member_id = %s",
-                (member_id,),
+                "UPDATE members SET company_id = NULL, is_active = FALSE WHERE member_id = %s AND company_id = %s",
+                (member_id, company_id),
             )
 
 
