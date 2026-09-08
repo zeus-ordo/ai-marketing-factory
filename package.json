@@ -19,6 +19,7 @@
     "dev:doctor": "node scripts/dev-doctor.mjs",
     "check:campaign-label": "node scripts/check-campaign-industry-label.mjs",
     "check:multi-upload": "node scripts/check-multi-upload-contract.mjs",
+    "check:file-preview": "node scripts/check-file-preview-contract.mjs",
     "dev:up": "node scripts/dev-up.mjs",
     "dev:bootstrap:win": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap-dev.ps1",
     "check:i18n": "node scripts/check-i18n.mjs",

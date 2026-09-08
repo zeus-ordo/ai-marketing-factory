@@ -16,6 +16,7 @@ import {
 import { useI18n } from "@/lib/i18n/context";
 import { formatDateTime } from "@/lib/i18n/format";
 import { mergeBatchUploadStates, uploadBatchItems, type BatchUploadFileState } from "@/lib/api/batch-upload";
+import { FilePreviewModal } from "@/components/files/file-preview-modal";
 
 type KnowledgeTab = "all" | "ai" | "manual";
 const MAX_BATCH_UPLOAD_FILES = 20;
@@ -25,6 +26,7 @@ export default function ContentStudioPage() {
   const [items, setItems] = useState<KnowledgeItemRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
+  const [filePreview, setFilePreview] = useState<{ source: File | string; fileName: string } | null>(null);
   const [tab, setTab] = useState<KnowledgeTab>("all");
   const [query, setQuery] = useState("");
   const [title, setTitle] = useState("");
@@ -333,6 +335,7 @@ export default function ContentStudioPage() {
             {uploadStates.map((item) => (
               <li key={`${item.file.name}-${item.file.lastModified}`} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
                 <span className="truncate">{item.file.name}</span>
+                <button type="button" onClick={() => setFilePreview({ source: item.file, fileName: item.file.name })} className="font-medium text-blue-600">{t("campaigns.knowledge.preview")}</button>
                 <span>{item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : t("campaigns.form.uploadFailed")}</span>
               </li>
             ))}
@@ -371,6 +374,7 @@ export default function ContentStudioPage() {
                 <td className="px-4 py-3">{formatDateTime(locale, item.created_at)}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
+                    {item.content_url ? <button type="button" onClick={() => setFilePreview({ source: item.content_url!, fileName: String(item.metadata.file_name ?? item.title) })} className="text-xs font-medium text-blue-600 hover:underline">{t("campaigns.knowledge.preview")}</button> : null}
                     {item.content_url ? <a href={item.content_url} target="_blank" rel="noreferrer" className="text-xs font-medium text-blue-600 hover:underline">{t("knowledge.download")}</a> : null}
                     <select
                       value={item.folder_id ?? ""}
@@ -391,6 +395,7 @@ export default function ContentStudioPage() {
           </tbody>
         </table>
       </div>
+      <FilePreviewModal source={filePreview?.source ?? null} fileName={filePreview?.fileName ?? ""} open={Boolean(filePreview)} onClose={() => setFilePreview(null)} />
     </section>
   );
 }

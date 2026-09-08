@@ -43,6 +43,7 @@ import {
   ApiRequestError,
 } from "@/lib/api/campaigns";
 import { ReviewAssetPreviewModal } from "@/components/review/review-asset-preview-modal";
+import { FilePreviewModal } from "@/components/files/file-preview-modal";
 import { ProvenanceList } from "@/components/diagnostics/provenance-list";
 import { canRetryTask, sanitizeDiagnosticText } from "@/lib/campaign-diagnostics";
 import { useI18n } from "@/lib/i18n/context";
@@ -300,6 +301,7 @@ export default function CampaignCenterPage() {
   const [knowledgeCategoryFilter, setKnowledgeCategoryFilter] = useState("");
   const [knowledgeBusy, setKnowledgeBusy] = useState(false);
   const [knowledgeMessage, setKnowledgeMessage] = useState<string | null>(null);
+  const [filePreview, setFilePreview] = useState<{ source: File | string; fileName: string } | null>(null);
   const [knowledgeInputKey, setKnowledgeInputKey] = useState(0);
   const [folders, setFolders] = useState<string[]>([]);
   const [folderRecords, setFolderRecords] = useState<FolderRecord[]>([]);
@@ -1402,6 +1404,7 @@ export default function CampaignCenterPage() {
                     <span className={item.status === "failed" ? "text-red-600" : item.status === "success" ? "text-emerald-600" : "text-slate-500"}>
                       {item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : item.errorCode === "FILE_TOO_LARGE" ? t("campaigns.form.invalidFileSize") : item.errorCode === "UNSUPPORTED_FILE_TYPE" ? t("campaigns.form.invalidFileType") : t("campaigns.form.uploadFailed")}
                     </span>
+                    <button type="button" onClick={() => setFilePreview({ source: item.file, fileName: item.file.name })} className="font-medium text-blue-600">{t("campaigns.knowledge.preview")}</button>
                     {item.status === "failed" && createdCampaignForUpload ? <button type="button" onClick={() => { void handleConfirmCreateCampaign(); }} className="font-medium text-blue-600">{t("campaigns.form.retryUpload")}</button> : null}
                     <button type="button" onClick={() => removeCreateReference(item.file)} disabled={creatingCampaign} className="font-medium text-slate-600">{t("campaigns.form.removeUpload")}</button>
                   </li>
@@ -1414,6 +1417,7 @@ export default function CampaignCenterPage() {
                   <li key={entry.file.item_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
                     <span className="min-w-0 truncate">{entry.file.title}</span>
                     <span>{entry.status === "uploading" ? t("campaigns.form.uploading") : entry.status === "success" ? t("campaigns.form.uploadSuccess") : entry.status === "failed" ? t("campaigns.form.uploadFailed") : t("campaigns.form.uploadPending")}</span>
+                    {entry.file.content_url ? <button type="button" onClick={() => setFilePreview({ source: entry.file.content_url!, fileName: String(entry.file.metadata.file_name ?? entry.file.title) })} className="font-medium text-blue-600">{t("campaigns.knowledge.preview")}</button> : null}
                     {entry.status === "failed" && createdCampaignForUpload ? <button type="button" onClick={() => { void handleConfirmCreateCampaign(); }} className="font-medium text-blue-600">{t("campaigns.form.retryUpload")}</button> : null}
                     {entry.status === "failed" ? <button type="button" onClick={() => removeKnowledgeUpload(entry.file)} disabled={creatingCampaign} className="font-medium text-slate-600">{t("campaigns.form.removeUpload")}</button> : null}
                   </li>
@@ -1706,6 +1710,7 @@ export default function CampaignCenterPage() {
               {knowledgeLibraryUploadStates.map((item) => (
                 <li key={`${item.file.name}-${item.file.lastModified}`} className="flex items-center justify-between gap-2">
                   <span className="truncate">{item.file.name}</span>
+                  <button type="button" onClick={() => setFilePreview({ source: item.file, fileName: item.file.name })} className="font-medium text-blue-600">{t("campaigns.knowledge.download")}</button>
                   <span>{item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : t("campaigns.form.uploadFailed")}</span>
                 </li>
               ))}
@@ -1785,6 +1790,9 @@ export default function CampaignCenterPage() {
                       <td className="px-3 py-2">{formatDateTime(locale, item.created_at)}</td>
                       <td className="px-3 py-2">
                         <div className="flex gap-2">
+                          {item.content_url ? (
+                            <button type="button" onClick={() => setFilePreview({ source: item.content_url!, fileName: String(item.metadata.file_name ?? item.title) })} className="rounded-md border border-blue-600 px-2 py-1 font-medium text-blue-600">{t("campaigns.knowledge.preview")}</button>
+                          ) : null}
                           {item.content_url ? (
                             <a href={item.content_url} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-2 py-1 font-medium text-white">
                               {t("campaigns.knowledge.download")}
@@ -2172,6 +2180,7 @@ export default function CampaignCenterPage() {
         onClose={() => setPreviewAssetId(null)}
         showRegenerate={false}
       />
+      <FilePreviewModal source={filePreview?.source ?? null} fileName={filePreview?.fileName ?? ""} open={Boolean(filePreview)} onClose={() => setFilePreview(null)} />
     </section>
   );
 }
