@@ -18,6 +18,7 @@ import { formatDateTime } from "@/lib/i18n/format";
 import { mergeBatchUploadStates, uploadBatchItems, type BatchUploadFileState } from "@/lib/api/batch-upload";
 
 type KnowledgeTab = "all" | "ai" | "manual";
+const MAX_BATCH_UPLOAD_FILES = 20;
 
 export default function ContentStudioPage() {
   const { t, locale } = useI18n();
@@ -309,7 +310,7 @@ export default function ContentStudioPage() {
               key={fileKey}
               type="file"
               multiple
-              onChange={(event) => { const selected = Array.from(event.target.files ?? []); setFiles(selected); setUploadStates(selected.map((file) => ({ file, status: "pending" as const }))); }}
+              onChange={(event) => { const selected = Array.from(event.target.files ?? []); if (selected.length > MAX_BATCH_UPLOAD_FILES) { setMessage(t("campaigns.form.maxBatchFiles", { count: MAX_BATCH_UPLOAD_FILES })); setFiles([]); setUploadStates([]); return; } setFiles(selected); setUploadStates(selected.map((file) => ({ file, status: "pending" as const }))); }}
               disabled={assetType === "copy"}
               accept={assetType === "image" ? "image/*" : assetType === "video" ? "video/*" : undefined}
               className="sr-only"

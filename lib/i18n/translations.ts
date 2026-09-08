@@ -343,6 +343,7 @@ export const translations = {
         referenceLibraryEmpty: "No library items yet. Upload materials in the Content Library below first.",
         submit: "Create Campaign",
         invalid: "Please complete required fields and use valid non-negative deliverable counts.",
+        maxBatchFiles: "Select no more than {count} files per batch.",
       },
       knowledge: {
         title: "Content Library",
@@ -1241,6 +1242,7 @@ export const translations = {
         referenceLibraryEmpty: "內容資料庫目前沒有資料。可先在下方內容資料庫上傳。",
         submit: "建立活動",
         invalid: "請填寫必要欄位，並確認產出數量為有效非負數。",
+        maxBatchFiles: "每次最多選擇 {count} 個檔案。",
       },
       knowledge: {
         title: "內容資料庫",
@@ -2113,6 +2115,7 @@ export const translations = {
         referenceLibraryEmpty: "参照ライブラリに項目がありません。下の参照ライブラリで先にアップロードしてください。",
         submit: "キャンペーン作成",
         invalid: "必須項目を入力し、成果物数は有効な0以上の数値にしてください。",
+        maxBatchFiles: "1回のアップロードで選択できるファイルは {count} 件までです。",
       },
       knowledge: {
         title: "参照ライブラリ",

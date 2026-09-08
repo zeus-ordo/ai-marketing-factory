@@ -115,6 +115,7 @@ type CreateCampaignDraft = {
 type KnowledgeUploadState = { file: KnowledgeItemRecord; status: "pending" | "uploading" | "success" | "failed"; errorCode?: string };
 
 const IMMEDIATE_UPLOAD_FOLDER = "即時上傳";
+const MAX_BATCH_UPLOAD_FILES = 20;
 
 const fallbackCampaigns: UiCampaign[] = [
   {
@@ -292,7 +293,7 @@ export default function CampaignCenterPage() {
   const [knowledgeLibraryUploadStates, setKnowledgeLibraryUploadStates] = useState<BatchUploadFileState<File>[]>([]);
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
-  const [knowledgeCategory, setKnowledgeCategory] = useState("General");
+  const [knowledgeCategory, setKnowledgeCategory] = useState("");
   const [knowledgeSearchDraft, setKnowledgeSearchDraft] = useState("");
   const [knowledgeCategoryDraft, setKnowledgeCategoryDraft] = useState("");
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
@@ -1112,13 +1113,14 @@ export default function CampaignCenterPage() {
     try {
       const initialStates = knowledgeFiles.map((file) => ({ file, status: "pending" as const }));
       setKnowledgeLibraryUploadStates(initialStates);
-      await uploadBatchItems(initialStates, (file) => uploadKnowledgeItem(file, knowledgeTitle.trim() || file.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER, undefined, undefined).then((item) => ({ referenceId: item.item_id, folderId: item.folder_id })), 3, (updates) => setKnowledgeLibraryUploadStates((current) => mergeBatchUploadStates(current, updates)));
+      const targetFolder = folderRecords.find((folder) => folder.folder_id === knowledgeCategory);
+      await uploadBatchItems(initialStates, (file) => uploadKnowledgeItem(file, knowledgeTitle.trim() || file.name, knowledgeDescription, targetFolder?.name || IMMEDIATE_UPLOAD_FOLDER, undefined, targetFolder?.folder_id).then((item) => ({ referenceId: item.item_id, folderId: item.folder_id })), 3, (updates) => setKnowledgeLibraryUploadStates((current) => mergeBatchUploadStates(current, updates)));
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
       setKnowledgeFiles([]);
       setKnowledgeTitle("");
       setKnowledgeDescription("");
-      setKnowledgeCategory("General");
+      setKnowledgeCategory("");
       setKnowledgeInputKey((prev) => prev + 1);
       setKnowledgeMessage(t("campaigns.knowledge.uploadSuccess"));
     } catch {
@@ -1662,19 +1664,29 @@ export default function CampaignCenterPage() {
             placeholder={t("campaigns.knowledge.description")}
             className="h-9 rounded-xl border border-slate-200 px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-950"
           />
-          <input
+          <select
             value={knowledgeCategory}
             onChange={(event) => setKnowledgeCategory(event.target.value)}
             aria-label={t("campaigns.knowledge.category")}
-            placeholder={t("campaigns.knowledge.category")}
             className="h-9 rounded-xl border border-slate-200 px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-950"
-          />
+          >
+            <option value="">{t("campaigns.knowledge.immediateUploadFolder")}</option>
+            {folderRecords.filter((folder) => folder.scope !== "platform").map((folder) => (
+              <option key={folder.folder_id} value={folder.folder_id}>{folder.name}</option>
+            ))}
+          </select>
           <input
             key={knowledgeInputKey}
             type="file"
             multiple
             onChange={(event) => {
               const files = Array.from(event.target.files ?? []);
+              if (files.length > MAX_BATCH_UPLOAD_FILES) {
+                setKnowledgeMessage(t("campaigns.form.maxBatchFiles", { count: MAX_BATCH_UPLOAD_FILES }));
+                setKnowledgeFiles([]);
+                setKnowledgeLibraryUploadStates([]);
+                return;
+              }
               setKnowledgeFiles(files);
               setKnowledgeLibraryUploadStates(files.map((file) => ({ file, status: "pending" as const })));
             }}

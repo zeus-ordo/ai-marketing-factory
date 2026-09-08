@@ -10,6 +10,12 @@ const inputs = [
   ["content-studio knowledge upload", files.contentStudio, "id={`knowledge-file-input-", "multiple"],
 ];
 
+for (const [name, source] of Object.entries(files)) {
+  if (!source.includes("MAX_BATCH_UPLOAD_FILES = 20")) {
+    throw new Error(`${name} must enforce a 20-file batch limit.`);
+  }
+}
+
 for (const [name, source, marker, required] of inputs) {
   const start = source.indexOf(marker);
   if (start < 0 || !source.slice(start, start + 350).includes(required)) {
@@ -23,6 +29,10 @@ if (!files.campaigns.includes("uploadBatchItems(initialStates")) {
 
 if (!files.contentStudio.includes("uploadBatchItems(initialStates")) {
   throw new Error("Content-studio upload must use bounded batch upload handling.");
+}
+
+if (!files.campaigns.includes("knowledgeCategory")) {
+  throw new Error("Campaign content-library upload must expose a target folder selector.");
 }
 
 console.log("Multi-upload contract passed.");
