@@ -288,7 +288,8 @@ export default function CampaignCenterPage() {
   const [selectedKnowledgeFolderNames, setSelectedKnowledgeFolderNames] = useState<string[]>([]);
   const [expandedKnowledgeFolderNames, setExpandedKnowledgeFolderNames] = useState<string[]>([]);
   const [expandedKnowledgeListFolderNames, setExpandedKnowledgeListFolderNames] = useState<string[]>([]);
-  const [knowledgeFile, setKnowledgeFile] = useState<File | null>(null);
+  const [knowledgeFiles, setKnowledgeFiles] = useState<File[]>([]);
+  const [knowledgeLibraryUploadStates, setKnowledgeLibraryUploadStates] = useState<BatchUploadFileState<File>[]>([]);
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
   const [knowledgeCategory, setKnowledgeCategory] = useState("General");
@@ -1102,17 +1103,19 @@ export default function CampaignCenterPage() {
   }
 
   async function handleUploadKnowledgeItem() {
-    if (!knowledgeFile) {
+    if (knowledgeFiles.length === 0) {
       setKnowledgeMessage(t("campaigns.knowledge.selectFileFirst"));
       return;
     }
 
     setKnowledgeBusy(true);
     try {
-      await uploadKnowledgeItem(knowledgeFile, knowledgeTitle || knowledgeFile.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER, undefined, undefined);
+      const initialStates = knowledgeFiles.map((file) => ({ file, status: "pending" as const }));
+      setKnowledgeLibraryUploadStates(initialStates);
+      await uploadBatchItems(initialStates, (file) => uploadKnowledgeItem(file, knowledgeTitle.trim() || file.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER, undefined, undefined).then((item) => ({ referenceId: item.item_id, folderId: item.folder_id })), 3, (updates) => setKnowledgeLibraryUploadStates((current) => mergeBatchUploadStates(current, updates)));
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
-      setKnowledgeFile(null);
+      setKnowledgeFiles([]);
       setKnowledgeTitle("");
       setKnowledgeDescription("");
       setKnowledgeCategory("General");
@@ -1669,18 +1672,33 @@ export default function CampaignCenterPage() {
           <input
             key={knowledgeInputKey}
             type="file"
-            onChange={(event) => setKnowledgeFile(event.target.files?.[0] ?? null)}
+            multiple
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              setKnowledgeFiles(files);
+              setKnowledgeLibraryUploadStates(files.map((file) => ({ file, status: "pending" as const })));
+            }}
             aria-label={t("campaigns.knowledge.chooseFile")}
             className="h-9 rounded-xl border border-slate-200 px-3 py-1 text-sm file:mr-2 file:rounded-md file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-xs file:font-medium dark:border-slate-700 dark:bg-slate-950 dark:file:bg-slate-800"
           />
           <button
             type="button"
             onClick={handleUploadKnowledgeItem}
-            disabled={knowledgeBusy || !knowledgeFile}
+            disabled={knowledgeBusy || knowledgeFiles.length === 0}
             className="h-9 whitespace-nowrap rounded-xl bg-slate-900 px-3 py-1 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700"
           >
             {t("campaigns.knowledge.upload")}
           </button>
+          {knowledgeLibraryUploadStates.length > 0 ? (
+            <ul className="space-y-1 text-xs md:col-span-2" aria-label={t("campaigns.form.uploadStatus")}>
+              {knowledgeLibraryUploadStates.map((item) => (
+                <li key={`${item.file.name}-${item.file.lastModified}`} className="flex items-center justify-between gap-2">
+                  <span className="truncate">{item.file.name}</span>
+                  <span>{item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : t("campaigns.form.uploadFailed")}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
 
         <div className="grid items-center gap-2 md:grid-cols-[minmax(150px,1fr)_minmax(140px,0.8fr)_auto]">

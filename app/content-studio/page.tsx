@@ -15,6 +15,7 @@ import {
 } from "@/lib/api/campaigns";
 import { useI18n } from "@/lib/i18n/context";
 import { formatDateTime } from "@/lib/i18n/format";
+import { mergeBatchUploadStates, uploadBatchItems, type BatchUploadFileState } from "@/lib/api/batch-upload";
 
 type KnowledgeTab = "all" | "ai" | "manual";
 
@@ -29,7 +30,8 @@ export default function ContentStudioPage() {
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
   const [assetType, setAssetType] = useState<"copy" | "image" | "video">("copy");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploadStates, setUploadStates] = useState<BatchUploadFileState<File>[]>([]);
   const [fileKey, setFileKey] = useState(0);
   const [busy, setBusy] = useState(false);
 
@@ -131,15 +133,22 @@ export default function ContentStudioPage() {
   }
 
   async function handleUpload() {
-    if (!file || assetType === "copy") return;
+    if (files.length === 0 || assetType === "copy") return;
     setBusy(true);
     try {
-      await uploadKnowledgeItem(file, title || file.name, description, folders.find((folder) => folder.folder_id === category)?.name || "General", assetType, category || undefined);
-      setTitle("");
-      setDescription("");
-      setCategory("");
-      setFile(null);
-      setFileKey((prev) => prev + 1);
+      const initialStates = files.map((file) => ({ file, status: "pending" as const }));
+      setUploadStates(initialStates);
+      const results = await uploadBatchItems(initialStates, (file) => uploadKnowledgeItem(file, title.trim() || file.name, description, folders.find((folder) => folder.folder_id === category)?.name || "General", assetType, category || undefined).then((item) => ({ referenceId: item.item_id, folderId: item.folder_id })), 3, (updates) => setUploadStates((current) => mergeBatchUploadStates(current, updates)));
+      if (results.every((item) => item.status === "success")) {
+        setTitle("");
+        setDescription("");
+        setCategory("");
+        setFiles([]);
+        setUploadStates([]);
+        setFileKey((prev) => prev + 1);
+      } else {
+        setMessage(t("knowledge.uploadFailed"));
+      }
       await loadItems();
       void loadFolders();
     } catch {
@@ -274,7 +283,7 @@ export default function ContentStudioPage() {
             onChange={(event) => {
               const next = event.target.value as "copy" | "image" | "video";
               setAssetType(next);
-              if (next === "copy") setFile(null);
+              if (next === "copy") { setFiles([]); setUploadStates([]); }
             }}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
@@ -299,7 +308,8 @@ export default function ContentStudioPage() {
               id={`knowledge-file-input-${fileKey}`}
               key={fileKey}
               type="file"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              multiple
+              onChange={(event) => { const selected = Array.from(event.target.files ?? []); setFiles(selected); setUploadStates(selected.map((file) => ({ file, status: "pending" as const }))); }}
               disabled={assetType === "copy"}
               accept={assetType === "image" ? "image/*" : assetType === "video" ? "video/*" : undefined}
               className="sr-only"
@@ -309,14 +319,24 @@ export default function ContentStudioPage() {
               className="flex h-full min-h-10 w-full cursor-pointer items-center justify-center gap-2 px-3 py-2 text-center leading-none text-slate-600 dark:text-slate-300"
             >
               <span className="font-medium text-slate-800 dark:text-slate-100">{assetType === "copy" ? t("knowledge.copyNoFile") : t("knowledge.chooseFile")}</span>
-              <span className="truncate text-slate-500">{assetType === "copy" ? "" : file ? file.name : t("knowledge.noFileSelected")}</span>
+              <span className="truncate text-slate-500">{assetType === "copy" ? "" : files.length > 0 ? `${files.length} file(s) selected` : t("knowledge.noFileSelected")}</span>
             </label>
           </div>
           <div className="flex min-w-32 flex-col gap-2">
             <button onClick={handleCreateText} disabled={busy || assetType !== "copy" || !title.trim()} className="whitespace-nowrap rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700">{t("knowledge.createText")}</button>
-            <button onClick={handleUpload} disabled={busy || assetType === "copy" || !file} className="whitespace-nowrap rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{t("knowledge.add", { type: t(`assets.type.${assetType}`) })}</button>
+            <button onClick={handleUpload} disabled={busy || assetType === "copy" || files.length === 0} className="whitespace-nowrap rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{t("knowledge.add", { type: t(`assets.type.${assetType}`) })}</button>
           </div>
         </div>
+        {uploadStates.length > 0 ? (
+          <ul className="space-y-1 text-xs" aria-label={t("knowledge.uploadFailed")}>
+            {uploadStates.map((item) => (
+              <li key={`${item.file.name}-${item.file.lastModified}`} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
+                <span className="truncate">{item.file.name}</span>
+                <span>{item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : t("campaigns.form.uploadFailed")}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
 
       {/* Search */}
