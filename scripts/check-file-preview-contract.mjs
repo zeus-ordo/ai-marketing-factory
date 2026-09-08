@@ -8,6 +8,8 @@ for (const type of ["image", "video", "application/pdf"]) {
   if (!preview.includes(type)) throw new Error(`File preview must support ${type}.`);
 }
 if (!preview.includes("download")) throw new Error("File preview must provide a download fallback.");
+if (!preview.includes("response.blob()")) throw new Error("Remote previews must load authenticated content as a blob.");
+if (!preview.includes("Authorization")) throw new Error("Remote previews must send the access token.");
 if (!campaigns.includes("<FilePreviewModal")) throw new Error("Campaign uploads must expose file preview.");
 if (!contentStudio.includes("<FilePreviewModal")) throw new Error("Content library uploads must expose file preview.");
 
