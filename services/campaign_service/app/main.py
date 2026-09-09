@@ -4624,7 +4624,7 @@ def create_campaign(req: Request, brief: CampaignBrief) -> CampaignCreatedRespon
         actor_role = "system"
     else:
         payload = require_jwt(req)
-        check_permission(payload, "campaign.create")
+        check_permission(payload, "campaign:create")
         actor_company_id = payload.company_id or ""
         actor_id = payload.sub
         actor_role = "member"
