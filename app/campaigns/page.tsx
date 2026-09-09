@@ -1323,12 +1323,12 @@ export default function CampaignCenterPage() {
           <select
             value={campaignForm.platforms}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, platforms: event.target.value }))}
-            aria-label={t("campaigns.form.platforms")}
+            aria-label={t("campaigns.form.platformsSelect")}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
-            <option value="社群平台">{t("campaigns.form.platforms")}</option>
-            <option value="廣告素材">{t("campaigns.form.platforms")}</option>
-            <option value="網站版位">{t("campaigns.form.platforms")}</option>
+            <option value="社群平台">{t("campaigns.form.platformSocial")}</option>
+            <option value="廣告素材">{t("campaigns.form.platformAds")}</option>
+            <option value="網站版位">{t("campaigns.form.platformWeb")}</option>
           </select>
           <input
             value={campaignForm.brandTone}
