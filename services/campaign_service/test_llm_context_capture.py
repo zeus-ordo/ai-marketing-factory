@@ -80,6 +80,7 @@ def test_initialize_creates_llm_generation_payload_table_and_indexes(monkeypatch
     assert "idx_llm_generation_payloads_campaign" in sql
     assert "idx_llm_generation_payloads_run" in sql
     assert "idx_llm_generation_payloads_context" in sql
+    assert "payload_id UUID PRIMARY KEY" in sql
 
 
 def test_worker_dispatch_captures_exact_payload_before_call(monkeypatch):
@@ -105,3 +106,25 @@ def test_worker_dispatch_captures_exact_payload_before_call(monkeypatch):
 
     assert result["payload"] == worker_payload
     assert captured[0]["context"] == worker_payload
+
+
+def test_worker_dispatch_continues_when_capture_fails(monkeypatch):
+    from app import main
+
+    class FailingPersistence:
+        def save_llm_generation_payload(self, _payload):
+            raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(main, "persistence", FailingPersistence())
+    monkeypatch.setattr(main, "post_json", lambda _url, _payload: {"ok": True})
+
+    result = main._worker_post_json(
+        "http://worker",
+        {"task_id": "task-1", "campaign_id": "campaign-1", "prompt": "PROMPT-MARKER"},
+        "copywriting",
+        "campaign-1",
+        "task-1",
+        "company-1",
+    )
+
+    assert result == {"ok": True}

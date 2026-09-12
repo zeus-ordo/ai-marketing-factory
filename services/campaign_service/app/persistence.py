@@ -2531,6 +2531,7 @@ class PostgresPersistence:
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS llm_generation_payloads (
+                        payload_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                         campaign_id TEXT NOT NULL,
                         run_id TEXT NOT NULL,
                         task_id TEXT NOT NULL,
@@ -2540,10 +2541,15 @@ class PostgresPersistence:
                         model TEXT NOT NULL,
                         prompt TEXT NOT NULL,
                         context_json JSONB NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        PRIMARY KEY (campaign_id, run_id, task_id, generation_context_id)
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     );
                     """
+                )
+                cur.execute(
+                    "ALTER TABLE llm_generation_payloads ADD COLUMN IF NOT EXISTS payload_id UUID DEFAULT uuid_generate_v4();"
+                )
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_generation_payloads_id ON llm_generation_payloads (payload_id);"
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_llm_generation_payloads_campaign ON llm_generation_payloads (campaign_id, created_at DESC);"

@@ -5258,6 +5258,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
     snapshot = snapshot_for_campaign(campaign, reviewed_run_id)
     snapshot_context = snapshot_prompt_context(snapshot)
     context_payload = {"generation_context_id": snapshot.generation_context_id} if snapshot else {}
+    context_payload["run_id"] = run_id
     if persistence is not None:
         try:
             source_metadata = dict(asset.metadata if isinstance(asset.metadata, dict) else {})
@@ -5346,6 +5347,12 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
         raise HTTPException(status_code=400, detail=f"Unknown asset type: {asset.asset_type}")
 
     try:
+        _capture_worker_payload(
+            revision_payload,
+            {"copy": "copywriting", "image": "image_generation", "video": "video_generation", "ads": "ads_strategy"}[asset.asset_type],
+            asset.campaign_id,
+            asset.task_id,
+        )
         worker_response = post_json(f"{worker_url}/internal/workers/{asset.asset_type}/regenerate", revision_payload)
         # Save the regenerated asset directly
         task_type_map = {
@@ -7568,6 +7575,12 @@ def submit_revision_request(payload: RevisionRequestPayload, req: Request) -> di
         revision_payload["platforms"] = getattr(payload, "platforms", [])
 
     try:
+        _capture_worker_payload(
+            revision_payload,
+            {"copy": "copywriting", "image": "image_generation", "video": "video_generation", "ads": "ads_strategy"}[payload.asset_type],
+            payload.campaign_id,
+            payload.task_id,
+        )
         post_json(f"{worker_url}/internal/workers/{payload.asset_type}/regenerate", revision_payload)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=f"Revision dispatch failed: {exc}") from exc
