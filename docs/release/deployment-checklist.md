@@ -58,7 +58,8 @@
 - [ ] Check out the approved commit on `ai-marketing-factory` before deploying the independent context viewer.
 - [ ] Create `/opt/ai-marketing-factory/.env.context-viewer` from `deploy/context-viewer.env.example`, set `DATABASE_URL`, `VIEWER_USERNAME`, `VIEWER_PASSWORD`, and `SESSION_SECRET`, and restrict it to mode `600`; never print its values.
 - [ ] Deploy the viewer only through `docker compose -f deploy/docker-compose.gcp.yml up -d --build context-viewer`.
-- [ ] Confirm the viewer is available at `http://<vm-address>:3010` through the intended access path; PostgreSQL must not have a published port.
+- [ ] Ensure firewall rule `allow-ai-marketing-context-viewer-3010` allows `tcp:3010` from `0.0.0.0/0` to target tag `ai-marketing-factory`; this direct public-IP design requires viewer login authentication for every user.
+- [ ] Confirm the viewer is available at `http://35.221.249.149:3010`; PostgreSQL must not have a published port.
 - [ ] Run DB migration/init (if applicable)
 - [ ] Apply additive campaign-service migrations before traffic. Never drop or rewrite existing campaign/reference tables.
 - [ ] Confirm `generation_contexts`, `generation_context_items`, and task-attempt columns exist; snapshots are immutable and keyed by campaign run.
@@ -93,7 +94,9 @@
 - [ ] Preserve local folder store until backend persistence/read verification is complete.
 
 ### Independent LLM context viewer validation
+- [ ] Public URL: `http://35.221.249.149:3010`; authentication is mandatory even though the listener is publicly reachable.
 - [ ] `GET http://localhost:3010/api/campaigns` without the session cookie returns `401`.
+- [ ] `GET http://35.221.249.149:3010/` returns `200`.
 - [ ] Login with the configured viewer credentials succeeds and sets an HttpOnly, SameSite cookie.
 - [ ] Authenticated `GET http://localhost:3010/` returns `200`.
 - [ ] Authenticated filtered detail lookup returns the captured prompt for a known `generation_context_id` when one is available.

@@ -34,3 +34,43 @@ Deployed the independent context viewer to GCP VM `ai-marketing-factory` in proj
 - No captured context was available for live prompt/detail verification.
 - The local Next build emits the known non-failing multiple-lockfile workspace-root warning.
 - Remote `npm install` reports dependency advisories from the existing lockfile; the image build still succeeds.
+
+## Review Fix Verification
+
+Audit checks were run against project `market-factory`, VM `ai-marketing-factory`, zone `asia-east1-a`.
+
+- Remote audit UTC timestamp: `2026-09-12T11:58:53Z`
+- Public root audit UTC timestamp: `2026-09-12T11:58:57Z`
+- Firewall rule: `allow-ai-marketing-context-viewer-3010`
+- Firewall description: `Public direct access for authenticated context viewer on TCP 3010; viewer login is mandatory`
+- Firewall scope: ingress `tcp:3010`, source `0.0.0.0/0`, target tag `ai-marketing-factory`, disabled `false`
+- PostgreSQL: no published Compose port
+
+### Compose PS
+
+At the remote audit timestamp, all services were `Up`:
+
+```text
+caddy Up
+campaign-service Up
+context-viewer Up 0.0.0.0:3010->3000/tcp
+decision-service Up
+frontend Up
+membership-service Up
+orchestrator Up
+worker-ads Up
+worker-copy Up
+worker-image Up
+worker-video Up
+```
+
+### HTTP Checks
+
+- Localhost viewer root: `200`
+- Public viewer root `http://35.221.249.149:3010/`: `200`
+- Unauthenticated localhost `/api/campaigns`: `401`
+- Login: `200`
+- Login cookie flags: `HttpOnly`, `SameSite=Strict`
+- Existing frontend: `307`
+
+Credentials and cookie values were not printed.
