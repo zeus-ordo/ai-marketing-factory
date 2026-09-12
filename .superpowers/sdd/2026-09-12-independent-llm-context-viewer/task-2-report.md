@@ -45,3 +45,26 @@ Addressed every Important Task 2 review finding.
 - Deployment was intentionally not performed.
 - The Next build reports a non-failing workspace-root warning because the parent app and standalone viewer each have a lockfile.
 - Historical records may still lack exact prompts when captured before Task 1 deployment.
+
+## Remaining Review Fix Report
+
+### Status
+
+Completed the remaining Task 2 review findings without changing campaign-service fixtures or deploying.
+
+- Detail queries now explicitly select persisted `llm_generation_payloads.context_json`; the UI displays it in a dedicated persisted worker context payload panel in addition to assembled `generation_context_items`.
+- Redaction now normalizes key formatting and catches camelCase, snake_case, kebab-case, and suffix variants such as `credentialId`, `api_key_secret`, `refresh_token`, and `accessToken`, while ordinary keys remain unchanged.
+- Added a route-level protected GET `/api/contexts` 401 test, alongside the existing campaign/detail route protection and login cookie tests.
+- Existing session validation, query parameterization, capped results, and copy/text/JSON download behavior remain intact.
+
+### Tests
+
+- `npm test -- test/query.test.ts`: 6 passing
+- `npx tsc --noEmit`: passing
+- `npm run build`: passing
+
+### Concerns
+
+- Deployment was intentionally not performed.
+- Next build retains the non-failing multiple-lockfile workspace-root warning.
+- Historical records captured before Task 1 deployment may lack exact prompts or persisted worker context payloads.

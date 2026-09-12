@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildContextListQuery, redactSecrets } from "../lib/query.ts";
+import { buildContextDetailQuery, buildContextListQuery, redactSecrets } from "../lib/query.ts";
 import { isValidSession, signSession } from "../lib/session.ts";
 import { GET as campaigns } from "../app/api/campaigns/route.ts";
+import { GET as contexts } from "../app/api/contexts/route.ts";
 import { GET as detail } from "../app/api/contexts/[generationContextId]/route.ts";
 import { POST as login } from "../app/api/login/route.ts";
 
@@ -30,6 +31,10 @@ test("redactSecrets removes case and format variants but preserves ordinary prom
     access_token: "do-not-return",
     client_secret: "do-not-return",
     credential_id: "do-not-return",
+    credentialId: "do-not-return",
+    api_key_secret: "do-not-return",
+    refresh_token: "do-not-return",
+    accessToken: "do-not-return",
     nested: { authorization: "Bearer do-not-return", audience: "customers" },
     items: [{ password: "hidden" }, { text: "ordinary context" }],
   });
@@ -40,6 +45,10 @@ test("redactSecrets removes case and format variants but preserves ordinary prom
   assert.equal(result.access_token, "[REDACTED]");
   assert.equal(result.client_secret, "[REDACTED]");
   assert.equal(result.credential_id, "[REDACTED]");
+  assert.equal(result.credentialId, "[REDACTED]");
+  assert.equal(result.api_key_secret, "[REDACTED]");
+  assert.equal(result.refresh_token, "[REDACTED]");
+  assert.equal(result.accessToken, "[REDACTED]");
   assert.equal(result.nested.authorization, "[REDACTED]");
   assert.equal(result.nested.audience, "customers");
   assert.equal(result.items[0].password, "[REDACTED]");
@@ -57,8 +66,17 @@ test("invalid or absent session cookies are rejected", () => {
 test("protected routes reject requests without a valid session", async () => {
   const response = await campaigns(new Request("http://localhost/api/campaigns"));
   assert.equal(response.status, 401);
+  const listResponse = await contexts(new Request("http://localhost/api/contexts"));
+  assert.equal(listResponse.status, 401);
   const detailResponse = await detail(new Request("http://localhost/api/contexts/context-1"), { params: Promise.resolve({ generationContextId: "context-1" }) });
   assert.equal(detailResponse.status, 401);
+});
+
+test("detail query retains the persisted worker context JSON", () => {
+  const query = buildContextDetailQuery("context-1");
+  assert.match(query.text, /jsonb_build_object/);
+  assert.match(query.text, /jsonb_agg\(jsonb_build_object/);
+  assert.match(query.text, /context_json/);
 });
 
 test("login sets a signed HttpOnly SameSite cookie", async () => {
