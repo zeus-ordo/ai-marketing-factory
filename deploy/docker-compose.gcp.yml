@@ -36,8 +36,8 @@ services:
 
   context-viewer:
     build:
-      context: ..
-      dockerfile: context-viewer/Dockerfile
+      context: ../context-viewer
+      dockerfile: Dockerfile
     env_file:
       - /opt/ai-marketing-factory/.env.context-viewer
     ports:
