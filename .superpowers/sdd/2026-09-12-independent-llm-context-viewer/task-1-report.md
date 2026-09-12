@@ -17,6 +17,22 @@ Concerns:
 - Worker requests without run or generation-context identifiers are persisted with empty identifier values because the existing worker payload contract allows those fields to be absent.
 - Existing FastAPI and pytest-asyncio deprecation warnings remain.
 
+## Integration Test Review Report
+
+Status: implemented
+
+Changes:
+- Added an opt-in PostgreSQL integration test gated by `CAMPAIGN_TEST_DATABASE_URL`; it creates the deployed composite-key schema, preserves a legacy row through migration, and verifies repeated missing-identifier payloads remain distinct.
+- Changed primary-key migration detection to use `pg_catalog` with `current_schema()` and compare the complete ordered primary-key column list before replacing a non-`payload_id` key.
+
+Tests:
+- `python -m pytest services/campaign_service/test_llm_context_capture.py -q`: 5 passed, 1 skipped because `CAMPAIGN_TEST_DATABASE_URL` is not configured.
+- PostgreSQL integration test was not executed because `CAMPAIGN_TEST_DATABASE_URL` is absent.
+
+Concerns:
+- The integration test intentionally drops and recreates `llm_generation_payloads` in the configured test database and restores it by dropping it afterward; use a dedicated test database.
+- Existing FastAPI and pytest-asyncio deprecation warnings remain.
+
 ## Remaining Review Fix Report
 
 Status: implemented

@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("CAMPAIGN_REQUIRE_POSTGRES", "false")
 os.environ.setdefault("CHATBOT_INTERNAL_API_KEY", "test-key")
 sys.path.insert(0, str(Path(__file__).parent))
@@ -84,6 +86,8 @@ def test_initialize_creates_llm_generation_payload_table_and_indexes(monkeypatch
     assert "DROP CONSTRAINT" in sql
     assert "ADD PRIMARY KEY (payload_id)" in sql
     assert "UPDATE llm_generation_payloads SET payload_id = uuid_generate_v4()" in sql
+    assert "n.nspname = current_schema()" in sql
+    assert "array_agg(a.attname ORDER BY k.ordinality)" in sql
 
 
 def test_worker_dispatch_captures_exact_payload_before_call(monkeypatch):
@@ -153,3 +157,68 @@ def test_missing_identifiers_are_not_used_as_conflict_key(monkeypatch):
     inserts = [statement for statement, _params in cursor.statements if "INSERT INTO llm_generation_payloads" in statement]
     assert len(inserts) == 2
     assert all("ON CONFLICT (campaign_id, run_id, task_id, generation_context_id)" not in statement for statement in inserts)
+
+
+@pytest.mark.skipif(not os.getenv("CAMPAIGN_TEST_DATABASE_URL"), reason="CAMPAIGN_TEST_DATABASE_URL is not configured")
+def test_postgres_migration_preserves_legacy_rows_and_repeated_missing_ids():
+    import psycopg
+
+    dsn = os.environ["CAMPAIGN_TEST_DATABASE_URL"]
+    table = "llm_generation_payloads"
+    legacy = ("legacy-campaign", "legacy-run", "legacy-task", "legacy-context", "copywriting", "legacy-provider", "legacy-model", "LEGACY-PROMPT", "{}")
+    payload = {
+        "campaign_id": "new-campaign",
+        "run_id": "",
+        "task_id": "new-task",
+        "generation_context_id": "",
+        "task_type": "copywriting",
+        "provider": "test-provider",
+        "model": "test-model",
+        "prompt": "NEW-PROMPT",
+        "context": {"marker": "new"},
+    }
+
+    try:
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+            cur.execute(
+                f"""
+                CREATE TABLE {table} (
+                    campaign_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    generation_context_id TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    context_json JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (campaign_id, run_id, task_id, generation_context_id)
+                )
+                """
+            )
+            cur.execute(
+                f"INSERT INTO {table} (campaign_id, run_id, task_id, generation_context_id, task_type, provider, model, prompt, context_json) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+                legacy,
+            )
+
+        persistence = PostgresPersistence(dsn)
+        persistence.initialize()
+        persistence.save_llm_generation_payload(payload)
+        persistence.save_llm_generation_payload(payload)
+
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT prompt FROM {table} ORDER BY prompt")
+            prompts = [row[0] for row in cur.fetchall()]
+            cur.execute(
+                "SELECT array_agg(a.attname ORDER BY k.ordinality) FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum WHERE n.nspname = current_schema() AND t.relname = %s AND c.contype = 'p' GROUP BY c.oid",
+                (table,),
+            )
+            primary_keys = cur.fetchall()
+        assert "LEGACY-PROMPT" in prompts
+        assert prompts.count("NEW-PROMPT") == 2
+        assert primary_keys == [(["payload_id"],)]
+    finally:
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")

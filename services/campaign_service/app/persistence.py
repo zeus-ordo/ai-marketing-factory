@@ -2557,29 +2557,32 @@ class PostgresPersistence:
                     DO $$
                     DECLARE
                         existing_pk TEXT;
-                        pk_column TEXT;
+                        pk_columns TEXT[];
                     BEGIN
-                        SELECT constraint_name, column_name
-                        INTO existing_pk, pk_column
-                        FROM information_schema.key_column_usage
-                        WHERE table_name = 'llm_generation_payloads'
-                          AND constraint_name IN (
-                              SELECT constraint_name
-                              FROM information_schema.table_constraints
-                              WHERE table_name = 'llm_generation_payloads'
-                                AND constraint_type = 'PRIMARY KEY'
-                          )
-                        ORDER BY ordinal_position
-                        LIMIT 1;
+                        SELECT c.conname, array_agg(a.attname ORDER BY k.ordinality)
+                        INTO existing_pk, pk_columns
+                        FROM pg_catalog.pg_constraint c
+                        JOIN pg_catalog.pg_class t ON t.oid = c.conrelid
+                        JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+                        JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
+                        JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                        WHERE n.nspname = current_schema()
+                          AND t.relname = 'llm_generation_payloads'
+                          AND c.contype = 'p'
+                        GROUP BY c.oid, c.conname;
 
-                        IF existing_pk IS NOT NULL AND pk_column <> 'payload_id' THEN
+                        IF existing_pk IS NOT NULL AND pk_columns IS DISTINCT FROM ARRAY['payload_id']::TEXT[] THEN
                             EXECUTE format('ALTER TABLE llm_generation_payloads DROP CONSTRAINT %I', existing_pk);
                         END IF;
 
                         IF NOT EXISTS (
-                            SELECT 1 FROM information_schema.table_constraints
-                            WHERE table_name = 'llm_generation_payloads'
-                              AND constraint_type = 'PRIMARY KEY'
+                            SELECT 1
+                            FROM pg_catalog.pg_constraint c
+                            JOIN pg_catalog.pg_class t ON t.oid = c.conrelid
+                            JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+                            WHERE n.nspname = current_schema()
+                              AND t.relname = 'llm_generation_payloads'
+                              AND c.contype = 'p'
                         ) THEN
                             ALTER TABLE llm_generation_payloads ADD PRIMARY KEY (payload_id);
                         END IF;
