@@ -55,6 +55,10 @@
 
 ### Production rollout
 - [ ] Deploy image set (immutable tags)
+- [ ] Check out the approved commit on `ai-marketing-factory` before deploying the independent context viewer.
+- [ ] Create `/opt/ai-marketing-factory/.env.context-viewer` from `deploy/context-viewer.env.example`, set `DATABASE_URL`, `VIEWER_USERNAME`, `VIEWER_PASSWORD`, and `SESSION_SECRET`, and restrict it to mode `600`; never print its values.
+- [ ] Deploy the viewer only through `docker compose -f deploy/docker-compose.gcp.yml up -d --build context-viewer`.
+- [ ] Confirm the viewer is available at `http://<vm-address>:3010` through the intended access path; PostgreSQL must not have a published port.
 - [ ] Run DB migration/init (if applicable)
 - [ ] Apply additive campaign-service migrations before traffic. Never drop or rewrite existing campaign/reference tables.
 - [ ] Confirm `generation_contexts`, `generation_context_items`, and task-attempt columns exist; snapshots are immutable and keyed by campaign run.
@@ -88,6 +92,14 @@
 - [ ] Restart the service and verify knowledge/reference `folder_id` associations remain readable.
 - [ ] Preserve local folder store until backend persistence/read verification is complete.
 
+### Independent LLM context viewer validation
+- [ ] `GET http://localhost:3010/api/campaigns` without the session cookie returns `401`.
+- [ ] Login with the configured viewer credentials succeeds and sets an HttpOnly, SameSite cookie.
+- [ ] Authenticated `GET http://localhost:3010/` returns `200`.
+- [ ] Authenticated filtered detail lookup returns the captured prompt for a known `generation_context_id` when one is available.
+- [ ] Existing Compose services remain `Up` and the original frontend still responds normally.
+- [ ] Do not treat pre-capture rows as evidence of an exact prompt; historical rows may lack captured worker prompts and payloads.
+
 ---
 
 ## 4) SLO/SLA Watch Window (First 2 hours)
@@ -109,10 +121,11 @@ Trigger rollback if any of:
 
 Rollback actions:
 1. [ ] Scale down/stop new release services
-2. [ ] Restore previous known-good image tags
-3. [ ] Re-attach previous env secrets/config
-4. [ ] Validate `/health` and core APIs
-5. [ ] Announce rollback completion
+2. [ ] If the viewer is the only failing component, run `docker compose -f deploy/docker-compose.gcp.yml stop context-viewer` and leave the original services running
+3. [ ] Restore previous known-good image tags
+4. [ ] Re-attach previous env secrets/config
+5. [ ] Validate `/health` and core APIs
+6. [ ] Announce rollback completion
 
 Data actions:
 - [ ] If schema changed, follow backward migration/restore snapshot playbook

@@ -34,6 +34,16 @@ services:
       - MEMBERSHIP_API_BASE=http://membership-service:8095
     restart: unless-stopped
 
+  context-viewer:
+    build:
+      context: ..
+      dockerfile: context-viewer/Dockerfile
+    env_file:
+      - /opt/ai-marketing-factory/.env.context-viewer
+    ports:
+      - "3010:3000"
+    restart: unless-stopped
+
   campaign-service:
     build: ../services/campaign_service
     env_file:
