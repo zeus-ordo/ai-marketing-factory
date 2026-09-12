@@ -1164,7 +1164,33 @@ def _extract_worker_error_detail(message: str) -> str:
     return text
 
 
+def _capture_worker_payload(
+    payload: dict[str, Any],
+    task_type: str,
+    campaign_id: str,
+    task_id: str,
+) -> None:
+    if persistence is None:
+        return
+    try:
+        persistence.save_llm_generation_payload({
+            "campaign_id": payload.get("campaign_id") or campaign_id,
+            "run_id": payload.get("run_id") or "",
+            "task_id": payload.get("task_id") or task_id,
+            "generation_context_id": payload.get("generation_context_id") or "",
+            "task_type": task_type,
+            "provider": payload.get("provider") or "unknown",
+            "model": payload.get("model") or "unknown",
+            "prompt": payload.get("prompt") or payload.get("context") or "",
+            "context": dict(payload),
+        })
+    except Exception:
+        # Capture is diagnostic and must never change generation behavior.
+        logger.warning("Unable to persist worker generation payload")
+
+
 def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaign_id: str, task_id: str, company_id: str) -> dict[str, Any]:
+    _capture_worker_payload(payload, task_type, campaign_id, task_id)
     last_exc: RuntimeError | None = None
     for attempt in range(1, WORKER_RETRY_MAX_ATTEMPTS + 1):
         try:

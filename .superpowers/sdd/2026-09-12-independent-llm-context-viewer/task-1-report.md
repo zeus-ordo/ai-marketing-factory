@@ -1,0 +1,18 @@
+# Task 1 Report
+
+Status: implemented
+
+Changes:
+- Added immutable `llm_generation_payloads` persistence with composite identifiers, timestamp, and lookup indexes.
+- Added `save_llm_generation_payload` with parameterized JSONB insertion and `ON CONFLICT DO NOTHING`.
+- Captured worker payloads before dispatch; capture errors are logged generically and do not block generation.
+- Added persistence and dispatch capture regression tests.
+
+Tests:
+- `python -m pytest services/campaign_service/test_llm_context_capture.py -q`: 3 passed.
+- `python -m pytest services/campaign_service/test_llm_context_capture.py services/campaign_service/test_context_assembler.py -q`: 13 passed, 1 pre-existing failure in `test_review_regeneration_uses_snapshot_for_image_and_ads` because its mocked HTTPS image URL is not cacheable in this environment.
+- `python -m py_compile services/campaign_service/app/persistence.py services/campaign_service/app/main.py services/campaign_service/test_llm_context_capture.py`: passed.
+
+Concerns:
+- Worker requests without run or generation-context identifiers are persisted with empty identifier values because the existing worker payload contract allows those fields to be absent.
+- Existing FastAPI and pytest-asyncio deprecation warnings remain.

@@ -2530,6 +2530,32 @@ class PostgresPersistence:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS llm_generation_payloads (
+                        campaign_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        task_id TEXT NOT NULL,
+                        generation_context_id TEXT NOT NULL,
+                        task_type TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        context_json JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        PRIMARY KEY (campaign_id, run_id, task_id, generation_context_id)
+                    );
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_generation_payloads_campaign ON llm_generation_payloads (campaign_id, created_at DESC);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_generation_payloads_run ON llm_generation_payloads (run_id, created_at DESC);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_generation_payloads_context ON llm_generation_payloads (generation_context_id, created_at DESC);"
+                )
+                cur.execute(
+                    """
                     INSERT INTO llm_model_pricing (model, provider, prompt_price_per_m, completion_price_per_m)
                     VALUES ('deepseek-v3', 'deepseek', 0.27, 1.10)
                     ON CONFLICT (model) DO NOTHING;
@@ -2557,6 +2583,32 @@ class PostgresPersistence:
                     """
                 )
                 conn.commit()
+
+    def save_llm_generation_payload(self, payload: dict[str, Any]) -> None:
+        """Persist one exact worker request without allowing later mutation."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO llm_generation_payloads
+                        (campaign_id, run_id, task_id, generation_context_id, task_type,
+                         provider, model, prompt, context_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT DO NOTHING;
+                    """,
+                    (
+                        str(payload["campaign_id"]),
+                        str(payload["run_id"]),
+                        str(payload["task_id"]),
+                        str(payload["generation_context_id"]),
+                        str(payload["task_type"]),
+                        str(payload.get("provider") or "unknown"),
+                        str(payload.get("model") or "unknown"),
+                        str(payload["prompt"]),
+                        json.dumps(_jsonable(payload.get("context", {})), ensure_ascii=False),
+                    ),
+                )
+            conn.commit()
 
     def flush_llm_usage_batch(self, rows: list[dict[str, Any]]) -> None:
         """Bulk insert from Redis buffer."""
