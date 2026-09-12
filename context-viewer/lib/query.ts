@@ -1,7 +1,7 @@
 export type Query = { text: string; values: unknown[] };
 export type Filters = { campaignId?: string; generationContextId?: string; runId?: string; limit?: number; offset?: number };
 
-const SECRET_KEY = /^(api[_-]?key|token|password|secret|authorization|credential)$/i;
+const SECRET_KEY = /^(api[_-]?key|access[_-]?token|client[_-]?secret|credential(?:[_-].*)?|authorization|password|secret|token)$/i;
 
 export function redactSecrets(value: unknown): any {
   if (Array.isArray(value)) return value.map(redactSecrets);

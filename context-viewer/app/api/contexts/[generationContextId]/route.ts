@@ -1,7 +1,7 @@
-import { NextResponse } from "next/server";
-import { getPool } from "../../../../lib/db";
-import { buildContextDetailQuery, redactSecrets } from "../../../../lib/query";
-import { hasValidSession } from "../../../../lib/session";
+import { NextResponse } from "next/server.js";
+import { getPool } from "../../../../lib/db.ts";
+import { buildContextDetailQuery, redactSecrets } from "../../../../lib/query.ts";
+import { hasValidSession } from "../../../../lib/session.ts";
 
 export async function GET(request: Request, { params }: { params: Promise<{ generationContextId: string }> }) {
   if (!hasValidSession(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

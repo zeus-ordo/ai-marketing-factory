@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
-import { NextResponse } from "next/server";
-import { SESSION_COOKIE, signSession } from "../../../lib/session";
+import { NextResponse } from "next/server.js";
+import { SESSION_COOKIE, signSession } from "../../../lib/session.ts";
 
 function equal(left: string | undefined, right: string | undefined): boolean {
   if (!left || !right) return false;
