@@ -545,6 +545,21 @@ def capture_worker_payload(
         raise RuntimeError("LLM payload capture request failed") from exc
 
 
+def capture_worker_payload_best_effort(
+    payload: dict[str, Any], task_type: str, campaign_id: str, task_id: str, company_id: str
+) -> None:
+    try:
+        capture_worker_payload(payload, task_type, campaign_id, task_id, company_id)
+    except Exception as exc:
+        logger.warning(
+            "LLM payload capture unavailable; continuing worker dispatch for campaign=%s task=%s type=%s: %s",
+            campaign_id,
+            task_id,
+            task_type,
+            sanitize_error_detail(str(exc)),
+        )
+
+
 def get_json(url: str) -> dict[str, Any]:
     req = request.Request(url, method="GET")
     try:
@@ -709,7 +724,7 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             "variants": 3,
         }
         payload.update(worker_payload)
-        capture_worker_payload(payload, task.task_type, campaign_id, task.task_id, company_id)
+        capture_worker_payload_best_effort(payload, task.task_type, campaign_id, task.task_id, company_id)
         result = post_json(
             f"{WORKER_COPY_URL}/internal/workers/copy/run",
             payload,
@@ -728,7 +743,7 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             "style_profile": {"mood": "minimal luxury"},
         }
         payload.update(worker_payload)
-        capture_worker_payload(payload, task.task_type, campaign_id, task.task_id, company_id)
+        capture_worker_payload_best_effort(payload, task.task_type, campaign_id, task.task_id, company_id)
         result = post_json(
             f"{WORKER_IMAGE_URL}/internal/workers/image/run",
             payload,
@@ -747,7 +762,7 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             "aspect_ratio": "9:16",
         }
         payload.update(worker_payload)
-        capture_worker_payload(payload, task.task_type, campaign_id, task.task_id, company_id)
+        capture_worker_payload_best_effort(payload, task.task_type, campaign_id, task.task_id, company_id)
         result = post_json(
             f"{WORKER_VIDEO_URL}/internal/workers/video/run",
             payload,
@@ -766,7 +781,7 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             "platforms": ["facebook", "instagram", "google_display"],
         }
         payload.update(worker_payload)
-        capture_worker_payload(payload, task.task_type, campaign_id, task.task_id, company_id)
+        capture_worker_payload_best_effort(payload, task.task_type, campaign_id, task.task_id, company_id)
         result = post_json(
             f"{WORKER_ADS_URL}/internal/workers/ads/run",
             payload,

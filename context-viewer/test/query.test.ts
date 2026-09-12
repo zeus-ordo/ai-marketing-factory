@@ -72,6 +72,18 @@ test("redactSecrets removes secret-bearing strings in payloads and URLs", () => 
   assert.equal(result.ordinary_url, "https://example.test/products?campaign=summer");
 });
 
+test("redactSecrets preserves token count metadata", () => {
+  const result = redactSecrets({
+    internal_token_count: 12,
+    external_token_count: 34,
+    token: "secret-token",
+  });
+
+  assert.equal(result.internal_token_count, 12);
+  assert.equal(result.external_token_count, 34);
+  assert.equal(result.token, "[REDACTED]");
+});
+
 test("invalid or absent session cookies are rejected", () => {
   assert.equal(isValidSession(undefined, "test-secret"), false);
   assert.equal(isValidSession("not-a-session", "test-secret"), false);

@@ -3,6 +3,7 @@ export type Filters = { campaignId?: string; generationContextId?: string; runId
 
 function isSecretKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  if (normalized.endsWith("tokencount")) return false;
   return ["apikey", "token", "password", "secret", "authorization", "credential"].some(marker => normalized.includes(marker));
 }
 
