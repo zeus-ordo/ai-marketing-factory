@@ -236,6 +236,7 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
         def save_asset_outputs(self, assets): pass
     monkeypatch.setattr(main, "persistence", Persistence())
     monkeypatch.setattr(main.store, "get_campaign", lambda campaign_id: campaign())
+    monkeypatch.setattr(main, "cache_generated_asset_url", lambda **kwargs: (kwargs["source_url"], {"stored_path": "generated/test.png"}))
     saved_assets = []
     monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: saved_assets.extend(assets))
     monkeypatch.setattr(main, "finalize_campaign_workflow", lambda *args, **kwargs: None)

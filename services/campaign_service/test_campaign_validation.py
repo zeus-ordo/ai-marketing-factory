@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from app.main import create_campaign, store
+import app.main as main
 from app.schemas import CampaignBrief, Deliverables, TargetAudience
 from app.validation import validate_campaign_brief
 
@@ -70,12 +70,12 @@ def test_preserves_existing_brief_aliases():
 
 
 def test_invalid_campaign_is_not_persisted(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.main.CHATBOT_INTERNAL_API_KEY", "test-key")
-    before = dict(store.campaigns)
+    monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
+    before = dict(main.store.campaigns)
     request = Request({"type": "http", "headers": [(b"x-internal-api-key", b"test-key")]})
 
     with pytest.raises(HTTPException) as exc:
-        create_campaign(request, valid_brief(project_description=""))
+        main.create_campaign(request, valid_brief(project_description=""))
 
     assert exc.value.status_code == 422
-    assert store.campaigns == before
+    assert main.store.campaigns == before
