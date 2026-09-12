@@ -5,7 +5,6 @@ import { ReviewActionModal } from "@/components/review/review-action-modal";
 import { ReviewAssetPreviewModal } from "@/components/review/review-asset-preview-modal";
 import { ReviewAuditLog } from "@/components/review/review-audit-log";
 import { ReviewQueueTable } from "@/components/review/review-queue-table";
-import { ProvenanceList } from "@/components/diagnostics/provenance-list";
 import { canRetryTask, sanitizeDiagnosticText } from "@/lib/campaign-diagnostics";
 import {
   approveReviewItem,
@@ -247,7 +246,6 @@ export default function ReviewPage() {
       {Array.from(new Map(items.filter((item) => item.source_summary).map((item) => [`${item.campaign_id}:${item.run_id || item.generation_context_id}`, item] as const)).values()).map((diagnosticItem) => {
         const summary = diagnosticItem.source_summary;
         if (!summary) return null;
-        const source_provenance = diagnosticItem.source_provenance?.length ? diagnosticItem.source_provenance : summary.provenance;
         const groupTasks = campaignTaskMap[diagnosticItem.campaign_id]?.filter((task) =>
           (task.status === "failed" || task.status === "blocked") &&
           (!diagnosticItem.run_id || task.run_id === diagnosticItem.run_id) &&
@@ -265,7 +263,6 @@ export default function ReviewPage() {
               <div><p className="text-slate-500">{t("review.diagnostics.ratios")}</p><p className="font-medium">{(summary.internal_ratio * 100).toFixed(1)}% / {(summary.external_ratio * 100).toFixed(1)}%</p></div>
               <div><p className="text-slate-500">{t("review.diagnostics.selectedReferences")}</p><p className="break-words font-medium">{summary.selected_reference_ids.join(", ") || t("common.notAvailable")}</p></div>
             </div>
-            <ProvenanceList sources={source_provenance} />
             {groupTasks.map((task) => (
               <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{diagnosticTaskTypeLabel(task.task_type, t)}: {task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || diagnosticTaskStatusLabel(task.status, t))} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
             ))}
@@ -316,7 +313,6 @@ export default function ReviewPage() {
       <ReviewQueueTable
         items={filteredItems}
         campaignNameMap={campaignNameMap}
-        campaignTaskMap={campaignTaskMap}
         loading={loading}
         busy={busy}
         selectedIds={selectedIds}

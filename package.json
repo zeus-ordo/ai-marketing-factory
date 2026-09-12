@@ -19,6 +19,7 @@
     "dev:doctor": "node scripts/dev-doctor.mjs",
     "check:campaign-label": "node scripts/check-campaign-industry-label.mjs",
     "check:platform-select": "node scripts/check-platform-select-contract.mjs",
+    "check:review-compact": "node scripts/check-review-compact-contract.mjs",
     "check:multi-upload": "node scripts/check-multi-upload-contract.mjs",
     "check:file-preview": "node scripts/check-file-preview-contract.mjs",
     "dev:up": "node scripts/dev-up.mjs",

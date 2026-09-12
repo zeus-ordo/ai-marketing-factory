@@ -1,14 +1,11 @@
 "use client";
 
-import type { CampaignTask, ReviewItem } from "@/lib/api/campaigns";
+import type { ReviewItem } from "@/lib/api/campaigns";
 import { useI18n } from "@/lib/i18n/context";
-import { ProvenanceList } from "@/components/diagnostics/provenance-list";
-import { sanitizeDiagnosticText } from "@/lib/campaign-diagnostics";
 
 type Props = {
   items: ReviewItem[];
   campaignNameMap: Record<string, string>;
-  campaignTaskMap: Record<string, CampaignTask[]>;
   loading: boolean;
   busy: boolean;
   selectedIds: string[];
@@ -22,7 +19,6 @@ type Props = {
 export function ReviewQueueTable({
   items,
   campaignNameMap,
-  campaignTaskMap,
   loading,
   busy,
   selectedIds,
@@ -68,7 +64,6 @@ export function ReviewQueueTable({
             <th className="px-4 py-3 whitespace-nowrap">{t("review.table.assetName")}</th>
             <th className="px-4 py-3">{t("review.table.asset")}</th>
             <th className="px-4 py-3">{t("review.table.campaign")}</th>
-            <th className="min-w-[180px] px-4 py-3">{t("review.table.generation")}</th>
             <th className="min-w-[96px] px-4 py-3 whitespace-nowrap">{t("review.table.type")}</th>
             <th className="min-w-[110px] px-4 py-3 whitespace-nowrap">{t("review.table.status")}</th>
             <th className="px-4 py-3 whitespace-nowrap">{t("review.table.rejectReason")}</th>
@@ -92,12 +87,6 @@ export function ReviewQueueTable({
               <td className="px-4 py-3">
                 <div className="font-medium">{campaignNameMap[item.campaign_id] || item.campaign_id}</div>
                 <div className="font-mono text-[11px] text-slate-400">{item.campaign_id}</div>
-              </td>
-              <td className="px-4 py-3 text-xs">
-                <code className="break-all text-slate-500">{item.generation_context_id || t("common.notAvailable")}</code>
-                {item.source_summary ? <div className="mt-1 text-slate-500">{item.source_summary.internal_source_count}/{item.source_summary.external_source_count} {t("review.diagnostics.sources")} · {(item.source_summary.internal_ratio * 100).toFixed(1)}%/{(item.source_summary.external_ratio * 100).toFixed(1)}%</div> : null}
-                {item.source_provenance?.length ? <div className="mt-1"><ProvenanceList sources={item.source_provenance} /></div> : null}
-                {campaignTaskMap[item.campaign_id]?.filter((task) => task.task_type === ({ copy: "copywriting", image: "image_generation", video: "video_generation", ads: "ads_strategy" } as Record<string, string>)[item.asset_type || ""] && (!item.generation_context_id || task.generation_context_id === item.generation_context_id)).map((task) => <div key={task.task_id} className="mt-1 text-slate-500">{task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || diagnosticTaskStatusLabel(task.status, t))}</div>) }
               </td>
               <td className="min-w-[96px] px-4 py-3 whitespace-nowrap">
                 {assetTypeLabel(item, t)}
@@ -150,18 +139,6 @@ function statusLabel(status: ReviewItem["status"], t: ReturnType<typeof useI18n>
   if (status === "approved") return t("review.status.passed");
   if (status === "rejected") return t("review.status.rejected");
   return t("review.status.inReview");
-}
-
-function diagnosticTaskStatusLabel(status: string, t: ReturnType<typeof useI18n>["t"]) {
-  if (status === "pending") return t("status.pending");
-  if (status === "planned") return t("status.planned");
-  if (status === "running") return t("status.running");
-  if (status === "validating") return t("status.validating");
-  if (status === "passed") return t("status.passed");
-  if (status === "retrying") return t("status.retrying");
-  if (status === "failed") return t("status.failed");
-  if (status === "blocked") return t("status.blocked");
-  return t("common.notAvailable");
 }
 
 function assetName(item: ReviewItem, campaignNameMap: Record<string, string>) {
