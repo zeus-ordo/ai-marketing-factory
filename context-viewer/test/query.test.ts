@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { buildContextDetailQuery, buildContextListQuery, redactSecrets } from "../lib/query.ts";
@@ -77,6 +78,16 @@ test("detail query retains the persisted worker context JSON", () => {
   assert.match(query.text, /jsonb_build_object/);
   assert.match(query.text, /jsonb_agg\(jsonb_build_object/);
   assert.match(query.text, /context_json/);
+});
+
+test("detail query returns generation context metadata and the UI renders a metadata panel", async () => {
+  const query = buildContextDetailQuery("context-1");
+  for (const field of ["campaign_id", "run_id", "generation_context_id", "internal_token_count", "external_token_count", "internal_ratio", "external_ratio", "external_source_urls_json", "external_search_status", "external_search_error", "task_id", "selected_reference_ids_json", "matched_folder_names_json"]) {
+    assert.match(query.text, new RegExp(`gc\\.${field}`));
+  }
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /Generation context metadata/);
+  assert.match(page, /external_source_urls_json/);
 });
 
 test("login sets a signed HttpOnly SameSite cookie", async () => {

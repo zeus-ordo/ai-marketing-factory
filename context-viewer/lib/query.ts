@@ -38,7 +38,7 @@ export function buildCampaignQuery(search = ""): Query {
 }
 
 export function buildContextDetailQuery(id: string): Query {
-  return { text: `SELECT gc.generation_context_id, gc.campaign_id, gc.run_id, gc.created_at, gc.internal_token_count, gc.external_token_count,
+  return { text: `SELECT gc.generation_context_id, gc.campaign_id, gc.run_id, gc.created_at, gc.internal_token_count, gc.external_token_count, gc.internal_ratio, gc.external_ratio, gc.external_source_urls_json, gc.external_search_status, gc.external_search_error, gc.task_id, gc.selected_reference_ids_json, gc.matched_folder_names_json,
       COALESCE((SELECT jsonb_agg(gci ORDER BY gci.position) FROM generation_context_items gci WHERE gci.generation_context_id = gc.generation_context_id), '[]'::jsonb) AS items,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('payload_id', lp.payload_id, 'task_id', lp.task_id, 'task_type', lp.task_type, 'provider', lp.provider, 'model', lp.model, 'prompt', lp.prompt, 'context_json', lp.context_json, 'created_at', lp.created_at) ORDER BY lp.created_at) FROM llm_generation_payloads lp WHERE lp.campaign_id = gc.campaign_id AND lp.run_id = gc.run_id AND lp.generation_context_id = gc.generation_context_id), '[]'::jsonb) AS payloads
       FROM generation_contexts gc WHERE gc.generation_context_id = $1 LIMIT 1`, values: [id] };

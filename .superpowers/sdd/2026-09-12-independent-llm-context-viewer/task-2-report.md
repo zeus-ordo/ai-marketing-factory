@@ -68,3 +68,25 @@ Completed the remaining Task 2 review findings without changing campaign-service
 - Deployment was intentionally not performed.
 - Next build retains the non-failing multiple-lockfile workspace-root warning.
 - Historical records captured before Task 1 deployment may lack exact prompts or persisted worker context payloads.
+
+## Metadata Review Fix Report
+
+### Status
+
+Added the remaining generation-context metadata to the detail query and UI without deployment or campaign-service changes.
+
+- Detail responses now return campaign, run, and generation context IDs plus token counts/ratios, external source URLs, search status/error, task ID, selected reference IDs, and matched folder names.
+- Added a dedicated redacted metadata panel with copy and text/JSON download actions; prompt, persisted worker `context_json`, and assembled context-item panels remain separate.
+- Added tests asserting every metadata field is selected and the metadata panel renders the metadata contract.
+
+### Tests
+
+- `npm test -- test/query.test.ts`: 7 passing
+- `npx tsc --noEmit`: passing
+- `npm run build`: passing
+
+### Concerns
+
+- Deployment was intentionally not performed.
+- Next build retains the non-failing multiple-lockfile workspace-root warning.
+- Historical records may lack metadata or exact worker payloads when created before the capture deployment.
