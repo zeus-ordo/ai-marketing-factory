@@ -81,6 +81,9 @@ def test_initialize_creates_llm_generation_payload_table_and_indexes(monkeypatch
     assert "idx_llm_generation_payloads_run" in sql
     assert "idx_llm_generation_payloads_context" in sql
     assert "payload_id UUID PRIMARY KEY" in sql
+    assert "DROP CONSTRAINT" in sql
+    assert "ADD PRIMARY KEY (payload_id)" in sql
+    assert "UPDATE llm_generation_payloads SET payload_id = uuid_generate_v4()" in sql
 
 
 def test_worker_dispatch_captures_exact_payload_before_call(monkeypatch):
@@ -128,3 +131,25 @@ def test_worker_dispatch_continues_when_capture_fails(monkeypatch):
     )
 
     assert result == {"ok": True}
+
+
+def test_missing_identifiers_are_not_used_as_conflict_key(monkeypatch):
+    cursor = RecordingCursor()
+    monkeypatch.setattr(PostgresPersistence, "_connect", lambda self: RecordingConnection(cursor))
+    persistence = PostgresPersistence.__new__(PostgresPersistence)
+    payload = {
+        "campaign_id": "campaign-1",
+        "run_id": "",
+        "task_id": "task-1",
+        "generation_context_id": "",
+        "task_type": "copywriting",
+        "prompt": "PROMPT-MARKER",
+        "context": {},
+    }
+
+    persistence.save_llm_generation_payload(payload)
+    persistence.save_llm_generation_payload(payload)
+
+    inserts = [statement for statement, _params in cursor.statements if "INSERT INTO llm_generation_payloads" in statement]
+    assert len(inserts) == 2
+    assert all("ON CONFLICT (campaign_id, run_id, task_id, generation_context_id)" not in statement for statement in inserts)

@@ -2549,6 +2549,44 @@ class PostgresPersistence:
                     "ALTER TABLE llm_generation_payloads ADD COLUMN IF NOT EXISTS payload_id UUID DEFAULT uuid_generate_v4();"
                 )
                 cur.execute(
+                    "UPDATE llm_generation_payloads SET payload_id = uuid_generate_v4() WHERE payload_id IS NULL;"
+                )
+                cur.execute("ALTER TABLE llm_generation_payloads ALTER COLUMN payload_id SET NOT NULL;")
+                cur.execute(
+                    """
+                    DO $$
+                    DECLARE
+                        existing_pk TEXT;
+                        pk_column TEXT;
+                    BEGIN
+                        SELECT constraint_name, column_name
+                        INTO existing_pk, pk_column
+                        FROM information_schema.key_column_usage
+                        WHERE table_name = 'llm_generation_payloads'
+                          AND constraint_name IN (
+                              SELECT constraint_name
+                              FROM information_schema.table_constraints
+                              WHERE table_name = 'llm_generation_payloads'
+                                AND constraint_type = 'PRIMARY KEY'
+                          )
+                        ORDER BY ordinal_position
+                        LIMIT 1;
+
+                        IF existing_pk IS NOT NULL AND pk_column <> 'payload_id' THEN
+                            EXECUTE format('ALTER TABLE llm_generation_payloads DROP CONSTRAINT %I', existing_pk);
+                        END IF;
+
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.table_constraints
+                            WHERE table_name = 'llm_generation_payloads'
+                              AND constraint_type = 'PRIMARY KEY'
+                        ) THEN
+                            ALTER TABLE llm_generation_payloads ADD PRIMARY KEY (payload_id);
+                        END IF;
+                    END $$;
+                    """
+                )
+                cur.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_generation_payloads_id ON llm_generation_payloads (payload_id);"
                 )
                 cur.execute(

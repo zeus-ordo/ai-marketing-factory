@@ -17,6 +17,22 @@ Concerns:
 - Worker requests without run or generation-context identifiers are persisted with empty identifier values because the existing worker payload contract allows those fields to be absent.
 - Existing FastAPI and pytest-asyncio deprecation warnings remain.
 
+## Remaining Review Fix Report
+
+Status: implemented
+
+Changes:
+- Added an additive migration that backfills missing payload UUIDs, safely detects and replaces the deployed composite primary key, and makes `payload_id` the actual primary key without deleting existing rows.
+- Kept the campaign, run, generation-context, and payload-ID indexes for lookup and uniqueness.
+- Added regression coverage for migration SQL and repeated captures with missing identifiers; capture remains non-blocking.
+
+Tests:
+- `python -m pytest services/campaign_service/test_llm_context_capture.py -q`: 5 passed.
+- `python -m pytest services/campaign_service/test_llm_context_capture.py services/campaign_service/test_context_assembler.py -q`: 15 passed, 1 existing unrelated failure in `test_review_regeneration_uses_snapshot_for_image_and_ads`; its `https://new` fixture has no cacheable image response and fails at image asset caching before the save assertion.
+
+Concerns:
+- Existing FastAPI and pytest-asyncio deprecation warnings remain.
+
 ## Reviewer Fix Report
 
 Status: implemented
