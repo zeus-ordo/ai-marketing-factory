@@ -12,6 +12,7 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   if (!process.env.SESSION_SECRET || !equal(body.username, process.env.VIEWER_USERNAME) || !equal(body.password, process.env.VIEWER_PASSWORD)) return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(SESSION_COOKIE, signSession(body.username, process.env.SESSION_SECRET), { httpOnly: true, sameSite: "strict", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 60 * 60 * 8 });
+  const secureCookie = process.env.VIEWER_COOKIE_SECURE !== "false" && process.env.NODE_ENV === "production";
+  response.cookies.set(SESSION_COOKIE, signSession(body.username, process.env.SESSION_SECRET), { httpOnly: true, sameSite: "strict", secure: secureCookie, path: "/", maxAge: 60 * 60 * 8 });
   return response;
 }

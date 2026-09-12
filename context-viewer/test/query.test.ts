@@ -129,3 +129,11 @@ test("login sets a signed HttpOnly SameSite cookie", async () => {
   assert.match(cookie, /SameSite=Strict/i);
   assert.match(cookie, /Max-Age=28800/i);
 });
+
+test("login omits Secure when HTTP deployment explicitly disables it", async () => {
+  (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+  process.env.VIEWER_COOKIE_SECURE = "false";
+  const response = await login(new Request("http://localhost/api/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "password" }), headers: { "content-type": "application/json" } }));
+  assert.equal(response.status, 200);
+  assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /; Secure/i);
+});
