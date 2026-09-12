@@ -56,6 +56,22 @@ test("redactSecrets removes case and format variants but preserves ordinary prom
   assert.equal(result.items[1].text, "ordinary context");
 });
 
+test("redactSecrets removes secret-bearing strings in payloads and URLs", () => {
+  const result = redactSecrets({
+    prompt: "Discuss token rewards with customers.",
+    error: "Authorization: Bearer super-secret-token",
+    callback_url: "https://example.test/callback?api_key=url-secret&campaign=summer",
+    database_url: "postgres://user:db-secret@example.test/marketing",
+    ordinary_url: "https://example.test/products?campaign=summer",
+  });
+
+  assert.equal(result.prompt, "Discuss token rewards with customers.");
+  assert.equal(result.error, "Authorization: Bearer [REDACTED]");
+  assert.equal(result.callback_url, "https://example.test/callback?api_key=[REDACTED]&campaign=summer");
+  assert.equal(result.database_url, "postgres://user:[REDACTED]@example.test/marketing");
+  assert.equal(result.ordinary_url, "https://example.test/products?campaign=summer");
+});
+
 test("invalid or absent session cookies are rejected", () => {
   assert.equal(isValidSession(undefined, "test-secret"), false);
   assert.equal(isValidSession("not-a-session", "test-secret"), false);

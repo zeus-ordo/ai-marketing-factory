@@ -137,6 +137,35 @@ def test_worker_dispatch_continues_when_capture_fails(monkeypatch):
     assert result == {"ok": True}
 
 
+def test_internal_capture_ingest_requires_key_and_persists_exact_payload(monkeypatch):
+    from fastapi import Request
+    from app import main
+
+    captured = []
+    monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
+    monkeypatch.setattr(main, "persistence", type("Persistence", (), {
+        "save_llm_generation_payload": lambda _self, payload: captured.append(payload),
+    })())
+    worker_payload = {
+        "campaign_id": "campaign-1",
+        "run_id": "run-1",
+        "task_id": "task-1",
+        "generation_context_id": "context-1",
+        "task_type": "copywriting",
+        "provider": "openai",
+        "model": "gpt-test",
+        "prompt": "exact prompt",
+        "context": {"nested": {"keep": True}},
+    }
+    payload = {"task_type": "copywriting", "campaign_id": "campaign-1", "task_id": "task-1", "payload": worker_payload}
+    scope = {"type": "http", "method": "POST", "headers": [(b"x-internal-api-key", b"test-key")]}
+
+    response = main.ingest_llm_generation_payload(payload, Request(scope))
+
+    assert response == {"status": "accepted"}
+    assert captured[0]["context"] == worker_payload
+
+
 def test_missing_identifiers_are_not_used_as_conflict_key(monkeypatch):
     cursor = RecordingCursor()
     monkeypatch.setattr(PostgresPersistence, "_connect", lambda self: RecordingConnection(cursor))

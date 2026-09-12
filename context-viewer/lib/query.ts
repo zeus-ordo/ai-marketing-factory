@@ -6,12 +6,20 @@ function isSecretKey(key: string): boolean {
   return ["apikey", "token", "password", "secret", "authorization", "credential"].some(marker => normalized.includes(marker));
 }
 
+function redactString(value: string): string {
+  return value
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret|token|authorization|credential)[^=]*=)[^&#\s]+/gi, "$1[REDACTED]")
+    .replace(/(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret|token|credential)[^\s:=]*\s*[:=]\s*["']?)[^&"',}\s]+/gi, "$1[REDACTED]")
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^@/\s]+(@)/gi, "$1[REDACTED]$2");
+}
+
 export function redactSecrets(value: unknown): any {
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, isSecretKey(key) ? "[REDACTED]" : redactSecrets(item)]));
   }
-  return value;
+  return typeof value === "string" ? redactString(value) : value;
 }
 
 export function buildContextListQuery(filters: Filters = {}): Query {

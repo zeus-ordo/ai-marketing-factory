@@ -1169,8 +1169,12 @@ def _capture_worker_payload(
     task_type: str,
     campaign_id: str,
     task_id: str,
+    *,
+    raise_on_failure: bool = False,
 ) -> None:
     if persistence is None:
+        if raise_on_failure:
+            raise RuntimeError("LLM payload persistence is not configured")
         return
     try:
         persistence.save_llm_generation_payload({
@@ -1184,9 +1188,11 @@ def _capture_worker_payload(
             "prompt": payload.get("prompt") or payload.get("context") or "",
             "context": dict(payload),
         })
-    except Exception:
+    except Exception as exc:
         # Capture is diagnostic and must never change generation behavior.
         logger.warning("Unable to persist worker generation payload")
+        if raise_on_failure:
+            raise RuntimeError("Unable to persist worker generation payload") from exc
 
 
 def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaign_id: str, task_id: str, company_id: str) -> dict[str, Any]:
@@ -8161,6 +8167,22 @@ def ingest_llm_usage(payload: LlmUsageIngestRequest, req: Request) -> dict[str, 
         "request_count": payload.request_count,
         "created_at": now_utc().isoformat(),
     })
+    return {"status": "accepted"}
+
+
+@app.post("/internal/llm-generation-payloads", status_code=202)
+def ingest_llm_generation_payload(payload: dict[str, Any], req: Request) -> dict[str, str]:
+    require_internal_api_key(req)
+    task_type = str(payload.get("task_type", "")).strip()
+    campaign_id = str(payload.get("campaign_id", "")).strip()
+    task_id = str(payload.get("task_id", "")).strip()
+    worker_payload = payload.get("payload")
+    if not task_type or not campaign_id or not task_id or not isinstance(worker_payload, dict):
+        raise HTTPException(status_code=400, detail="task_type, campaign_id, and task_id are required")
+    try:
+        _capture_worker_payload(worker_payload, task_type, campaign_id, task_id, raise_on_failure=True)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="LLM payload persistence unavailable") from exc
     return {"status": "accepted"}
 
 

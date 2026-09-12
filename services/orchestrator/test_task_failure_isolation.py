@@ -29,6 +29,24 @@ def test_classifies_quota_timeout_and_provider_failures():
     assert classify_worker_error(RuntimeError("provider returned 503")) == "provider_error"
 
 
+def test_normal_worker_dispatch_captures_exact_payload_before_call(monkeypatch):
+    captured = []
+    dispatched = []
+    monkeypatch.setattr(orchestrator, "capture_worker_payload", lambda payload, *args: captured.append((payload, args)))
+    monkeypatch.setattr(orchestrator, "post_json", lambda url, payload: dispatched.append((url, payload)) or {"status": "ok"})
+
+    task_value = task("copy-1", "copywriting", status="planned")
+    task_value.company_id = "company-1"
+    task_value.run_id = "run-1"
+    task_value.worker_payload = {"generation_context_id": "context-1", "prompt": "exact prompt", "nested": {"keep": True}}
+
+    result = orchestrator.run_worker(task_value, "campaign-1")
+
+    assert result == {"status": "ok", "generation_context_id": "context-1"}
+    assert dispatched[0][1] == captured[0][0]
+    assert captured[0][1] == ("copywriting", "campaign-1", "copy-1", "company-1")
+
+
 def test_image_failure_blocks_video_but_not_unrelated_copy(monkeypatch):
     campaign_id = "campaign-isolation"
     orchestrator.task_state[campaign_id] = {
