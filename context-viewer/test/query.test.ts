@@ -163,6 +163,13 @@ test("detail query returns generation context metadata and the UI renders a meta
   assert.match(page, /external_source_urls_json/);
 });
 
+test("administrator activity workbench exposes management labels and filter controls", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const label of ["AI activity", "Campaign", "Date", "Content type", "Status", "Clear filters", "No AI activity found", "Next step"]) {
+    assert.match(page, new RegExp(label));
+  }
+});
+
 test("login sets a signed HttpOnly SameSite cookie", async () => {
   process.env.VIEWER_USERNAME = "admin";
   process.env.VIEWER_PASSWORD = "password";
