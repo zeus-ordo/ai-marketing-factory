@@ -207,7 +207,8 @@ git commit -m "Present readable LLM activity records"
 Run:
 
 ```bash
-npm test
+npm --prefix context-viewer test
+npm --prefix context-viewer run build
 npm run build
 python -m pytest services/campaign_service -q
 python -m pytest services/orchestrator -q
