@@ -50,3 +50,14 @@
 - `npm test`: passed, 25 tests.
 - `npx tsc --noEmit`: passed.
 - `npm run build`: passed; existing multiple-lockfile workspace-root warning remains.
+
+## Task 4 Validation Fixes
+
+- Confirmed the selected-record technical disclosure is collapsed by default and renders generation context ID, run ID, task ID, model, ratios, token counts, search state, and the redacted raw JSON export.
+- Added a result-area `Next step` section with a keyboard-accessible link back to the activity list.
+- Kept the initial no-selection state in the always-rendered detail panel with a plain-language `Select an activity` message and a stable `detail-heading` target for `aria-labelledby`.
+- Added focused structural tests covering the technical metadata set, result next step, and initial empty-state/heading relationship.
+- `npm test -- --test-name-pattern="technical metadata|result area"`: passed, 2 tests.
+- `npm test`: passed, 27 tests.
+- `npx tsc --noEmit`: passed.
+- `npm run build`: passed; existing multiple-lockfile workspace-root warning remains.

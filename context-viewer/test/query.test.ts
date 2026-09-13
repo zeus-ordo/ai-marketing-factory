@@ -258,6 +258,25 @@ test("activity list labels true persisted outputs instead of payloads", async ()
   assert.doesNotMatch(page, /<dt>Outputs<\/dt><dd>\{row\.payload_count\}/);
 });
 
+test("activity detail exposes all technical metadata in a collapsed disclosure", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /<details className="technical detail-technical">/);
+  for (const label of ["Generation context ID", "Run ID", "Task ID", "Model", "Internal tokens", "External tokens", "Internal ratio", "External ratio", "Search status", "Raw JSON"]) {
+    assert.match(page, new RegExp(label));
+  }
+  assert.match(page, /DetailPanel title="Raw JSON"/);
+});
+
+test("activity result area provides a clear next step and the initial empty state is labelled", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /result-next-step/);
+  assert.match(page, /<h3>Next step<\/h3>/);
+  assert.match(page, /Select an activity/);
+  assert.match(page, /Choose an activity from the list/);
+  assert.match(page, /aria-labelledby="detail-heading"/);
+  assert.match(page, /<h2 id="detail-heading">/);
+});
+
 test("activity record detail has a narrow one-column layout", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(styles, /max-width:\s*760px/);
