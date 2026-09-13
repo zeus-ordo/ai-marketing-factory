@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { buildContextDetailQuery, buildContextListQuery, redactSecrets } from "../lib/query.ts";
+import { buildCampaignQuery, buildContextDetailQuery, buildContextListQuery, redactSecrets } from "../lib/query.ts";
 import { isValidSession, signSession } from "../lib/session.ts";
 import { GET as campaigns } from "../app/api/campaigns/route.ts";
 import { GET as contexts } from "../app/api/contexts/route.ts";
@@ -40,6 +40,23 @@ test("buildContextListQuery parameterizes administrator activity filters", () =>
   assert.ok(query.values.includes("completed"));
   assert.ok(query.values.includes("2026-09-01"));
   assert.ok(query.values.includes("2026-09-30"));
+});
+
+test("campaign query exposes a brief campaign name and parameterizes name or id search", () => {
+  const query = buildCampaignQuery("Spring' OR 1=1 --");
+
+  assert.match(query.text, /brief_json\s*->>\s*'campaign_name'/);
+  assert.match(query.text, /campaign_id\s+ILIKE\s+\$1/);
+  assert.match(query.text, /campaign_name|brief_json/);
+  assert.ok(!query.text.includes("Spring' OR 1=1"));
+  assert.deepEqual(query.values, ["%Spring' OR 1=1 --%"]);
+});
+
+test("context activity query exposes the persisted campaign name with an id fallback", () => {
+  const query = buildContextListQuery();
+
+  assert.match(query.text, /COALESCE\(NULLIF\(c\.brief_json\s*->>\s*'campaign_name',\s*''\),\s*c\.campaign_id\)\s+AS\s+campaign_name/);
+  assert.match(query.text, /brief_json\s*->>\s*'campaign_name'/);
 });
 
 test("buildContextListQuery selects activity without reducing payload aggregation", () => {
@@ -168,6 +185,15 @@ test("administrator activity workbench exposes management labels and filter cont
   for (const label of ["AI activity", "Campaign", "Date", "Content type", "Status", "Clear filters", "No AI activity found", "Next step"]) {
     assert.match(page, new RegExp(label));
   }
+});
+
+test("administrator workbench wires campaign search and surfaces campaign load errors", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /value=\{campaignSearch\}/);
+  assert.match(page, /setCampaignSearch\(/);
+  assert.match(page, /loadCampaigns\(\)/);
+  assert.match(page, /Could not load campaigns|Unable to load campaigns|campaignError/);
+  assert.match(page, /campaign_name/);
 });
 
 test("login sets a signed HttpOnly SameSite cookie", async () => {

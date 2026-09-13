@@ -41,18 +41,18 @@ export function buildContextListQuery(filters: Filters = {}): Query {
   const offset = Number.isFinite(rawOffset) ? Math.min(Math.max(rawOffset, 0), 100_000) : 0;
   values.push(limit, offset);
   return {
-    text: `SELECT c.campaign_id, COALESCE(ct.status, c.status) AS status, gc.generation_context_id, gc.run_id, gc.created_at, COALESCE(ct.task_type, MIN(lp.task_type)) AS activity_type, COUNT(DISTINCT gci.generation_context_item_id)::int AS context_item_count, COUNT(DISTINCT lp.payload_id)::int AS payload_count
+    text: `SELECT c.campaign_id, COALESCE(NULLIF(c.brief_json->>'campaign_name', ''), c.campaign_id) AS campaign_name, COALESCE(ct.status, c.status) AS status, gc.generation_context_id, gc.run_id, gc.created_at, COALESCE(ct.task_type, MIN(lp.task_type)) AS activity_type, COUNT(DISTINCT gci.generation_context_item_id)::int AS context_item_count, COUNT(DISTINCT lp.payload_id)::int AS payload_count
       FROM campaigns c JOIN generation_contexts gc ON gc.campaign_id = c.campaign_id
       LEFT JOIN campaign_tasks ct ON ct.task_id = gc.task_id AND ct.campaign_id = gc.campaign_id
       LEFT JOIN generation_context_items gci ON gci.generation_context_id = gc.generation_context_id
       LEFT JOIN llm_generation_payloads lp ON lp.campaign_id = gc.campaign_id AND lp.run_id = gc.run_id AND lp.generation_context_id = gc.generation_context_id
-      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} GROUP BY c.campaign_id, c.status, ct.status, ct.task_type, gc.generation_context_id, gc.run_id, gc.created_at ORDER BY gc.created_at DESC LIMIT $${values.length - 1} OFFSET $${values.length}`,
+      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} GROUP BY c.campaign_id, c.brief_json, c.status, ct.status, ct.task_type, gc.generation_context_id, gc.run_id, gc.created_at ORDER BY gc.created_at DESC LIMIT $${values.length - 1} OFFSET $${values.length}`,
     values,
   };
 }
 
 export function buildCampaignQuery(search = ""): Query {
-  return { text: "SELECT campaign_id, status, created_at FROM campaigns WHERE campaign_id ILIKE $1 ORDER BY created_at DESC LIMIT 100", values: [`%${search}%`] };
+  return { text: "SELECT campaign_id, COALESCE(NULLIF(brief_json->>'campaign_name', ''), campaign_id) AS campaign_name, status, created_at FROM campaigns WHERE deleted_at IS NULL AND (campaign_id ILIKE $1 OR brief_json->>'campaign_name' ILIKE $1) ORDER BY created_at DESC LIMIT 100", values: [`%${search}%`] };
 }
 
 export function buildContextDetailQuery(id: string): Query {
