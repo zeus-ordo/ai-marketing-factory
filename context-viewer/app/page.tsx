@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { formatDate } from "../lib/format.ts";
 
 type Campaign = { campaign_id: string; campaign_name: string; status: string; created_at: string };
 type ContextRow = { campaign_id: string; campaign_name: string; generation_context_id: string; run_id: string; created_at: string; activity_type?: string | null; status?: string | null; context_item_count: number; payload_count: number; output_count: number };
@@ -32,7 +33,6 @@ const activityTypes = [
 ];
 
 function humanize(value?: string | null) { return value ? value.replace(/[_-]+/g, " ").replace(/\b\w/g, character => character.toUpperCase()) : "Uncategorized"; }
-function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(date); }
 function jsonText(value: unknown) { return JSON.stringify(value, null, 2); }
 function filtersFromUrl(searchParams: { get(name: string): string | null }): FilterValues {
   return { campaign: searchParams.get("campaign_id") ?? "", context: searchParams.get("generation_context_id") ?? "", run: searchParams.get("run_id") ?? "", activityType: searchParams.get("activity_type") ?? "", status: searchParams.get("status") ?? "", from: searchParams.get("from") ?? "", to: searchParams.get("to") ?? "" };

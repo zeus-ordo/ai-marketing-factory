@@ -8,6 +8,7 @@ import { GET as campaigns } from "../app/api/campaigns/route.ts";
 import { GET as contexts } from "../app/api/contexts/route.ts";
 import { GET as detail } from "../app/api/contexts/[generationContextId]/route.ts";
 import { POST as login } from "../app/api/login/route.ts";
+import { formatDate } from "../lib/format.ts";
 
 test("buildContextListQuery parameterizes filters and caps the page", () => {
   const query = buildContextListQuery({
@@ -312,6 +313,11 @@ test("activity record detail has a narrow one-column layout", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(styles, /max-width:\s*760px/);
   assert.match(styles, /grid-template-columns:\s*1fr/);
+});
+
+test("formatDate never returns a non-renderable database value", () => {
+  assert.equal(formatDate({}), "Date unavailable");
+  assert.equal(formatDate("not-a-date"), "Date unavailable");
 });
 
 test("login sets a signed HttpOnly SameSite cookie", async () => {
