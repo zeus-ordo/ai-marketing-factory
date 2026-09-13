@@ -225,6 +225,30 @@ test("activity record detail preserves filters and reports action failures", asy
   assert.match(page, /download/);
 });
 
+test("activity list hydrates filters from the return URL before loading", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /useSearchParams/);
+  for (const key of ["campaign_id", "from", "to", "activity_type", "status"]) {
+    assert.match(page, new RegExp(`get\\("${key}"\\)`));
+  }
+  assert.match(page, /loadContexts\(restoredFilters\)/);
+});
+
+test("detail query selects persisted asset outputs for accurate result summaries", () => {
+  const query = buildContextDetailQuery("context-1");
+  assert.match(query.text, /asset_outputs/);
+  assert.match(query.text, /asset_type/);
+  assert.match(query.text, /validation_status/);
+  assert.match(query.text, /outputs/);
+});
+
+test("activity detail does not treat prompt payloads as generated results", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /selected\.outputs/);
+  assert.match(page, /No generated output was persisted/);
+  assert.doesNotMatch(page, /Generated result.*selected\.payloads\.length/);
+});
+
 test("activity record detail has a narrow one-column layout", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(styles, /max-width:\s*760px/);

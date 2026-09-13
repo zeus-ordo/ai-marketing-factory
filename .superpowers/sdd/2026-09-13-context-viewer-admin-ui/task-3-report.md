@@ -29,3 +29,14 @@
 - `next build` reports the pre-existing warning that multiple lockfiles cause workspace-root inference to select the parent repository directory.
 - No browser automation was available in the viewer package; interaction coverage is source-level and build/type checked.
 - The generated untracked `context-viewer/tsconfig.tsbuildinfo` and pre-existing untracked plan were not included.
+
+## Review Fixes
+
+- Added URL hydration with `useSearchParams`; campaign, technical IDs, dates, content type, and status are restored before the initial list request.
+- Investigated persisted output storage and found the existing `asset_outputs` table. The detail query now adds a compatible redacted `outputs` field matched by campaign and run, with a task fallback for legacy rows.
+- The result section now displays persisted asset output records only. When none exist, it states that no generated output was persisted and shows the persisted activity outcome instead of treating prompts as results.
+- Added focused regression assertions for URL hydration, output query fields, and no fabricated result counts.
+- `npm test -- --test-name-pattern="hydrates|persisted asset|generated results"`: passed, 3 tests.
+- `npm test`: passed, 24 tests.
+- `npx tsc --noEmit`: passed.
+- `npm run build`: passed after wrapping the `useSearchParams` client page in Suspense as required by Next.js 16.
