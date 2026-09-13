@@ -42,6 +42,26 @@ test("buildContextListQuery parameterizes administrator activity filters", () =>
   assert.ok(query.values.includes("2026-09-30"));
 });
 
+test("buildContextListQuery selects activity without reducing payload aggregation", () => {
+  const query = buildContextListQuery({ activityType: "copywriting" });
+
+  assert.match(query.text, /EXISTS\s*\(/);
+  assert.match(query.text, /lp\.task_type/);
+  assert.match(query.text, /COUNT\(DISTINCT lp\.payload_id\)/);
+  assert.match(query.text, /LEFT JOIN llm_generation_payloads lp[\s\S]*GROUP BY/);
+  assert.match(query.text, /generation_context_id = gc\.generation_context_id/);
+});
+
+test("buildContextListQuery keeps offset finite and capped", () => {
+  const nonFiniteQuery = buildContextListQuery({ offset: Number.POSITIVE_INFINITY });
+  const cappedQuery = buildContextListQuery({ offset: 999_999 });
+
+  assert.equal(nonFiniteQuery.values.at(-1), 0);
+  assert.equal(cappedQuery.values.at(-1), 100_000);
+  assert.ok(Number.isFinite(nonFiniteQuery.values.at(-1) as number));
+  assert.ok(Number.isFinite(cappedQuery.values.at(-1) as number));
+});
+
 test("redactSecrets removes case and format variants but preserves ordinary prompt text", () => {
   const result = redactSecrets({
     prompt: "Write a launch email for our token rewards program.",

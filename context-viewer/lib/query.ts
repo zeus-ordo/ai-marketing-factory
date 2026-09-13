@@ -29,12 +29,16 @@ export function buildContextListQuery(filters: Filters = {}): Query {
   for (const [column, value] of [["c.campaign_id", filters.campaignId], ["gc.generation_context_id", filters.generationContextId], ["gc.run_id", filters.runId]] as const) {
     if (value?.trim()) { values.push(value); clauses.push(`${column} = $${values.length}`); }
   }
-  if (filters.activityType?.trim()) { values.push(filters.activityType); clauses.push(`COALESCE(ct.task_type, lp.task_type) = $${values.length}`); }
+  if (filters.activityType?.trim()) {
+    values.push(filters.activityType);
+    clauses.push(`EXISTS (SELECT 1 FROM llm_generation_payloads lp_filter WHERE lp_filter.generation_context_id = gc.generation_context_id AND COALESCE(ct.task_type, lp_filter.task_type) = $${values.length})`);
+  }
   if (filters.status?.trim()) { values.push(filters.status); clauses.push(`COALESCE(ct.status, c.status) = $${values.length}`); }
   if (filters.from?.trim()) { values.push(filters.from); clauses.push(`gc.created_at >= $${values.length}::date`); }
   if (filters.to?.trim()) { values.push(filters.to); clauses.push(`gc.created_at < ($${values.length}::date + INTERVAL '1 day')`); }
   const limit = Math.min(Math.max(Number(filters.limit) || 50, 1), 100);
-  const offset = Math.max(Number(filters.offset) || 0, 0);
+  const rawOffset = Number(filters.offset);
+  const offset = Number.isFinite(rawOffset) ? Math.min(Math.max(rawOffset, 0), 100_000) : 0;
   values.push(limit, offset);
   return {
     text: `SELECT c.campaign_id, COALESCE(ct.status, c.status) AS status, gc.generation_context_id, gc.run_id, gc.created_at, COALESCE(ct.task_type, MIN(lp.task_type)) AS activity_type, COUNT(DISTINCT gci.generation_context_item_id)::int AS context_item_count, COUNT(DISTINCT lp.payload_id)::int AS payload_count
