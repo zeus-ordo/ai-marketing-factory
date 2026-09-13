@@ -24,6 +24,24 @@ test("buildContextListQuery parameterizes filters and caps the page", () => {
   assert.deepEqual(query.values, ["campaign' OR 1=1 --", "context-1", "run-1", 100, 4]);
 });
 
+test("buildContextListQuery parameterizes administrator activity filters", () => {
+  const query = buildContextListQuery({
+    campaignId: "spring-launch",
+    activityType: "copywriting",
+    status: "completed",
+    from: "2026-09-01",
+    to: "2026-09-30",
+  });
+
+  assert.match(query.text, /created_at/);
+  assert.match(query.text, /task_type|activity_type/);
+  assert.ok(!query.text.includes("spring-launch"));
+  assert.ok(query.values.includes("copywriting"));
+  assert.ok(query.values.includes("completed"));
+  assert.ok(query.values.includes("2026-09-01"));
+  assert.ok(query.values.includes("2026-09-30"));
+});
+
 test("redactSecrets removes case and format variants but preserves ordinary prompt text", () => {
   const result = redactSecrets({
     prompt: "Write a launch email for our token rewards program.",

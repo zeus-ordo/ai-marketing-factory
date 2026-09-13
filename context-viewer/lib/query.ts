@@ -1,5 +1,5 @@
 export type Query = { text: string; values: unknown[] };
-export type Filters = { campaignId?: string; generationContextId?: string; runId?: string; limit?: number; offset?: number };
+export type Filters = { campaignId?: string; generationContextId?: string; runId?: string; activityType?: string; status?: string; from?: string; to?: string; limit?: number; offset?: number };
 
 function isSecretKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
@@ -27,17 +27,22 @@ export function buildContextListQuery(filters: Filters = {}): Query {
   const values: unknown[] = [];
   const clauses: string[] = [];
   for (const [column, value] of [["c.campaign_id", filters.campaignId], ["gc.generation_context_id", filters.generationContextId], ["gc.run_id", filters.runId]] as const) {
-    if (value) { values.push(value); clauses.push(`${column} = $${values.length}`); }
+    if (value?.trim()) { values.push(value); clauses.push(`${column} = $${values.length}`); }
   }
+  if (filters.activityType?.trim()) { values.push(filters.activityType); clauses.push(`COALESCE(ct.task_type, lp.task_type) = $${values.length}`); }
+  if (filters.status?.trim()) { values.push(filters.status); clauses.push(`COALESCE(ct.status, c.status) = $${values.length}`); }
+  if (filters.from?.trim()) { values.push(filters.from); clauses.push(`gc.created_at >= $${values.length}::date`); }
+  if (filters.to?.trim()) { values.push(filters.to); clauses.push(`gc.created_at < ($${values.length}::date + INTERVAL '1 day')`); }
   const limit = Math.min(Math.max(Number(filters.limit) || 50, 1), 100);
   const offset = Math.max(Number(filters.offset) || 0, 0);
   values.push(limit, offset);
   return {
-    text: `SELECT c.campaign_id, gc.generation_context_id, gc.run_id, gc.created_at, COUNT(DISTINCT gci.generation_context_item_id)::int AS context_item_count, COUNT(DISTINCT lp.payload_id)::int AS payload_count
+    text: `SELECT c.campaign_id, COALESCE(ct.status, c.status) AS status, gc.generation_context_id, gc.run_id, gc.created_at, COALESCE(ct.task_type, MIN(lp.task_type)) AS activity_type, COUNT(DISTINCT gci.generation_context_item_id)::int AS context_item_count, COUNT(DISTINCT lp.payload_id)::int AS payload_count
       FROM campaigns c JOIN generation_contexts gc ON gc.campaign_id = c.campaign_id
+      LEFT JOIN campaign_tasks ct ON ct.task_id = gc.task_id AND ct.campaign_id = gc.campaign_id
       LEFT JOIN generation_context_items gci ON gci.generation_context_id = gc.generation_context_id
       LEFT JOIN llm_generation_payloads lp ON lp.campaign_id = gc.campaign_id AND lp.run_id = gc.run_id AND lp.generation_context_id = gc.generation_context_id
-      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} GROUP BY c.campaign_id, gc.generation_context_id, gc.run_id, gc.created_at ORDER BY gc.created_at DESC LIMIT $${values.length - 1} OFFSET $${values.length}`,
+      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} GROUP BY c.campaign_id, c.status, ct.status, ct.task_type, gc.generation_context_id, gc.run_id, gc.created_at ORDER BY gc.created_at DESC LIMIT $${values.length - 1} OFFSET $${values.length}`,
     values,
   };
 }
