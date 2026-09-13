@@ -52,6 +52,13 @@ test("buildContextListQuery selects activity without reducing payload aggregatio
   assert.match(query.text, /generation_context_id = gc\.generation_context_id/);
 });
 
+test("buildContextListQuery includes task-only activity matches", () => {
+  const query = buildContextListQuery({ activityType: "copywriting" });
+
+  assert.match(query.text, /ct\.task_type\s*=\s*\$\d+\s+OR\s+EXISTS/);
+  assert.match(query.text, /lp_filter\.task_type\s*=\s*\$\d+/);
+});
+
 test("buildContextListQuery keeps offset finite and capped", () => {
   const nonFiniteQuery = buildContextListQuery({ offset: Number.POSITIVE_INFINITY });
   const cappedQuery = buildContextListQuery({ offset: 999_999 });

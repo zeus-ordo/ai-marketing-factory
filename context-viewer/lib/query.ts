@@ -31,7 +31,7 @@ export function buildContextListQuery(filters: Filters = {}): Query {
   }
   if (filters.activityType?.trim()) {
     values.push(filters.activityType);
-    clauses.push(`EXISTS (SELECT 1 FROM llm_generation_payloads lp_filter WHERE lp_filter.generation_context_id = gc.generation_context_id AND COALESCE(ct.task_type, lp_filter.task_type) = $${values.length})`);
+    clauses.push(`(ct.task_type = $${values.length} OR EXISTS (SELECT 1 FROM llm_generation_payloads lp_filter WHERE lp_filter.generation_context_id = gc.generation_context_id AND lp_filter.task_type = $${values.length}))`);
   }
   if (filters.status?.trim()) { values.push(filters.status); clauses.push(`COALESCE(ct.status, c.status) = $${values.length}`); }
   if (filters.from?.trim()) { values.push(filters.from); clauses.push(`gc.created_at >= $${values.length}::date`); }
