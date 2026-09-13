@@ -1,5 +1,5 @@
 export type Query = { text: string; values: unknown[] };
-export type Filters = { campaignId?: string; generationContextId?: string; runId?: string; activityType?: string; status?: string; from?: string; to?: string; limit?: number; offset?: number };
+export type Filters = { campaignId?: string; campaignName?: string; generationContextId?: string; runId?: string; activityType?: string; status?: string; from?: string; to?: string; limit?: number; offset?: number };
 
 function isSecretKey(key: string): boolean {
   const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
@@ -26,8 +26,16 @@ export function redactSecrets(value: unknown): any {
 export function buildContextListQuery(filters: Filters = {}): Query {
   const values: unknown[] = [];
   const clauses: string[] = [];
-  for (const [column, value] of [["c.campaign_id", filters.campaignId], ["gc.generation_context_id", filters.generationContextId], ["gc.run_id", filters.runId]] as const) {
+  if (filters.campaignId?.trim()) {
+    values.push(filters.campaignId);
+    clauses.push(`(c.campaign_id = $${values.length} OR COALESCE(NULLIF(c.brief_json->>'campaign_name', ''), c.campaign_id) = $${values.length})`);
+  }
+  for (const [column, value] of [["gc.generation_context_id", filters.generationContextId], ["gc.run_id", filters.runId]] as const) {
     if (value?.trim()) { values.push(value); clauses.push(`${column} = $${values.length}`); }
+  }
+  if (filters.campaignName?.trim()) {
+    values.push(filters.campaignName);
+    clauses.push(`COALESCE(NULLIF(c.brief_json->>'campaign_name', ''), c.campaign_id) = $${values.length}`);
   }
   if (filters.activityType?.trim()) {
     values.push(filters.activityType);

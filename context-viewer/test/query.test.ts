@@ -42,6 +42,21 @@ test("buildContextListQuery parameterizes administrator activity filters", () =>
   assert.ok(query.values.includes("2026-09-30"));
 });
 
+test("buildContextListQuery filters by an exact persisted campaign name without interpolating it", () => {
+  const query = buildContextListQuery({ campaignName: "Spring Launch' OR 1=1 --" });
+
+  assert.match(query.text, /brief_json->>'campaign_name'/);
+  assert.ok(!query.text.includes("Spring Launch' OR 1=1"));
+  assert.deepEqual(query.values.slice(0, 1), ["Spring Launch' OR 1=1 --"]);
+});
+
+test("the compatible campaign_id filter also resolves an exact human-readable campaign name", () => {
+  const query = buildContextListQuery({ campaignId: "Spring Launch" });
+
+  assert.match(query.text, /WHERE\s+\(c\.campaign_id\s*=\s*\$1\s+OR\s+COALESCE/);
+  assert.deepEqual(query.values.slice(0, 1), ["Spring Launch"]);
+});
+
 test("campaign query exposes a brief campaign name and parameterizes name or id search", () => {
   const query = buildCampaignQuery("Spring' OR 1=1 --");
 
@@ -194,6 +209,22 @@ test("administrator workbench wires campaign search and surfaces campaign load e
   assert.match(page, /loadCampaigns\(\)/);
   assert.match(page, /Could not load campaigns|Unable to load campaigns|campaignError/);
   assert.match(page, /campaign_name/);
+});
+
+test("administrator workbench sends persisted filter values with readable labels", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const value of ["copywriting", "image_generation", "video_generation", "ads_strategy", "pending", "planned", "running", "validating", "passed", "completed", "failed", "review_pending", "blocked", "retrying"]) {
+    assert.match(page, new RegExp(`\\\"${value}\\\"`));
+  }
+  for (const label of ["Ready", "In progress", "Needs review", "Blocked", "Retrying"]) {
+    assert.match(page, new RegExp(label));
+  }
+});
+
+test("administrator workbench clears detail when a refreshed list excludes it", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /selected && !rows\.some\(row => row\.generation_context_id === selected\.generation_context_id\)/);
+  assert.match(page, /setSelected\(null\)/);
 });
 
 test("activity record detail uses readable administrator sections and actions", async () => {

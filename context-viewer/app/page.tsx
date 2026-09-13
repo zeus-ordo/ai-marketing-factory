@@ -10,8 +10,26 @@ type Output = { asset_id?: string; task_id?: string; asset_type?: string; url?: 
 type Detail = { generation_context_id: string; campaign_id: string; run_id: string; created_at: string; internal_token_count: number; external_token_count: number; internal_ratio: number; external_ratio: number; external_source_urls_json: unknown; external_search_status: string; external_search_error?: string | null; task_id?: string | null; selected_reference_ids_json: unknown; matched_folder_names_json: unknown; items: unknown[]; payloads: Payload[]; outputs: Output[] };
 type FilterValues = { campaign: string; context: string; run: string; activityType: string; status: string; from: string; to: string };
 
-const statuses = ["", "pending", "running", "completed", "failed"];
-const activityTypes = ["", "copywriting", "image_generation", "video_generation", "chat"];
+const statuses = [
+  { value: "", label: "All statuses" },
+  { value: "pending", label: "Waiting" },
+  { value: "planned", label: "Ready" },
+  { value: "running", label: "In progress" },
+  { value: "validating", label: "Validating" },
+  { value: "passed", label: "Passed" },
+  { value: "completed", label: "Completed" },
+  { value: "failed", label: "Failed" },
+  { value: "review_pending", label: "Needs review" },
+  { value: "blocked", label: "Blocked" },
+  { value: "retrying", label: "Retrying" },
+];
+const activityTypes = [
+  { value: "", label: "All content types" },
+  { value: "copywriting", label: "Copywriting" },
+  { value: "image_generation", label: "Image generation" },
+  { value: "video_generation", label: "Video generation" },
+  { value: "ads_strategy", label: "Ads strategy" },
+];
 
 function humanize(value?: string | null) { return value ? value.replace(/[_-]+/g, " ").replace(/\b\w/g, character => character.toUpperCase()) : "Uncategorized"; }
 function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(date); }
@@ -19,6 +37,8 @@ function jsonText(value: unknown) { return JSON.stringify(value, null, 2); }
 function filtersFromUrl(searchParams: { get(name: string): string | null }): FilterValues {
   return { campaign: searchParams.get("campaign_id") ?? "", context: searchParams.get("generation_context_id") ?? "", run: searchParams.get("run_id") ?? "", activityType: searchParams.get("activity_type") ?? "", status: searchParams.get("status") ?? "", from: searchParams.get("from") ?? "", to: searchParams.get("to") ?? "" };
 }
+
+function campaignFilter(value: string): [string, string] | null { return value ? ["campaign_id", value] : null; }
 
 function ViewerPage() {
   const router = useRouter();
@@ -51,7 +71,8 @@ function ViewerPage() {
     try {
       const params = new URLSearchParams({ limit: "100" });
       const values = { campaign, context, run, activityType, status, from, to, ...overrides };
-      if (values.campaign) params.set("campaign_id", values.campaign);
+      const selectedCampaign = campaignFilter(values.campaign);
+      if (selectedCampaign) params.set(selectedCampaign[0], selectedCampaign[1]);
       if (values.context) params.set("generation_context_id", values.context);
       if (values.run) params.set("run_id", values.run);
       if (values.activityType) params.set("activity_type", values.activityType);
@@ -66,6 +87,9 @@ function ViewerPage() {
     setCampaignSearch(restoredFilters.campaign); setCampaign(restoredFilters.campaign); setContext(restoredFilters.context); setRun(restoredFilters.run); setActivityType(restoredFilters.activityType); setStatus(restoredFilters.status); setFrom(restoredFilters.from); setTo(restoredFilters.to);
     loadCampaigns().catch(() => undefined); loadContexts(restoredFilters);
   }, [searchParams]);
+  useEffect(() => {
+    if (selected && !rows.some(row => row.generation_context_id === selected.generation_context_id)) setSelected(null);
+  }, [rows, selected]);
   async function selectContext(id: string) { setActionError(""); try { setSelected(await (await request(`/api/contexts/${encodeURIComponent(id)}`)).json()); } catch { setError("We could not open this activity. Try again."); } }
   function clearFilters() { const empty: FilterValues = { campaign: "", context: "", run: "", activityType: "", status: "", from: "", to: "" }; setCampaignSearch(""); setCampaign(""); setFrom(""); setTo(""); setActivityType(""); setStatus(""); setContext(""); setRun(""); loadContexts(empty); }
   function filterUrl() { const params = new URLSearchParams(); for (const [key, value] of [["campaign_id", campaign], ["from", from], ["to", to], ["activity_type", activityType], ["status", status]] as const) if (value) params.set(key, value); return `/?${params}`; }
@@ -84,10 +108,10 @@ function ViewerPage() {
     <header className="topbar"><div><p className="eyebrow">ADMINISTRATOR TOOL</p><h1>LLM Context Viewer</h1><p className="subtitle">Review what AI activity happened across your campaigns.</p></div><button className="button secondary" onClick={async () => { await fetch("/api/logout", { method: "POST" }); router.push("/login"); }}>Sign out</button></header>
     <section className="intro"><div><span className="kicker">Activity workbench</span><h2>AI activity</h2><p>Find a campaign run, check its status, and open the supporting context.</p></div><div className="activity-count" aria-label={`${rows.length} activity results`}><strong>{rows.length}</strong><span>results</span></div></section>
     <section className="panel filters" aria-labelledby="filter-heading"><div className="section-heading"><div><h2 id="filter-heading">Find activity</h2><p>Use the filters below to narrow the activity list.</p></div><button className="button text-button" onClick={clearFilters}>Clear filters</button></div><div className="filter-grid">
-      <label className="field wide">Campaign<div className="search-control"><input list="campaign-options" placeholder="Search campaigns" value={campaignSearch} onChange={event => { setCampaignSearch(event.target.value); setCampaign(event.target.value); }} /><button className="button secondary" onClick={() => loadCampaigns()}>Search</button></div><datalist id="campaign-options">{campaigns.map(item => <option key={item.campaign_id} value={item.campaign_id}>{item.campaign_name}</option>)}</datalist></label>
+      <label className="field wide">Campaign<div className="search-control"><input list="campaign-options" placeholder="Search campaigns" value={campaignSearch} onChange={event => { setCampaignSearch(event.target.value); setCampaign(event.target.value); }} /><button className="button secondary" onClick={() => loadCampaigns()}>Search</button></div><datalist id="campaign-options">{campaigns.map(item => <option key={item.campaign_id} value={item.campaign_name}>{item.campaign_id}</option>)}</datalist></label>
       <label className="field"><span>Date</span><input type="date" aria-label="Date from" value={from} onChange={event => setFrom(event.target.value)} /><span className="date-separator">to</span><input type="date" aria-label="Date to" value={to} onChange={event => setTo(event.target.value)} /></label>
-      <label className="field">Content type<select value={activityType} onChange={event => setActivityType(event.target.value)}>{activityTypes.map(item => <option key={item} value={item}>{item ? humanize(item) : "All content types"}</option>)}</select></label>
-      <label className="field">Status<select value={status} onChange={event => setStatus(event.target.value)}>{statuses.map(item => <option key={item} value={item}>{item ? humanize(item) : "All statuses"}</option>)}</select></label>
+      <label className="field">Content type<select value={activityType} onChange={event => setActivityType(event.target.value)}>{activityTypes.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      <label className="field">Status<select value={status} onChange={event => setStatus(event.target.value)}>{statuses.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
     </div>{campaignError && <p className="field-error" role="alert">{campaignError}</p>}<details className="technical"><summary>Technical details</summary><div className="technical-grid"><label className="field">Generation context ID<input value={context} onChange={event => setContext(event.target.value)} /></label><label className="field">Run ID<input value={run} onChange={event => setRun(event.target.value)} /></label></div></details><div className="filter-actions"><button className="button primary" onClick={() => loadContexts()}>Apply filters</button></div></section>
     {error && <div className="notice error" role="alert">{error}</div>}
     <div className="content-grid"><ActivityList rows={rows} loading={loading} selected={selected} onSelect={selectContext} /><section className="panel detail-panel" aria-labelledby="detail-heading">{selected ? <><div className="detail-header"><a className="back-link" href={filterUrl()}>Back to activity list</a><div className="detail-heading-row"><div><p className="eyebrow">Activity record</p><h2 id="detail-heading">{selectedRow?.campaign_name ?? selected.campaign_id}</h2><p className="detail-context">{humanize(selectedRow?.activity_type)} &middot; {formatDate(selected.created_at)}</p></div><span className={`status status-${selectedRow?.status ?? "unknown"}`}>{humanize(selectedRow?.status)}</span></div></div><div className="summary-grid"><SummaryCard label="Requested output" value={`${selected.payloads.length} instruction${selected.payloads.length === 1 ? "" : "s"}`} /><SummaryCard label="Information used" value={`${selected.items.length} source${selected.items.length === 1 ? "" : "s"}`} /><SummaryCard label="Generated result" value={outputs.length ? `${outputs.length} persisted output${outputs.length === 1 ? "" : "s"}` : "No persisted output"} /><SummaryCard label="Model response" value={humanize(selectedRow?.status)} /></div>{actionError && <p className="notice error" role="alert">{actionError}</p>}<div className="detail-content"><DetailPanel title="What we asked the AI to do" description="The complete instruction sent for this activity." text={prompt} copyLabel="instruction" onCopy={() => copy(prompt, "instruction")} onText={() => download(`${selected.generation_context_id}-prompts.txt`, prompt, "text/plain", "instruction")} onJson={() => download(`${selected.generation_context_id}-prompts.json`, jsonText(selected.payloads), "application/json", "instruction JSON")} /><SourcePanel selected={selected} workerContext={workerContext} assembledContext={assembledContext} onCopy={copy} onDownload={download} /><DetailPanel title="What the AI returned" description="Persisted generated outputs are shown here when available; otherwise the activity outcome is stated plainly." text={resultText} copyLabel="result" onCopy={() => copy(resultText, "result")} onText={() => download(`${selected.generation_context_id}-results.txt`, resultText, "text/plain", "result")} onJson={() => download(`${selected.generation_context_id}-results.json`, resultText, "application/json", "result JSON")} /><details className="technical detail-technical"><summary>Technical details</summary><dl className="metadata-grid"><Meta label="Generation context ID" value={selected.generation_context_id} /><Meta label="Run ID" value={selected.run_id} /><Meta label="Task ID" value={selected.task_id ?? "Not available"} /><Meta label="Model" value={selected.payloads.map(payload => payload.model).filter(Boolean).join(", ") || "Not available"} /><Meta label="Internal tokens" value={String(selected.internal_token_count)} /><Meta label="External tokens" value={String(selected.external_token_count)} /><Meta label="Internal ratio" value={String(selected.internal_ratio)} /><Meta label="External ratio" value={String(selected.external_ratio)} /><Meta label="Search status" value={selected.external_search_status} /></dl><DetailPanel title="Raw JSON" text={rawJson} copyLabel="raw JSON" onCopy={() => copy(rawJson, "raw JSON")} onText={() => download(`${selected.generation_context_id}-metadata.txt`, rawJson, "text/plain", "raw JSON")} onJson={() => download(`${selected.generation_context_id}-metadata.json`, rawJson, "application/json", "raw JSON")} /></details></div></> : <><h2 id="detail-heading">Next step</h2><div className="next-step"><div className="next-icon" aria-hidden="true">+</div><h3>Select an activity</h3><p>Choose an activity from the list to inspect its prompts and assembled context.</p></div></>}</section></div>
