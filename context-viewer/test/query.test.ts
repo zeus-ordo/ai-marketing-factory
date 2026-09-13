@@ -196,6 +196,41 @@ test("administrator workbench wires campaign search and surfaces campaign load e
   assert.match(page, /campaign_name/);
 });
 
+test("activity record detail uses readable administrator sections and actions", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const label of [
+    "What we asked the AI to do",
+    "Information given to the AI",
+    "What the AI returned",
+    "Copy instruction",
+    "View all information",
+    "Technical details",
+  ]) {
+    assert.match(page, new RegExp(label));
+  }
+  assert.match(page, /internal_token_count/);
+  assert.match(page, /external_token_count/);
+  assert.match(page, /Back to activity list/);
+});
+
+test("activity record detail preserves filters and reports action failures", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /URLSearchParams/);
+  assert.match(page, /campaign_id/);
+  assert.match(page, /activity_type/);
+  assert.match(page, /status/);
+  assert.match(page, /catch/);
+  assert.match(page, /role="alert"/);
+  assert.match(page, /navigator\.clipboard\.writeText/);
+  assert.match(page, /download/);
+});
+
+test("activity record detail has a narrow one-column layout", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /max-width:\s*760px/);
+  assert.match(styles, /grid-template-columns:\s*1fr/);
+});
+
 test("login sets a signed HttpOnly SameSite cookie", async () => {
   process.env.VIEWER_USERNAME = "admin";
   process.env.VIEWER_PASSWORD = "password";
