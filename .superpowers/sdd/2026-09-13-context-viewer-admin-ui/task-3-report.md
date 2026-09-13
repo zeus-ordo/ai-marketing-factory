@@ -40,3 +40,13 @@
 - `npm test`: passed, 24 tests.
 - `npx tsc --noEmit`: passed.
 - `npm run build`: passed after wrapping the `useSearchParams` client page in Suspense as required by Next.js 16.
+
+## Remaining Finding Fix
+
+- Added a correlated `output_count` to the context list query using the existing `asset_outputs` table, matching campaign and run with a task fallback for legacy rows.
+- Preserved `payload_count` in the list response for compatibility, while the activity card now labels and displays `output_count` as `Outputs`.
+- Added a focused regression assertion that rejects rendering `row.payload_count` under the `Outputs` label.
+- `npm test -- --test-name-pattern="true persisted outputs"`: passed, 1 test.
+- `npm test`: passed, 25 tests.
+- `npx tsc --noEmit`: passed.
+- `npm run build`: passed; existing multiple-lockfile workspace-root warning remains.

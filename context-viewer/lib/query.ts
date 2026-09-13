@@ -41,7 +41,7 @@ export function buildContextListQuery(filters: Filters = {}): Query {
   const offset = Number.isFinite(rawOffset) ? Math.min(Math.max(rawOffset, 0), 100_000) : 0;
   values.push(limit, offset);
   return {
-    text: `SELECT c.campaign_id, COALESCE(NULLIF(c.brief_json->>'campaign_name', ''), c.campaign_id) AS campaign_name, COALESCE(ct.status, c.status) AS status, gc.generation_context_id, gc.run_id, gc.created_at, COALESCE(ct.task_type, MIN(lp.task_type)) AS activity_type, COUNT(DISTINCT gci.generation_context_item_id)::int AS context_item_count, COUNT(DISTINCT lp.payload_id)::int AS payload_count
+    text: `SELECT c.campaign_id, COALESCE(NULLIF(c.brief_json->>'campaign_name', ''), c.campaign_id) AS campaign_name, COALESCE(ct.status, c.status) AS status, gc.generation_context_id, gc.run_id, gc.created_at, COALESCE(ct.task_type, MIN(lp.task_type)) AS activity_type, COUNT(DISTINCT gci.generation_context_item_id)::int AS context_item_count, COUNT(DISTINCT lp.payload_id)::int AS payload_count, (SELECT COUNT(*)::int FROM asset_outputs ao WHERE ao.campaign_id = gc.campaign_id AND (ao.run_id = gc.run_id OR (ao.run_id IS NULL AND ao.task_id = gc.task_id))) AS output_count
       FROM campaigns c JOIN generation_contexts gc ON gc.campaign_id = c.campaign_id
       LEFT JOIN campaign_tasks ct ON ct.task_id = gc.task_id AND ct.campaign_id = gc.campaign_id
       LEFT JOIN generation_context_items gci ON gci.generation_context_id = gc.generation_context_id

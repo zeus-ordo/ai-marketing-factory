@@ -249,6 +249,15 @@ test("activity detail does not treat prompt payloads as generated results", asyn
   assert.doesNotMatch(page, /Generated result.*selected\.payloads\.length/);
 });
 
+test("activity list labels true persisted outputs instead of payloads", async () => {
+  const query = buildContextListQuery();
+  assert.match(query.text, /asset_outputs/);
+  assert.match(query.text, /AS output_count/);
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /output_count/);
+  assert.doesNotMatch(page, /<dt>Outputs<\/dt><dd>\{row\.payload_count\}/);
+});
+
 test("activity record detail has a narrow one-column layout", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(styles, /max-width:\s*760px/);
