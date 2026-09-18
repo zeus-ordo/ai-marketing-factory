@@ -245,6 +245,21 @@ test("activity record detail uses readable administrator sections and actions", 
   assert.match(page, /Back to activity list/);
 });
 
+test("historical records explain when the exact instruction was not captured", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /exact instruction was not captured/);
+  assert.match(page, /historical activity/);
+  assert.match(page, /Exact prompt capture was added later/);
+});
+
+test("source items show human-readable provenance fields and counts", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const field of ["label", "file name", "folder", "source type", "count"]) {
+    assert.match(page, new RegExp(field, "i"));
+  }
+  assert.doesNotMatch(page, /Object\.keys\(item as object\)/);
+});
+
 test("activity record detail preserves filters and reports action failures", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /URLSearchParams/);
