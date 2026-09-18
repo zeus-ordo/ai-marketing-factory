@@ -1423,6 +1423,34 @@ class PostgresPersistence:
             conn.commit()
         return deleted
 
+    def delete_folder_with_content(self, folder_id: str) -> list[str]:
+        """Delete a company folder and its durable content in one DB transaction."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT metadata_json->>'stored_path'
+                    FROM knowledge_items
+                    WHERE folder_id = %s;
+                    """,
+                    (folder_id,),
+                )
+                paths = [str(row[0]) for row in cur.fetchall() if row[0]]
+                cur.execute(
+                    """
+                    DELETE FROM campaign_references
+                    WHERE folder_id = %s
+                    RETURNING stored_path;
+                    """,
+                    (folder_id,),
+                )
+                paths.extend(str(row[0]) for row in cur.fetchall() if row[0])
+                cur.execute("DELETE FROM knowledge_items WHERE folder_id = %s", (folder_id,))
+                cur.execute("DELETE FROM folders WHERE folder_id = %s", (folder_id,))
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return paths if deleted else []
+
     def count_folder_associations(self, folder_id: str) -> int:
         """Return durable content references before allowing a folder delete."""
         with self._connect() as conn:

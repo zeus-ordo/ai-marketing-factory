@@ -637,6 +637,23 @@ export async function listCampaignTasks(campaignId: string): Promise<CampaignTas
   return data.tasks;
 }
 
+export async function fetchCampaignContent(contentUrl: string): Promise<Blob> {
+  const apiBase = getApiBase();
+  if (!apiBase) throw new Error("NEXT_PUBLIC_CAMPAIGN_API_BASE is not configured");
+  const parsed = apiBase === "/" ? null : new URL(contentUrl, apiBase);
+  const path = parsed ? `${parsed.pathname}${parsed.search}` : contentUrl;
+  const token = getAccessToken();
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  let response = await fetch(buildApiUrl(apiBase, path), { headers });
+  if (response.status === 401 && await refreshAccessTokenOnce()) {
+    response = await fetch(buildApiUrl(apiBase, path), {
+      headers: { Authorization: `Bearer ${getAccessToken()}` },
+    });
+  }
+  if (!response.ok) throw new ApiRequestError(`Request failed: ${response.status}`);
+  return response.blob();
+}
+
 export async function retryCampaignTask(campaignId: string, taskId: string): Promise<RetryTaskResponse> {
   return request<RetryTaskResponse>(`/api/v1/internal/campaigns/${campaignId}/tasks/retry`, {
     method: "POST",

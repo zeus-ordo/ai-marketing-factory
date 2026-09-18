@@ -105,9 +105,10 @@ export default function ContentStudioPage() {
     try {
       await deleteFolder(folder.folder_id);
       if (selectedFolderId === folder.folder_id) setSelectedFolderId(null);
+      await loadItems();
       void loadFolders();
     } catch {
-      // ignore errors
+      setMessage(t("knowledge.deleteFailed"));
     }
   }
 
@@ -375,7 +376,6 @@ export default function ContentStudioPage() {
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
                     {item.content_url ? <button type="button" onClick={() => setFilePreview({ source: item.content_url!, fileName: String(item.metadata.file_name ?? item.title) })} className="text-xs font-medium text-blue-600 hover:underline">{t("campaigns.knowledge.preview")}</button> : null}
-                    {item.content_url ? <a href={item.content_url} target="_blank" rel="noreferrer" className="text-xs font-medium text-blue-600 hover:underline">{t("knowledge.download")}</a> : null}
                     <select
                       value={item.folder_id ?? ""}
                       onChange={(event) => void handleMoveItem(item, event.target.value)}

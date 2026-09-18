@@ -3566,6 +3566,33 @@ def count_in_memory_folder_associations(folder_id: str) -> int:
     )
 
 
+def delete_in_memory_folder_content(folder_id: str) -> list[str]:
+    paths: list[str] = []
+    for company_id, rows in knowledge_items.items():
+        kept = []
+        for item in rows:
+            if getattr(item, "folder_id", None) != folder_id:
+                kept.append(item)
+                continue
+            metadata = item.metadata if isinstance(item.metadata, dict) else {}
+            stored_path = metadata.get("stored_path")
+            if isinstance(stored_path, str):
+                paths.append(stored_path)
+        knowledge_items[company_id] = kept
+
+    for campaign_id, rows in campaign_references.items():
+        kept = []
+        for item in rows:
+            if getattr(item, "folder_id", None) != folder_id:
+                kept.append(item)
+                continue
+            stored_path = campaign_reference_files.get(campaign_id, {}).pop(getattr(item, "reference_id", ""), None)
+            if stored_path:
+                paths.append(stored_path)
+        campaign_references[campaign_id] = kept
+    return paths
+
+
 def get_folder_or_404(folder_id: str) -> dict[str, Any]:
     if persistence is not None:
         folder = persistence.get_folder(folder_id)
@@ -4451,12 +4478,14 @@ def update_folder(req: Request, folder_id: str, payload: FolderUpdateRequest) ->
 @app.delete("/api/v1/folders/{folder_id}")
 def delete_folder(req: Request, folder_id: str) -> dict[str, Any]:
     folder = get_folder_or_404(folder_id)
+    if folder.get("scope") == "platform":
+        raise HTTPException(status_code=403, detail="Platform folders are read-only")
     if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
         authorize_folder_access(folder, require_jwt(req), "delete")
-    association_count = persistence.count_folder_associations(folder_id) if persistence is not None else count_in_memory_folder_associations(folder_id)
-    if association_count > 0:
-        raise HTTPException(status_code=409, detail="Folder has content associations")
-    deleted = persistence.delete_folder(folder_id) if persistence is not None else folders_cache.pop(folder_id, None) is not None
+    paths = persistence.delete_folder_with_content(folder_id) if persistence is not None else delete_in_memory_folder_content(folder_id)
+    deleted = True if persistence is not None else folders_cache.pop(folder_id, None) is not None
+    for path in paths:
+        cleanup_reference_upload(path)
     return {"folder_id": folder_id, "deleted": deleted}
 
 

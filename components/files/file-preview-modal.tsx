@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
+import { fetchCampaignContent } from "@/lib/api/campaigns";
 
 type Props = {
   source: File | string | null;
@@ -33,12 +34,7 @@ export function FilePreviewModal({ source, fileName, open, onClose }: Props) {
     }
     let active = true;
     let objectUrl: string | null = null;
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
-    fetch(sourceUrl, { headers: token ? { Authorization: `Bearer ${token}` } : undefined })
-      .then((response) => {
-        if (!response.ok) throw new Error(`Preview request failed: ${response.status}`);
-        return response.blob();
-      })
+    fetchCampaignContent(sourceUrl)
       .then((blob) => {
         if (!active) return;
         objectUrl = URL.createObjectURL(blob);

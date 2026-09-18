@@ -42,41 +42,89 @@ def test_legacy_unfiled_content_remains_general_when_no_folder_id_exists():
     assert main.authorize_folder_access({"folder_id": None, "scope": None, "company_id": None, "name": "General"}, actor(), "use") is None
 
 
-def test_folder_delete_rejects_referenced_folder(monkeypatch):
+def test_folder_delete_removes_referenced_content(monkeypatch, tmp_path):
     folder = {"folder_id": "company-brand", "scope": "company", "company_id": "company-a", "name": "Brand"}
+    knowledge_path = tmp_path / "knowledge.txt"
+    reference_path = tmp_path / "reference.txt"
+    knowledge_path.write_text("knowledge")
+    reference_path.write_text("reference")
+    knowledge = main.KnowledgeItemRecord(
+        item_id="item-1", company_id="company-a", title="Guide", source="manual", description="",
+        metadata={"stored_path": str(knowledge_path)}, folder_id=folder["folder_id"], created_at=datetime.utcnow(),
+    )
+    reference = main.CampaignReferenceRecord(
+        reference_id="ref-1", campaign_id="campaign-1", file_name="reference.txt", file_type="text/plain",
+        file_size=9, uploaded_at=datetime.utcnow().isoformat(), download_url="", folder="Brand", folder_id=folder["folder_id"],
+    )
 
     class Persistence:
         def get_folder(self, folder_id):
             return folder if folder_id == folder["folder_id"] else None
 
-        def count_folder_associations(self, folder_id):
-            return 1
+        def delete_folder_with_content(self, folder_id):
+            assert folder_id == folder["folder_id"]
+            return [str(knowledge_path), str(reference_path)]
 
     monkeypatch.setattr(main, "persistence", Persistence())
     monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
     monkeypatch.setattr(main, "is_internal_api_key_request", lambda _req: False)
     monkeypatch.setattr(main, "require_jwt", lambda _req: actor(permissions=["folder:delete"]))
 
-    with pytest.raises(HTTPException) as exc:
-        main.delete_folder(object(), "company-brand")
-    assert exc.value.status_code == 409
+    main.campaign_references["campaign-1"] = [reference]
+    main.campaign_reference_files["campaign-1"] = {"ref-1": str(reference_path)}
+    main.knowledge_items["company-a"] = [knowledge]
+
+    result = main.delete_folder(object(), "company-brand")
+
+    assert result == {"folder_id": "company-brand", "deleted": True}
+    assert not knowledge_path.exists()
+    assert not reference_path.exists()
+    main.campaign_references.clear()
+    main.campaign_reference_files.clear()
+    main.knowledge_items.clear()
 
 
-def test_in_memory_folder_delete_rejects_referenced_folder(monkeypatch):
+def test_in_memory_folder_delete_removes_referenced_content(monkeypatch, tmp_path):
     folder = {"folder_id": "company-brand", "scope": "company", "company_id": "company-a", "name": "Brand"}
+    knowledge_path = tmp_path / "knowledge.txt"
+    reference_path = tmp_path / "reference.txt"
+    knowledge_path.write_text("knowledge")
+    reference_path.write_text("reference")
     main.folders_cache.clear()
     main.folders_cache[folder["folder_id"]] = folder
-    main.knowledge_items["company-a"] = [SimpleNamespace(folder_id=folder["folder_id"])]
+    main.knowledge_items["company-a"] = [SimpleNamespace(folder_id=folder["folder_id"], metadata={"stored_path": str(knowledge_path)})]
+    main.campaign_references["campaign-1"] = [SimpleNamespace(folder_id=folder["folder_id"], reference_id="ref-1")]
+    main.campaign_reference_files["campaign-1"] = {"ref-1": str(reference_path)}
     monkeypatch.setattr(main, "persistence", None)
     monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
     monkeypatch.setattr(main, "is_internal_api_key_request", lambda _req: False)
     monkeypatch.setattr(main, "require_jwt", lambda _req: actor(permissions=["folder:delete"]))
 
+    result = main.delete_folder(object(), folder["folder_id"])
+    assert result == {"folder_id": folder["folder_id"], "deleted": True}
+    assert not knowledge_path.exists()
+    assert not reference_path.exists()
+    assert main.knowledge_items["company-a"] == []
+    assert main.campaign_references["campaign-1"] == []
+    main.knowledge_items.clear()
+    main.campaign_references.clear()
+    main.campaign_reference_files.clear()
+    main.folders_cache.clear()
+
+
+def test_platform_folder_delete_remains_forbidden_for_platform_admin(monkeypatch):
+    folder = {"folder_id": "platform-brand", "scope": "platform", "company_id": None, "name": "Brand"}
+
+    class Persistence:
+        def get_folder(self, folder_id):
+            return folder if folder_id == folder["folder_id"] else None
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
+
     with pytest.raises(HTTPException) as exc:
         main.delete_folder(object(), folder["folder_id"])
-    assert exc.value.status_code == 409
-    main.knowledge_items.clear()
-    main.folders_cache.clear()
+    assert exc.value.status_code == 403
 
 
 def test_in_memory_internal_folder_listing_matches_persistent_platform_scope(monkeypatch):
