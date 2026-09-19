@@ -13,5 +13,8 @@ if (!campaignsApi.includes("response.blob()")) throw new Error("Remote previews 
 if (!campaignsApi.includes("Authorization")) throw new Error("Remote previews must send the access token.");
 if (!campaigns.includes("<FilePreviewModal")) throw new Error("Campaign uploads must expose file preview.");
 if (!contentStudio.includes("<FilePreviewModal")) throw new Error("Content library uploads must expose file preview.");
+if (!contentStudio.includes("item.description")) throw new Error("Content library must expose text-only knowledge items for preview/download.");
+if (!contentStudio.includes("new File([item.description")) throw new Error("Content library must preview text-only knowledge items.");
+if (!contentStudio.includes("t(\"campaigns.knowledge.download\")")) throw new Error("Content library must expose a download action.");
 
 console.log("File preview contract passed.");

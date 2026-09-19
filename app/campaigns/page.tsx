@@ -325,6 +325,8 @@ export default function CampaignCenterPage() {
   const [manualAssetPrompt, setManualAssetPrompt] = useState("");
   const [references, setReferences] = useState<CampaignReferenceRecord[]>([]);
   const [referencesLoading, setReferencesLoading] = useState(false);
+  const [editReferences, setEditReferences] = useState<CampaignReferenceRecord[]>([]);
+  const [editReferencesLoading, setEditReferencesLoading] = useState(false);
   const [referencesBusy, setReferencesBusy] = useState(false);
   const [referencesMessage, setReferencesMessage] = useState<string | null>(null);
   const [expandedReferenceFolderNames, setExpandedReferenceFolderNames] = useState<string[]>([]);
@@ -948,6 +950,19 @@ export default function CampaignCenterPage() {
       adsStrategy: Boolean(record.brief.deliverables.ads_strategy),
     });
     void loadEditAssets(campaignId);
+    void loadEditReferences(campaignId);
+  }
+
+  async function loadEditReferences(campaignId: string) {
+    setEditReferences([]);
+    setEditReferencesLoading(true);
+    try {
+      setEditReferences(await listCampaignReferences(campaignId));
+    } catch {
+      setEditReferences([]);
+    } finally {
+      setEditReferencesLoading(false);
+    }
   }
 
   async function loadEditAssets(campaignId: string) {
@@ -2002,7 +2017,7 @@ export default function CampaignCenterPage() {
       </section>
 
       {editTarget ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
           <div className="flex h-[90vh] w-full max-w-4xl flex-col rounded-2xl bg-white p-5 shadow-xl dark:bg-slate-900">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
               <h2 className="text-lg font-semibold">{t("campaigns.editTitle")}</h2>
@@ -2174,6 +2189,7 @@ export default function CampaignCenterPage() {
           </div>
         </div>
       ) : null}
+      {editTarget ? <div className="fixed right-8 top-24 z-[100] max-h-[60vh] w-96 overflow-y-auto rounded-xl border border-blue-300 bg-white p-4 text-xs shadow-2xl dark:border-blue-800 dark:bg-slate-900"><div className="flex items-center justify-between font-semibold"><span>本活動已保存的 Reference</span><span>{editReferences.length} 個</span></div>{editReferencesLoading ? <p className="mt-2 text-slate-500">載入中...</p> : editReferences.length === 0 ? <p className="mt-2 text-slate-500">沒有已保存的 Reference。</p> : <div className="mt-2 space-y-2">{editReferences.map((reference) => <div key={reference.reference_id} className="rounded-lg border border-slate-200 p-2 dark:border-slate-700"><div className="font-medium">{reference.file_name}</div><div className="mt-1 text-slate-500">{reference.file_type} · 資料夾：{reference.folder || reference.folder_id || "未分類"}</div><div className="mt-1 font-mono text-[10px] text-slate-400">{reference.reference_id}</div></div>)}</div>}</div> : null}
       <ReviewAssetPreviewModal
         assetId={previewAssetId}
         open={Boolean(previewAssetId)}

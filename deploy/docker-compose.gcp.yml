@@ -55,6 +55,7 @@ services:
     volumes:
       - campaign_references:/app/campaign_references
       - generated_assets:/app/generated_assets
+      - knowledge_uploads:/app/knowledge_uploads
     restart: unless-stopped
     depends_on:
       decision-service:
@@ -113,3 +114,4 @@ volumes:
   caddy_data:
   campaign_references:
   generated_assets:
+  knowledge_uploads:

@@ -6,6 +6,7 @@ import {
   createFolder,
   deleteFolder,
   deleteKnowledgeItem,
+  fetchCampaignContent,
   listKnowledgeItems,
   listFolders,
   updateKnowledgeItem,
@@ -172,6 +173,26 @@ export default function ContentStudioPage() {
       setMessage(t("knowledge.deleteFailed"));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleDownload(item: KnowledgeItemRecord) {
+    const contentUrl = item.content_url || (typeof item.metadata.download_url === "string" ? item.metadata.download_url : null);
+    if (!contentUrl && !item.description.trim()) return;
+    try {
+      const blob = contentUrl
+        ? await fetchCampaignContent(contentUrl)
+        : new Blob([item.description], { type: "text/plain;charset=utf-8" });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = String(item.metadata.file_name ?? `${item.title}.txt`);
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      setMessage(t("campaigns.knowledge.downloadFailed"));
     }
   }
 
@@ -375,7 +396,10 @@ export default function ContentStudioPage() {
                 <td className="px-4 py-3">{formatDateTime(locale, item.created_at)}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
-                    {item.content_url ? <button type="button" onClick={() => setFilePreview({ source: item.content_url!, fileName: String(item.metadata.file_name ?? item.title) })} className="text-xs font-medium text-blue-600 hover:underline">{t("campaigns.knowledge.preview")}</button> : null}
+                    {(item.content_url || typeof item.metadata.download_url === "string" || item.description.trim()) ? <>
+                      <button type="button" onClick={() => setFilePreview({ source: item.content_url || (typeof item.metadata.download_url === "string" ? String(item.metadata.download_url) : new File([item.description], `${item.title}.txt`, { type: "text/plain" })), fileName: String(item.metadata.file_name ?? `${item.title}.txt`) })} className="text-xs font-medium text-blue-600 hover:underline">{t("campaigns.knowledge.preview")}</button>
+                      <button type="button" onClick={() => void handleDownload(item)} className="text-xs font-medium text-emerald-600 hover:underline">{t("campaigns.knowledge.download")}</button>
+                    </> : null}
                     <select
                       value={item.folder_id ?? ""}
                       onChange={(event) => void handleMoveItem(item, event.target.value)}

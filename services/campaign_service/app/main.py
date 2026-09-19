@@ -5967,13 +5967,18 @@ def download_knowledge_item(req: Request, item_id: str, file_name: str) -> FileR
 
     if persistence is not None:
         candidates = persistence.list_knowledge_items(company_id)
+        if company_id != "platform":
+            candidates += persistence.list_knowledge_items("platform")
         for item in candidates:
             metadata = item.get("metadata", {})
             stored_path = metadata.get("stored_path") if isinstance(metadata, dict) else None
             if item.get("item_id") == item_id and isinstance(stored_path, str) and os.path.exists(stored_path):
                 return FileResponse(stored_path, filename=file_name)
     else:
-        for item in knowledge_items.get(company_id, []):
+        candidates = list(knowledge_items.get(company_id, []))
+        if company_id != "platform":
+            candidates += knowledge_items.get("platform", [])
+        for item in candidates:
             stored_path = item.metadata.get("stored_path") if isinstance(item.metadata, dict) else None
             if item.item_id == item_id and isinstance(stored_path, str) and os.path.exists(stored_path):
                 return FileResponse(stored_path, filename=file_name)

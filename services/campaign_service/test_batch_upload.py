@@ -293,3 +293,23 @@ def test_partial_database_persistence_is_deleted_after_failure(configured, monke
     assert persistence.rows == {}
     assert len(persistence.deleted) == 1
     assert list(tmp_path.rglob("*")) == []
+
+
+def test_company_user_can_download_visible_platform_knowledge_item(configured, monkeypatch, tmp_path):
+    stored_path = tmp_path / "platform-guide.txt"
+    stored_path.write_text("platform guide", encoding="utf-8")
+
+    class KnowledgePersistence:
+        def list_knowledge_items(self, company_id):
+            return [{
+                "item_id": "kh_platform",
+                "metadata": {"stored_path": str(stored_path)},
+            }] if company_id == "platform" else []
+
+    monkeypatch.setattr(main, "persistence", KnowledgePersistence())
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: False)
+    monkeypatch.setattr(main, "require_jwt", lambda _req: SimpleNamespace(company_id="company-a", permissions=[]))
+
+    response = main.download_knowledge_item(request(), "kh_platform", "guide.txt")
+
+    assert response.path == str(stored_path)
