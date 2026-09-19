@@ -231,11 +231,11 @@ test("administrator workbench clears detail when a refreshed list excludes it", 
 test("activity record detail uses readable administrator sections and actions", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   for (const label of [
-    "What we asked the AI to do",
-    "Information given to the AI",
+    "What we sent to the AI",
+    "References supplied",
     "What the AI returned",
     "Copy instruction",
-    "View all information",
+    "Technical context",
     "Technical details",
   ]) {
     assert.match(page, new RegExp(label));
@@ -243,6 +243,7 @@ test("activity record detail uses readable administrator sections and actions", 
   assert.match(page, /internal_token_count/);
   assert.match(page, /external_token_count/);
   assert.match(page, /Back to activity list/);
+  assert.match(page, /raw prompt and context remain available/);
 });
 
 test("historical records explain when the exact instruction was not captured", async () => {
@@ -254,10 +255,12 @@ test("historical records explain when the exact instruction was not captured", a
 
 test("source items show human-readable provenance fields and counts", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  for (const field of ["label", "file name", "folder", "source type", "count"]) {
+  for (const field of ["label", "Reference", "folder", "source type", "count"]) {
     assert.match(page, new RegExp(field, "i"));
   }
   assert.doesNotMatch(page, /Object\.keys\(item as object\)/);
+  assert.doesNotMatch(page, /Label\/file name:/);
+  assert.match(page, /References supplied/);
 });
 
 test("activity record detail preserves filters and reports action failures", async () => {
