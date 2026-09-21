@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import pytest
@@ -201,6 +202,36 @@ def test_image_payload_contains_reference_audit_and_sanitized_persisted_context(
     assert persisted_context["reference_audit"] == payload["reference_audit"]
     assert "reference_images" not in persisted_context
     assert "data" not in persisted_context["reference_audit"]["references"][0]
+
+
+def test_persisted_context_removes_nested_reference_image_data(monkeypatch):
+    import importlib
+    main = importlib.import_module("app.main")
+    captured = {}
+
+    class Persistence:
+        def save_llm_generation_payload(self, value):
+            captured.update(value)
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    audit = {
+        "selected_count": 1,
+        "attached_count": 1,
+        "failures": [],
+        "multimodal": True,
+        "references": [{"reference_id": "ref-1", "sha256": "abc"}],
+    }
+    payload = {
+        "reference_audit": audit,
+        "nested": {"reference_images": [{"reference_id": "ref-1", "data": "nested-secret"}]},
+    }
+
+    main._capture_worker_payload(payload, "image_generation", "camp-1", "task-image")
+
+    serialized_context = json.dumps(captured["context"])
+    assert "nested-secret" not in serialized_context
+    assert "reference_images" not in serialized_context
+    assert captured["context"]["reference_audit"] == audit
 
 
 def test_snapshot_has_required_provenance_fields_and_is_immutable():

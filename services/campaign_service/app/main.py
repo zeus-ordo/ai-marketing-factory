@@ -1165,6 +1165,22 @@ def _extract_worker_error_detail(message: str) -> str:
     return text
 
 
+def _sanitize_persisted_context(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[Any, Any] = {}
+        for key, nested_value in value.items():
+            normalized_key = key.lower() if isinstance(key, str) else key
+            if normalized_key in {"reference_images", "data", "image_data", "base64"}:
+                continue
+            sanitized[key] = _sanitize_persisted_context(nested_value)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_persisted_context(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_persisted_context(item) for item in value)
+    return value
+
+
 def _capture_worker_payload(
     payload: dict[str, Any],
     task_type: str,
@@ -1188,7 +1204,7 @@ def _capture_worker_payload(
             "model": payload.get("model") or "unknown",
             "prompt": payload.get("prompt") or payload.get("context") or "",
             # Reference image bytes are transient worker input, not persisted context.
-            "context": {key: value for key, value in payload.items() if key != "reference_images"},
+            "context": _sanitize_persisted_context(payload),
         })
     except Exception as exc:
         # Capture is diagnostic and must never change generation behavior.
