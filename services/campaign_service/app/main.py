@@ -1,6 +1,7 @@
 import base64
 import binascii
 import ast
+import hashlib
 import json
 import logging
 import mimetypes
@@ -62,7 +63,7 @@ from .validation import validate_campaign_brief
 from .industry_matching import match_industry_items
 from .external_search import ExternalSearchResult, build_campaign_search_query, build_search_provider
 from .external_search import ExternalSearchError
-from .context_assembler import ContextSourceItem, GenerationContextSnapshot, assemble_generation_context
+from .context_assembler import ContextSourceItem, GenerationContextSnapshot, assemble_generation_context, select_image_reference_items
 
 
 class QueueHealthResponse(BaseModel):
@@ -2616,6 +2617,40 @@ Video type policy:
     )
 
 
+MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
+
+
+def build_image_reference_payload(snapshot: GenerationContextSnapshot) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    selected = select_image_reference_items(list(snapshot.items))
+    references: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    for item in selected:
+        metadata = item.metadata
+        reference_id = item.source_id
+        stored_path = str(metadata.get("stored_path") or "")
+        if not stored_path or not os.path.isfile(stored_path):
+            failures.append({"reference_id": reference_id, "category": "missing_file"})
+            continue
+        try:
+            file_size = os.path.getsize(stored_path)
+            if file_size > MAX_REFERENCE_IMAGE_BYTES:
+                failures.append({"reference_id": reference_id, "category": "file_too_large"})
+                continue
+            raw = open(stored_path, "rb").read()
+            mime_type = str(metadata.get("mime_type") or metadata.get("file_type") or metadata.get("content_type") or "image/png")
+            references.append({
+                "reference_id": reference_id,
+                "file_name": item.label,
+                "mime_type": mime_type,
+                "data": base64.b64encode(raw).decode("ascii"),
+                "folder": str(metadata.get("folder") or metadata.get("folder_name") or ""),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
+        except OSError:
+            failures.append({"reference_id": reference_id, "category": "read_error"})
+    return references, {"selected_count": len(selected), "attached_count": len(references), "failures": failures, "multimodal": bool(references)}
+
+
 def build_worker_payload_for_task(
     campaign: CampaignRecord,
     task: dict[str, Any] | TaskRecord,
@@ -2636,6 +2671,9 @@ def build_worker_payload_for_task(
     task_provider = task.get("provider") if isinstance(task, dict) else task.provider
     task_model = task.get("model") if isinstance(task, dict) else task.model
     task_run_id = task.get("run_id") if isinstance(task, dict) else task.run_id
+    reference_images, reference_audit = build_image_reference_payload(snapshot) if task_type == "image_generation" and snapshot else ([], {})
+    if reference_audit.get("failures"):
+        raise HTTPException(status_code=422, detail={"message": "Selected Reference images could not be attached", "failures": reference_audit["failures"]})
     context_payload.update({key: value for key, value in {"provider": task_provider, "model": task_model, "run_id": task_run_id}.items() if value})
     context_text = "\n\nSnapshot source context:\n" + "\n".join(
         f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
@@ -2670,6 +2708,8 @@ def build_worker_payload_for_task(
             "prompt": image_prompt + context_text,
             "sizes": image_sizes_for_count(campaign.brief.deliverables.image_assets),
             "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
+            "reference_images": reference_images,
+            "reference_audit": reference_audit,
             **context_payload,
         }
     if task_type == "video_generation":

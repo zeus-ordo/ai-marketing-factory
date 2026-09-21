@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
-from app.context_assembler import ContextSourceItem, assemble_generation_context
+from app.context_assembler import ContextSourceItem, assemble_generation_context, select_image_reference_items
 from app.schemas import CampaignBrief, CampaignRecord, Deliverables, TargetAudience
 
 
@@ -28,6 +29,29 @@ def campaign() -> CampaignRecord:
 
 def item(source_type: str, source_id: str, text: str = "source text", **metadata: str) -> ContextSourceItem:
     return ContextSourceItem(source_type, source_id, source_id, text, metadata)
+
+
+def test_image_reference_selection_caps_manual_and_industry_sources_in_stable_order():
+    sources = [
+        item("campaign_reference", f"manual-{index}", file_type="image/png") for index in range(5)
+    ] + [
+        item("industry_matched", f"industry-{index}", file_type="image/jpeg") for index in range(4)
+    ]
+
+    selected = select_image_reference_items(sources)
+
+    assert [source.source_id for source in selected] == [
+        "manual-0", "manual-1", "manual-2", "manual-3", "industry-0", "industry-1"
+    ]
+
+
+def test_image_reference_selection_ignores_non_image_sources():
+    selected = select_image_reference_items([
+        item("campaign_reference", "text-1", file_type="text/plain"),
+        item("campaign_reference", "image-1", file_type="image/png"),
+    ])
+
+    assert [source.source_id for source in selected] == ["image-1"]
 
 
 def test_allocates_floor_75_25_budgets_and_records_ratios():
@@ -129,6 +153,28 @@ def test_automatic_search_is_added_and_failure_is_classified(monkeypatch):
     failed = main.create_generation_context(campaign(), "run-2")
     assert failed.external_search_status == "provider_error"
     assert failed.external_source_urls == ()
+
+
+def test_image_payload_contains_encoded_reference_and_audit(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
+    monkeypatch.setenv("CAMPAIGN_REQUIRE_POSTGRES", "false")
+    import importlib
+    main = importlib.import_module("app.main")
+    image_path = Path(tmp_path) / "reference.png"
+    image_path.write_bytes(b"reference-image")
+    snapshot = assemble_generation_context(
+        campaign(),
+        [item("campaign_reference", "ref-1", "", mime_type="image/png", stored_path=str(image_path), folder="General")],
+        [],
+        [],
+        100,
+    )
+
+    payload = main.build_worker_payload_for_task(campaign(), {"task_id": "task-image", "task_type": "image_generation"}, snapshot)
+
+    assert payload["reference_images"][0]["reference_id"] == "ref-1"
+    assert payload["reference_images"][0]["data"]
+    assert payload["reference_audit"] == {"selected_count": 1, "attached_count": 1, "failures": [], "multimodal": True}
 
 
 def test_snapshot_has_required_provenance_fields_and_is_immutable():

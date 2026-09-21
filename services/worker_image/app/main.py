@@ -11,7 +11,7 @@ import httpx
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
-from .schemas import ImageRunRequest, ImageRunResponse, ImageAsset, RevisionRequest
+from .schemas import ImageRunRequest, ImageRunResponse, ImageAsset, ReferenceImage, RevisionRequest
 from .prompt_utils import fit_minimax_prompt
 
 
@@ -238,6 +238,10 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
     t0 = time.perf_counter()
     assets: list[ImageAsset] = []
 
+    failures = payload.reference_audit.get("failures", []) if isinstance(payload.reference_audit, dict) else []
+    if failures:
+        raise HTTPException(status_code=422, detail={"message": "Reference images could not be attached", "failures": failures})
+
     api_key = _active_api_key()
 
     if not _has_real_key(api_key):
@@ -263,7 +267,7 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
     for size in payload.sizes:
         try:
             generated_url = _validate_image_asset(
-                _generate_image_asset_url(payload.prompt, size, api_key),
+                _generate_image_asset_url(payload.prompt, size, api_key, payload.reference_images),
                 provider=_active_provider(),
                 status_code=200,
             )
@@ -376,11 +380,11 @@ def regenerate_image(payload: RevisionRequest) -> ImageRunResponse:
     )
 
 
-def _generate_image_asset_url(prompt: str, size: str, api_key: str) -> str:
+def _generate_image_asset_url(prompt: str, size: str, api_key: str, reference_images: list[ReferenceImage] | None = None) -> str:
     if _active_provider() == "minimax":
         return _generate_minimax_image(prompt, size, api_key)
     if _active_provider() == "gemini":
-        return _generate_gemini_image(prompt, size, api_key)
+        return _generate_gemini_image(prompt, size, api_key, reference_images or [])
     return _generate_stability_image(prompt, size, api_key)
 
 
@@ -453,7 +457,7 @@ def _generate_minimax_image(prompt: str, size: str, api_key: str) -> str:
         return _request_with_retry(request, provider="minimax")
 
 
-def _generate_gemini_image(prompt: str, size: str, api_key: str) -> str:
+def _generate_gemini_image(prompt: str, size: str, api_key: str, reference_images: list[ReferenceImage] | None = None) -> str:
     aspect_ratio = _size_to_aspect_ratio(size)
     with httpx.Client(timeout=120.0) as client:
         def request() -> str:
@@ -465,7 +469,18 @@ def _generate_gemini_image(prompt: str, size: str, api_key: str) -> str:
                 },
                 json={
                     "model": "gemini-3.1-flash-image",
-                    "input": [{"type": "text", "text": prompt}],
+                    "input": [
+                        {"type": "text", "text": prompt},
+                        *[
+                            {
+                                "type": "image",
+                                "data": reference.data,
+                                "mime_type": reference.mime_type,
+                                "reference_id": reference.reference_id,
+                            }
+                            for reference in (reference_images or [])
+                        ],
+                    ],
                     "response_format": {
                         "type": "image",
                         "aspect_ratio": aspect_ratio,

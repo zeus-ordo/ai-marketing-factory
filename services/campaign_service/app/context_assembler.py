@@ -53,6 +53,17 @@ def estimate_tokens(text: str) -> int:
     return max(1, (len(str(text).encode("utf-8")) + 3) // 4)
 
 
+def select_image_reference_items(items: list[ContextSourceItem]) -> tuple[ContextSourceItem, ...]:
+    """Select a stable, bounded set of image references for multimodal generation."""
+    manual_types = {"campaign_reference", "user_selected", "immediate_upload"}
+    def is_image(item: ContextSourceItem) -> bool:
+        mime_type = str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "")
+        return mime_type.lower().startswith("image/")
+    manual = [item for item in items if item.source_type in manual_types and is_image(item)]
+    industry = [item for item in items if item.source_type == "industry_matched" and is_image(item)]
+    return tuple([*manual[:4], *industry[:2]])
+
+
 def assemble_generation_context(
     campaign: CampaignRecord,
     selected_items: list[ContextSourceItem],
