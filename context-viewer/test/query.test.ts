@@ -186,6 +186,14 @@ test("detail query retains the persisted worker context JSON", () => {
   assert.match(query.text, /context_json/);
 });
 
+test("detail query exposes sanitized reference audit metadata without image payloads", () => {
+  const query = buildContextDetailQuery("context-1");
+  assert.match(query.text, /'context_json',\s*lp\.context_json/);
+  assert.match(query.text, /'reference_audit',\s*COALESCE\(lp\.context_json->'reference_audit',\s*'\{\}'::jsonb\)/);
+  assert.doesNotMatch(query.text, /reference_images/);
+  assert.doesNotMatch(query.text, /'data'/);
+});
+
 test("detail query returns generation context metadata and the UI renders a metadata panel", async () => {
   const query = buildContextDetailQuery("context-1");
   for (const field of ["campaign_id", "run_id", "generation_context_id", "internal_token_count", "external_token_count", "internal_ratio", "external_ratio", "external_source_urls_json", "external_search_status", "external_search_error", "task_id", "selected_reference_ids_json", "matched_folder_names_json"]) {
