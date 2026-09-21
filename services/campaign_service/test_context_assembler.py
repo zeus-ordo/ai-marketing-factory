@@ -155,7 +155,7 @@ def test_automatic_search_is_added_and_failure_is_classified(monkeypatch):
     assert failed.external_source_urls == ()
 
 
-def test_image_payload_contains_encoded_reference_and_audit(monkeypatch, tmp_path):
+def test_image_payload_contains_reference_audit_and_sanitized_persisted_context(monkeypatch, tmp_path):
     monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
     monkeypatch.setenv("CAMPAIGN_REQUIRE_POSTGRES", "false")
     import importlib
@@ -174,7 +174,33 @@ def test_image_payload_contains_encoded_reference_and_audit(monkeypatch, tmp_pat
 
     assert payload["reference_images"][0]["reference_id"] == "ref-1"
     assert payload["reference_images"][0]["data"]
-    assert payload["reference_audit"] == {"selected_count": 1, "attached_count": 1, "failures": [], "multimodal": True}
+    assert payload["reference_audit"] == {
+        "selected_count": 1,
+        "attached_count": 1,
+        "failures": [],
+        "multimodal": True,
+        "references": [{
+            "reference_id": "ref-1",
+            "file_name": "ref-1",
+            "mime_type": "image/png",
+            "folder": "General",
+            "sha256": "4110dd12af975f556bdac0299d0bfa04d42fa22d94f56b8550f1762e48fff7fb",
+        }],
+    }
+
+    captured = {}
+
+    class Persistence:
+        def save_llm_generation_payload(self, value):
+            captured.update(value)
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    main._capture_worker_payload(payload, "image_generation", "camp-1", "task-image")
+
+    persisted_context = captured["context"]
+    assert persisted_context["reference_audit"] == payload["reference_audit"]
+    assert "reference_images" not in persisted_context
+    assert "data" not in persisted_context["reference_audit"]["references"][0]
 
 
 def test_snapshot_has_required_provenance_fields_and_is_immutable():

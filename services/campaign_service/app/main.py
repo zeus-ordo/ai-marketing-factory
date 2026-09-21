@@ -1187,7 +1187,8 @@ def _capture_worker_payload(
             "provider": payload.get("provider") or "unknown",
             "model": payload.get("model") or "unknown",
             "prompt": payload.get("prompt") or payload.get("context") or "",
-            "context": dict(payload),
+            # Reference image bytes are transient worker input, not persisted context.
+            "context": {key: value for key, value in payload.items() if key != "reference_images"},
         })
     except Exception as exc:
         # Capture is diagnostic and must never change generation behavior.
@@ -2648,7 +2649,17 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot) -> tuple[
             })
         except OSError:
             failures.append({"reference_id": reference_id, "category": "read_error"})
-    return references, {"selected_count": len(selected), "attached_count": len(references), "failures": failures, "multimodal": bool(references)}
+    audit_references = [
+        {key: reference[key] for key in ("reference_id", "file_name", "mime_type", "folder", "sha256")}
+        for reference in references
+    ]
+    return references, {
+        "selected_count": len(selected),
+        "attached_count": len(references),
+        "failures": failures,
+        "multimodal": bool(references),
+        "references": audit_references,
+    }
 
 
 def build_worker_payload_for_task(
@@ -2674,6 +2685,8 @@ def build_worker_payload_for_task(
     reference_images, reference_audit = build_image_reference_payload(snapshot) if task_type == "image_generation" and snapshot else ([], {})
     if reference_audit.get("failures"):
         raise HTTPException(status_code=422, detail={"message": "Selected Reference images could not be attached", "failures": reference_audit["failures"]})
+    if task_type == "image_generation":
+        context_payload["reference_audit"] = reference_audit
     context_payload.update({key: value for key, value in {"provider": task_provider, "model": task_model, "run_id": task_run_id}.items() if value})
     context_text = "\n\nSnapshot source context:\n" + "\n".join(
         f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
