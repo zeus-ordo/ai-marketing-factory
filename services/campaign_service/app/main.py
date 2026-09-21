@@ -1170,7 +1170,7 @@ def _sanitize_persisted_context(value: Any) -> Any:
         sanitized: dict[Any, Any] = {}
         for key, nested_value in value.items():
             normalized_key = key.lower() if isinstance(key, str) else key
-            if normalized_key in {"reference_images", "data", "image_data", "base64"}:
+            if normalized_key == "reference_images":
                 continue
             sanitized[key] = _sanitize_persisted_context(nested_value)
         return sanitized

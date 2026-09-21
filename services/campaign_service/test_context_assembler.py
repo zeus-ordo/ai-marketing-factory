@@ -224,6 +224,11 @@ def test_persisted_context_removes_nested_reference_image_data(monkeypatch):
     payload = {
         "reference_audit": audit,
         "nested": {"reference_images": [{"reference_id": "ref-1", "data": "nested-secret"}]},
+        "unrelated": {
+            "data": "keep-this-data",
+            "image_data": "keep-this-image-data",
+            "base64": "keep-this-base64",
+        },
     }
 
     main._capture_worker_payload(payload, "image_generation", "camp-1", "task-image")
@@ -232,6 +237,11 @@ def test_persisted_context_removes_nested_reference_image_data(monkeypatch):
     assert "nested-secret" not in serialized_context
     assert "reference_images" not in serialized_context
     assert captured["context"]["reference_audit"] == audit
+    assert captured["context"]["unrelated"] == {
+        "data": "keep-this-data",
+        "image_data": "keep-this-image-data",
+        "base64": "keep-this-base64",
+    }
 
 
 def test_snapshot_has_required_provenance_fields_and_is_immutable():
