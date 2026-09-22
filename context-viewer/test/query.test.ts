@@ -254,6 +254,29 @@ test("activity record detail uses readable administrator sections and actions", 
   assert.match(page, /raw prompt and context remain available/);
 });
 
+test("reference audit renders success, legacy, and failure states without image bytes", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const auditFixture = {
+    selected_count: 2,
+    attached_count: 2,
+    multimodal: true,
+    failures: [],
+    references: [{ reference_id: "ref-1", file_name: "brand.png", mime_type: "image/png", folder: "Brand", sha256: "abc123" }],
+  };
+
+  assert.equal("data" in auditFixture.references[0], false);
+  for (const label of ["Attached successfully", "Selected:", "Attached:", "Multimodal:", "SHA-256", "Audit unavailable for this activity", "Attachment incomplete/failed"]) {
+    assert.match(page, new RegExp(label.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")));
+  }
+  assert.match(page, /reference_audit/);
+  assert.match(page, /normalizeReferenceAudit/);
+  assert.match(page, /Failed reference ID/);
+  assert.match(page, /Category:/);
+  assert.match(page, /withoutBinaryData/);
+  assert.doesNotMatch(page, /reference_images/);
+  assert.doesNotMatch(JSON.stringify(auditFixture), /base64|image bytes/);
+});
+
 test("historical records explain when the exact instruction was not captured", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /exact instruction was not captured/);
