@@ -17,4 +17,16 @@ Status: implemented
 
 ## Concern
 
-The existing `SourcePanel` call site predates the audit prop. The implementation preserves that call through an overload and uses the normalized current audit as the panel fallback; a follow-up cleanup can pass the prop explicitly when the surrounding page markup is split into smaller components.
+The existing page markup keeps the outer `SourcePanel` call compact; its typed wrapper now computes the selected audit and passes it explicitly to the rendering component.
+
+## Review Fixes
+
+- Removed module-level audit state and the `any` overload; `SourcePanel` computes the selected activity audit and passes it explicitly to `ReferenceSourcePanel`.
+- Centralized recursive `data` removal in `lib/reference-audit.ts`; `jsonText` now sanitizes every JSON display/download path, including prompt JSON.
+- Added behavioral tests for success, failure, legacy, malformed metadata, recursive binary removal, and local audit state.
+
+## Review Fix Verification
+
+- Focused Context Viewer tests: 7 passed.
+- Full Context Viewer tests: 39 passed.
+- Context Viewer production build: passed.

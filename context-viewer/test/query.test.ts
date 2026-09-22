@@ -9,6 +9,7 @@ import { GET as contexts } from "../app/api/contexts/route.ts";
 import { GET as detail } from "../app/api/contexts/[generationContextId]/route.ts";
 import { POST as login } from "../app/api/login/route.ts";
 import { formatDate } from "../lib/format.ts";
+import { normalizeReferenceAudit, referenceAuditFromPayloads, removeBinaryData } from "../lib/reference-audit.ts";
 
 test("buildContextListQuery parameterizes filters and caps the page", () => {
   const query = buildContextListQuery({
@@ -254,6 +255,29 @@ test("activity record detail uses readable administrator sections and actions", 
   assert.match(page, /raw prompt and context remain available/);
 });
 
+test("reference audit normalization covers success, failure, legacy, and malformed metadata", () => {
+  const success = normalizeReferenceAudit({ selected_count: 2, attached_count: 2, multimodal: true, failures: [], references: [{ reference_id: "ref-1", file_name: "brand.png", mime_type: "image/png", folder: "Brand", sha256: "abc123", data: "image-bytes" }] });
+  assert.deepEqual(success, { selectedCount: 2, attachedCount: 2, multimodal: true, failures: [], references: [{ referenceId: "ref-1", fileName: "brand.png", mimeType: "image/png", folder: "Brand", sha256: "abc123" }] });
+  assert.deepEqual(normalizeReferenceAudit({ selected_count: 2, attached_count: 1, multimodal: false, failures: [{ reference_id: "ref-2", category: "download_failed" }], references: [] })?.failures, [{ referenceId: "ref-2", category: "download_failed" }]);
+  assert.equal(referenceAuditFromPayloads([{ context_json: { prompt: "legacy" } }]), null);
+  assert.equal(normalizeReferenceAudit({ selected_count: -1, attached_count: 0, failures: [], references: [] }), null);
+  assert.equal(normalizeReferenceAudit({ selected_count: 1, attached_count: 1, failures: {}, references: [] }), null);
+});
+
+test("reference audit binary-data removal is recursive and preserves safe metadata", () => {
+  const sanitized = removeBinaryData({ data: "root-bytes", nested: [{ data: "nested-bytes", file_name: "brand.png" }], reference_audit: { sha256: "abc123" } });
+  assert.deepEqual(sanitized, { nested: [{ file_name: "brand.png" }], reference_audit: { sha256: "abc123" } });
+  assert.doesNotMatch(JSON.stringify(sanitized), /bytes|base64|data/);
+});
+
+test("viewer keeps audit state local to the selected activity", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(page, /activeReferenceAudit/);
+  assert.doesNotMatch(page, /function SourcePanel\(props: any\)/);
+  assert.match(page, /referenceAuditFromPayloads\(selected\.payloads\)/);
+  assert.match(page, /audit=\{referenceAudit\}/);
+});
+
 test("reference audit renders success, legacy, and failure states without image bytes", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const auditFixture = {
@@ -268,11 +292,6 @@ test("reference audit renders success, legacy, and failure states without image 
   for (const label of ["Attached successfully", "Selected:", "Attached:", "Multimodal:", "SHA-256", "Audit unavailable for this activity", "Attachment incomplete/failed"]) {
     assert.match(page, new RegExp(label.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")));
   }
-  assert.match(page, /reference_audit/);
-  assert.match(page, /normalizeReferenceAudit/);
-  assert.match(page, /Failed reference ID/);
-  assert.match(page, /Category:/);
-  assert.match(page, /withoutBinaryData/);
   assert.doesNotMatch(page, /reference_images/);
   assert.doesNotMatch(JSON.stringify(auditFixture), /base64|image bytes/);
 });

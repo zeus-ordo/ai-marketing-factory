@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { formatDate } from "../lib/format.ts";
+import { referenceAuditFromPayloads, removeBinaryData, type ReferenceAudit } from "../lib/reference-audit.ts";
 
 type Campaign = { campaign_id: string; campaign_name: string; status: string; created_at: string };
 type ContextRow = { campaign_id: string; campaign_name: string; generation_context_id: string; run_id: string; created_at: string; activity_type?: string | null; status?: string | null; context_item_count: number; payload_count: number; output_count: number };
@@ -11,10 +12,6 @@ type Output = { asset_id?: string; task_id?: string; asset_type?: string; url?: 
 type Detail = { generation_context_id: string; campaign_id: string; run_id: string; created_at: string; internal_token_count: number; external_token_count: number; internal_ratio: number; external_ratio: number; external_source_urls_json: unknown; external_search_status: string; external_search_error?: string | null; task_id?: string | null; selected_reference_ids_json: unknown; matched_folder_names_json: unknown; items: unknown[]; payloads: Payload[]; outputs: Output[] };
 type FilterValues = { campaign: string; context: string; run: string; activityType: string; status: string; from: string; to: string };
 type ContextItem = { source_type?: unknown; source_id?: unknown; label?: unknown; file_name?: unknown; text?: unknown; query?: unknown; metadata?: unknown; [key: string]: unknown };
-type ReferenceAudit = { selectedCount: number; attachedCount: number; multimodal: boolean; failures: ReferenceAuditFailure[]; references: ReferenceAuditReference[] };
-type ReferenceAuditReference = { referenceId: string; fileName: string; mimeType: string; folder: string; sha256: string };
-type ReferenceAuditFailure = { referenceId: string; category: string };
-let activeReferenceAudit: ReferenceAudit | null = null;
 
 const statuses = [
   { value: "", label: "All statuses" },
@@ -38,24 +35,7 @@ const activityTypes = [
 ];
 
 function humanize(value?: string | null) { return value ? value.replace(/[_-]+/g, " ").replace(/\b\w/g, character => character.toUpperCase()) : "Uncategorized"; }
-function jsonText(value: unknown) { return JSON.stringify(value, null, 2); }
-function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
-function displayString(value: unknown, fallback: string) { return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : fallback; }
-function withoutBinaryData(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutBinaryData);
-  if (!isRecord(value)) return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "data").map(([key, entry]) => [key, withoutBinaryData(entry)]));
-}
-function normalizeReferenceAudit(value: unknown): ReferenceAudit | null {
-  if (!isRecord(value) || typeof value.selected_count !== "number" || !Number.isInteger(value.selected_count) || value.selected_count < 0 || typeof value.attached_count !== "number" || !Number.isInteger(value.attached_count) || value.attached_count < 0 || !Array.isArray(value.failures) || !Array.isArray(value.references)) return null;
-  return {
-    selectedCount: value.selected_count,
-    attachedCount: value.attached_count,
-    multimodal: value.multimodal === true,
-    failures: value.failures.filter(isRecord).map(failure => ({ referenceId: displayString(failure.reference_id, "Unknown reference"), category: displayString(failure.category, "Unknown failure") })),
-    references: value.references.filter(isRecord).map(reference => ({ referenceId: displayString(reference.reference_id, "Unknown reference"), fileName: displayString(reference.file_name, "File name not recorded"), mimeType: displayString(reference.mime_type, "MIME type not recorded"), folder: displayString(reference.folder, "Folder not recorded"), sha256: displayString(reference.sha256, "SHA-256 not recorded") })),
-  };
-}
+function jsonText(value: unknown) { return JSON.stringify(removeBinaryData(value), null, 2); }
 function contextItemSummary(item: unknown, index: number) {
   const record = item && typeof item === "object" ? item as ContextItem : {};
   const metadata = record.metadata && typeof record.metadata === "object" ? record.metadata as Record<string, unknown> : {};
@@ -139,12 +119,10 @@ function ViewerPage() {
 
   const selectedRow = selected && rows.find(row => row.generation_context_id === selected.generation_context_id);
   const prompt = selected?.payloads.length ? selected.payloads.map(payload => payload.prompt ?? "").join("\n\n") : "The exact instruction was not captured for this historical activity. Exact prompt capture was added later, so this record cannot show what was sent.";
-  const workerContext = selected ? jsonText(selected.payloads.map(payload => withoutBinaryData(payload.context_json ?? {}))) : "";
-  const assembledContext = selected ? jsonText(withoutBinaryData(selected.items)) : "";
-  const rawJson = selected ? jsonText(withoutBinaryData(selected)) : "";
+  const workerContext = selected ? jsonText(selected.payloads.map(payload => removeBinaryData(payload.context_json ?? {}))) : "";
+  const assembledContext = selected ? jsonText(removeBinaryData(selected.items)) : "";
+  const rawJson = selected ? jsonText(removeBinaryData(selected)) : "";
   const outputs = selected ? selected.outputs : [];
-  const referenceAudit = selected?.payloads.map(payload => isRecord(payload.context_json) ? normalizeReferenceAudit(payload.context_json.reference_audit) : null).find((audit): audit is ReferenceAudit => audit !== null) ?? null;
-  activeReferenceAudit = referenceAudit;
   const resultText = outputs.length ? outputSummary(outputs) : `No generated output was persisted for this activity.\nPersisted outcome: ${humanize(selectedRow?.status ?? "unknown")}.`;
 
   return <main className="shell">
@@ -171,10 +149,9 @@ function ActivityList({ rows, loading, selected, onSelect }: { rows: ContextRow[
     </article>)}</div>}
   </section>;
 }
-function SourcePanel(props: any): any;
-function SourcePanel({ selected, workerContext, assembledContext, audit, onCopy, onDownload }: { selected: Detail; workerContext: string; assembledContext: string; audit: ReferenceAudit | null; onCopy: (value: string, label: string) => void; onDownload: (name: string, value: string, type: string, label: string) => void }) { return <section className="detail-card source-card"><div className="detail-card-heading"><div><h3>References supplied</h3><p>References and context supplied with the instruction. {selected.items.length} source{selected.items.length === 1 ? "" : "s"} recorded.</p></div><div className="detail-actions"><button onClick={() => onCopy(workerContext, "information")}>Copy information</button><button onClick={() => onDownload(`${selected.generation_context_id}-worker-context.txt`, workerContext, "text/plain", "information")}>Download text</button><button onClick={() => onDownload(`${selected.generation_context_id}-worker-context.json`, workerContext, "application/json", "information JSON")}>Download JSON</button></div></div><ul className="source-list">{selected.items.map((item, index) => { const summary = contextItemSummary(item, index); return <li key={index}><strong>Reference: {summary.label}</strong><span>Folder: {summary.folder} &middot; Source type: {summary.sourceType}</span><span>{summary.text}</span></li>; })}</ul><ReferenceAuditPanel audit={audit} /><details><summary>Technical context — raw prompt and context remain available</summary><pre>{assembledContext}</pre></details></section>; }
+function ReferenceSourcePanel({ selected, workerContext, assembledContext, audit, onCopy, onDownload }: { selected: Detail; workerContext: string; assembledContext: string; audit: ReferenceAudit | null; onCopy: (value: string, label: string) => void; onDownload: (name: string, value: string, type: string, label: string) => void }) { return <section className="detail-card source-card"><div className="detail-card-heading"><div><h3>References supplied</h3><p>References and context supplied with the instruction. {selected.items.length} source{selected.items.length === 1 ? "" : "s"} recorded.</p></div><div className="detail-actions"><button onClick={() => onCopy(workerContext, "information")}>Copy information</button><button onClick={() => onDownload(`${selected.generation_context_id}-worker-context.txt`, workerContext, "text/plain", "information")}>Download text</button><button onClick={() => onDownload(`${selected.generation_context_id}-worker-context.json`, workerContext, "application/json", "information JSON")}>Download JSON</button></div></div><ul className="source-list">{selected.items.map((item, index) => { const summary = contextItemSummary(item, index); return <li key={index}><strong>Reference: {summary.label}</strong><span>Folder: {summary.folder} &middot; Source type: {summary.sourceType}</span><span>{summary.text}</span></li>; })}</ul><ReferenceAuditPanel audit={audit} /><details><summary>Technical context — raw prompt and context remain available</summary><pre>{assembledContext}</pre></details></section>; }
+function SourcePanel({ selected, workerContext, assembledContext, onCopy, onDownload }: { selected: Detail; workerContext: string; assembledContext: string; onCopy: (value: string, label: string) => void; onDownload: (name: string, value: string, type: string, label: string) => void }) { const referenceAudit = referenceAuditFromPayloads(selected.payloads); return <ReferenceSourcePanel selected={selected} workerContext={workerContext} assembledContext={assembledContext} audit={referenceAudit} onCopy={onCopy} onDownload={onDownload} />; }
 function ReferenceAuditPanel({ audit }: { audit: ReferenceAudit | null }) {
-  audit = audit ?? activeReferenceAudit;
   if (!audit) return <div className="audit-panel"><strong>Reference attachment audit</strong><p>Audit unavailable for this activity</p></div>;
   const successful = audit.selectedCount === audit.attachedCount && audit.failures.length === 0;
   return <div className="audit-panel"><div className="audit-heading"><div><strong>Reference attachment audit</strong><p className={`status ${successful ? "status-completed" : "status-failed"}`}>{successful ? "Attached successfully" : "Attachment incomplete/failed"}</p></div><p>Selected: {audit.selectedCount}</p><p>Attached: {audit.attachedCount}</p><p>Multimodal: {audit.multimodal ? "Yes" : "No"}</p></div>{audit.references.length > 0 && <ul className="source-list">{audit.references.map((reference, index) => <li key={`${reference.referenceId}-${index}`}><strong>Reference ID: {reference.referenceId}</strong><span>File: {reference.fileName} &middot; MIME: {reference.mimeType}</span><span>Folder: {reference.folder} &middot; SHA-256: {reference.sha256}</span></li>)}</ul>}{audit.failures.length > 0 && <ul className="source-list">{audit.failures.map((failure, index) => <li key={`${failure.referenceId}-${index}`}><strong>Failed reference ID: {failure.referenceId}</strong><span>Category: {failure.category}</span></li>)}</ul>}</div>;
