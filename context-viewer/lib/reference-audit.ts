@@ -8,7 +8,8 @@ function displayString(value: unknown, fallback: string) { return typeof value =
 export function removeBinaryData(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(removeBinaryData);
   if (!isRecord(value)) return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "data").map(([key, entry]) => [key, removeBinaryData(entry)]));
+  const binaryKeys = new Set(["data", "image_data", "base64"]);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !binaryKeys.has(key.toLowerCase())).map(([key, entry]) => [key, removeBinaryData(entry)]));
 }
 
 export function normalizeReferenceAudit(value: unknown): ReferenceAudit | null {

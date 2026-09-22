@@ -244,6 +244,38 @@ def test_persisted_context_removes_nested_reference_image_data(monkeypatch):
     }
 
 
+def test_reference_attachment_failure_is_persisted_before_generation_raises(monkeypatch, tmp_path):
+    import importlib
+    from fastapi import HTTPException
+
+    main = importlib.import_module("app.main")
+    missing_path = Path(tmp_path) / "missing.png"
+    snapshot = assemble_generation_context(
+        campaign(),
+        [item("campaign_reference", "ref-1", "", mime_type="image/png", stored_path=str(missing_path), folder="Brand")],
+        [],
+        [],
+        100,
+    )
+    captured = []
+
+    class Persistence:
+        def save_llm_generation_payload(self, value):
+            captured.append(value)
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+
+    with pytest.raises(HTTPException) as error:
+        main.build_worker_payload_for_task(campaign(), {"task_id": "task-image", "task_type": "image_generation"}, snapshot)
+
+    assert error.value.status_code == 422
+    assert len(captured) == 1
+    persisted = captured[0]["context"]
+    assert persisted["reference_audit"]["failures"] == [{"reference_id": "ref-1", "category": "missing_file"}]
+    assert "reference_images" not in persisted
+    assert "data" not in json.dumps(persisted)
+
+
 def test_snapshot_has_required_provenance_fields_and_is_immutable():
     snapshot = assemble_generation_context(
         campaign(),

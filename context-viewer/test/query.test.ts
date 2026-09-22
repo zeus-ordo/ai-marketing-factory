@@ -6,7 +6,7 @@ import { buildCampaignQuery, buildContextDetailQuery, buildContextListQuery, red
 import { isValidSession, signSession } from "../lib/session.ts";
 import { GET as campaigns } from "../app/api/campaigns/route.ts";
 import { GET as contexts } from "../app/api/contexts/route.ts";
-import { GET as detail } from "../app/api/contexts/[generationContextId]/route.ts";
+import { GET as detail, contextDetailDeps } from "../app/api/contexts/[generationContextId]/route.ts";
 import { POST as login } from "../app/api/login/route.ts";
 import { formatDate } from "../lib/format.ts";
 import { normalizeReferenceAudit, referenceAuditFromPayloads, removeBinaryData } from "../lib/reference-audit.ts";
@@ -193,6 +193,32 @@ test("detail query exposes sanitized reference audit metadata without image payl
   assert.match(query.text, /'reference_audit',\s*COALESCE\(lp\.context_json->'reference_audit',\s*'\{\}'::jsonb\)/);
   assert.doesNotMatch(query.text, /reference_images/);
   assert.doesNotMatch(query.text, /'data'/);
+});
+
+test("detail API never returns legacy binary image fields from context JSON", async () => {
+  process.env.SESSION_SECRET = "test-secret";
+  const fixture = {
+    generation_context_id: "context-1",
+    payloads: [{ context_json: {
+      reference_images: [{ data: "raw-data", image_data: "raw-image-data", base64: "raw-base64", file_name: "brand.png" }],
+      nested: { image_data: "nested-image-data", base64: "nested-base64", safe: "kept" },
+    } }],
+  };
+  const pool = { query: async () => ({ rows: [fixture] }) };
+  const originalGetPool = contextDetailDeps.getPool;
+  contextDetailDeps.getPool = () => pool as never;
+  try {
+    const response = await detail(new Request("http://localhost/api/contexts/context-1", {
+      headers: { cookie: `context_viewer_session=${signSession("admin", "test-secret")}` },
+    }), { params: Promise.resolve({ generationContextId: "context-1" }) });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const serialized = JSON.stringify(body);
+    assert.doesNotMatch(serialized, /raw-data|raw-image-data|raw-base64|image_data|base64/);
+    assert.deepEqual(body.payloads[0].context_json.nested, { safe: "kept" });
+  } finally {
+    contextDetailDeps.getPool = originalGetPool;
+  }
 });
 
 test("detail query returns generation context metadata and the UI renders a metadata panel", async () => {

@@ -2700,6 +2700,18 @@ def build_worker_payload_for_task(
     task_run_id = task.get("run_id") if isinstance(task, dict) else task.run_id
     reference_images, reference_audit = build_image_reference_payload(snapshot) if task_type == "image_generation" and snapshot else ([], {})
     if reference_audit.get("failures"):
+        _capture_worker_payload(
+            {
+                "campaign_id": campaign_id,
+                "task_id": task_id,
+                "generation_context_id": snapshot.generation_context_id if snapshot else "",
+                "run_id": task_run_id or "",
+                "reference_audit": reference_audit,
+            },
+            "image_generation",
+            campaign_id,
+            task_id,
+        )
         raise HTTPException(status_code=422, detail={"message": "Selected Reference images could not be attached", "failures": reference_audit["failures"]})
     if task_type == "image_generation":
         context_payload["reference_audit"] = reference_audit
