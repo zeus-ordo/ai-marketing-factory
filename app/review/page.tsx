@@ -5,6 +5,7 @@ import { ReviewActionModal } from "@/components/review/review-action-modal";
 import { ReviewAssetPreviewModal } from "@/components/review/review-asset-preview-modal";
 import { ReviewAuditLog } from "@/components/review/review-audit-log";
 import { ReviewQueueTable } from "@/components/review/review-queue-table";
+import { canRetryTask, sanitizeDiagnosticText } from "@/lib/campaign-diagnostics";
 import {
   approveReviewItem,
   listCampaigns,
@@ -14,16 +15,39 @@ import {
   type ReviewAuditEntry,
   type ReviewItem,
   type ReviewStatus,
+  type CampaignTask,
 } from "@/lib/api/campaigns";
 import { useAuth } from "@/lib/auth/context";
 import { useI18n } from "@/lib/i18n/context";
+import { canReview as hasReviewPermission } from "@/lib/auth/permissions";
+
+function diagnosticTaskTypeLabel(taskType: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (taskType === "copywriting") return t("review.diagnostics.copywriting");
+  if (taskType === "image_generation") return t("review.diagnostics.imageGeneration");
+  if (taskType === "video_generation") return t("review.diagnostics.videoGeneration");
+  if (taskType === "ads_strategy") return t("review.diagnostics.adsStrategy");
+  return taskType;
+}
+
+function diagnosticTaskStatusLabel(status: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (status === "pending") return t("status.pending");
+  if (status === "planned") return t("status.planned");
+  if (status === "running") return t("status.running");
+  if (status === "validating") return t("status.validating");
+  if (status === "passed") return t("status.passed");
+  if (status === "retrying") return t("status.retrying");
+  if (status === "failed") return t("status.failed");
+  if (status === "blocked") return t("status.blocked");
+  return t("common.notAvailable");
+}
 
 export default function ReviewPage() {
   const { t } = useI18n();
   const { user, isLoading: authLoading } = useAuth();
-  const canReview = user?.permissions.some((permission) => ["*", "admin", "platform:admin", "review:approve", "review:reject", "review:revision"].includes(permission)) ?? false;
+  const canReview = user ? hasReviewPermission(user.permissions) : false;
   const [items, setItems] = useState<ReviewItem[]>([]);
   const [campaignNameMap, setCampaignNameMap] = useState<Record<string, string>>({});
+  const [campaignTaskMap, setCampaignTaskMap] = useState<Record<string, CampaignTask[]>>({});
   const [logs, setLogs] = useState<ReviewAuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<"" | ReviewStatus>("");
@@ -76,6 +100,7 @@ export default function ReviewPage() {
       setItems(queueItems);
       setLogs(audit.items);
       setCampaignNameMap(Object.fromEntries(campaigns.map((campaign) => [campaign.campaign_id, campaign.brief.campaign_name])));
+      setCampaignTaskMap(Object.fromEntries(campaigns.map((campaign) => [campaign.campaign_id, campaign.tasks ?? []])));
       setSelectedIds((prev) => prev.filter((id) => queueItems.some((item) => item.review_id === id)));
     } catch {
       if (requestId === latestRequestId.current) {
@@ -158,20 +183,20 @@ export default function ReviewPage() {
     }
   }
 
-  if (authLoading) {
-    return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading...</section>;
-  }
-
-  if (!canReview) {
-    return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">你沒有審核中心權限。</section>;
-  }
-
   const summary = useMemo(() => {
     const pending = items.filter((item) => item.status === "review_pending").length;
     const approved = items.filter((item) => item.status === "approved").length;
     const rejected = items.filter((item) => item.status === "rejected").length;
     return { pending, approved, rejected };
   }, [items]);
+
+  if (authLoading) {
+    return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">{t("common.loading")}</section>;
+  }
+
+  if (!canReview) {
+    return <section className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">{t("roles.noPermission")}</section>;
+  }
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredItems = items.filter((item) => {
@@ -218,6 +243,33 @@ export default function ReviewPage() {
         <Metric title={t("review.status.rejected")} value={summary.rejected} tone="text-rose-500" />
       </div>
 
+      {Array.from(new Map(items.filter((item) => item.source_summary).map((item) => [`${item.campaign_id}:${item.run_id || item.generation_context_id}`, item] as const)).values()).map((diagnosticItem) => {
+        const summary = diagnosticItem.source_summary;
+        if (!summary) return null;
+        const groupTasks = campaignTaskMap[diagnosticItem.campaign_id]?.filter((task) =>
+          (task.status === "failed" || task.status === "blocked") &&
+          (!diagnosticItem.run_id || task.run_id === diagnosticItem.run_id) &&
+          (!summary.generation_context_id || task.generation_context_id === summary.generation_context_id)
+        ) ?? [];
+        return (
+          <section key={`${diagnosticItem.campaign_id}:${diagnosticItem.run_id || summary.generation_context_id}`} aria-label={t("review.diagnostics.title")} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-sm font-semibold">{t("review.diagnostics.title")}</h2>
+              <code className="break-all text-xs text-slate-500">{campaignNameMap[diagnosticItem.campaign_id] || diagnosticItem.campaign_id} · {summary.generation_context_id}</code>
+            </div>
+            <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+              <div><p className="text-slate-500">{t("review.diagnostics.internalSources")}</p><p className="font-medium">{summary.internal_source_count} · {summary.internal_token_count} {t("review.diagnostics.tokens")}</p></div>
+              <div><p className="text-slate-500">{t("review.diagnostics.externalSources")}</p><p className="font-medium">{summary.external_source_count} · {summary.external_token_count} {t("review.diagnostics.tokens")}</p></div>
+              <div><p className="text-slate-500">{t("review.diagnostics.ratios")}</p><p className="font-medium">{(summary.internal_ratio * 100).toFixed(1)}% / {(summary.external_ratio * 100).toFixed(1)}%</p></div>
+              <div><p className="text-slate-500">{t("review.diagnostics.selectedReferences")}</p><p className="break-words font-medium">{summary.selected_reference_ids.join(", ") || t("common.notAvailable")}</p></div>
+            </div>
+            {groupTasks.map((task) => (
+              <p key={task.task_id} className="text-xs text-slate-600 dark:text-slate-300">{diagnosticTaskTypeLabel(task.task_type, t)}: {task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason || diagnosticTaskStatusLabel(task.status, t))} · {t("review.diagnostics.retryable")}: {canRetryTask(task) ? t("common.yes") : t("common.no")} · {t("review.diagnostics.attempts")}: {task.retry_count ?? 0}{task.next_retry_at ? ` · ${task.next_retry_at}` : ""}</p>
+            ))}
+          </section>
+        );
+      })}
+
       <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-2 dark:border-slate-800 dark:bg-slate-900">
         <input
           value={query}
@@ -227,8 +279,10 @@ export default function ReviewPage() {
           className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
         />
         <select
+          id="review-status-filter"
           value={statusFilter}
           onChange={(event) => setStatusFilter(event.target.value as "" | ReviewStatus)}
+          aria-label={t("review.allStatus")}
           className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
         >
           <option value="">{t("review.allStatus")}</option>

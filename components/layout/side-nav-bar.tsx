@@ -4,10 +4,11 @@ import Link from "next/link";
 import { navItems } from "@/lib/navigation";
 import { useAuth } from "@/lib/auth/context";
 import { useI18n } from "@/lib/i18n/context";
+import { canReview } from "@/lib/auth/permissions";
 
 function canSeeNavItem(href: string, permissions: string[]) {
   if (href === "/review") {
-    return permissions.some((permission) => ["*", "admin", "platform:admin", "review:approve", "review:reject", "review:revision"].includes(permission));
+    return canReview(permissions);
   }
   if (href === "/roles") {
     return permissions.includes("role:manage");

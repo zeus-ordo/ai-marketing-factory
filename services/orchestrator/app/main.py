@@ -1,9 +1,12 @@
 import importlib
+import ast
 import json
 import logging
 import os
 import threading
 import time
+import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -244,6 +247,12 @@ class TaskStateStore:
                         depends_on_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         acceptance_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         worker_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        error_class TEXT,
+                        error_detail TEXT,
+                        blocked_by_task_id TEXT,
+                        blocked_reason TEXT,
+                        next_retry_at TIMESTAMPTZ,
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     );
                     """
@@ -251,6 +260,15 @@ class TaskStateStore:
                 cur.execute("ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS company_id TEXT NOT NULL DEFAULT '';")
                 cur.execute("ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT '';")
                 cur.execute("ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS worker_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb;")
+                for statement in (
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS error_class TEXT;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS error_detail TEXT;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS blocked_by_task_id TEXT;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS blocked_reason TEXT;",
+                    "ALTER TABLE orchestrator_task_state ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;",
+                ):
+                    cur.execute(statement)
                 cur.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_orchestrator_task_state_campaign_priority
@@ -267,8 +285,8 @@ class TaskStateStore:
                     cur.execute(
                         """
                         INSERT INTO orchestrator_task_state
-                            (task_id, campaign_id, task_type, status, priority, company_id, run_id, depends_on_json, acceptance_json, worker_payload_json, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, NOW())
+                            (task_id, campaign_id, task_type, status, priority, company_id, run_id, depends_on_json, acceptance_json, worker_payload_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, NOW())
                         ON CONFLICT (task_id) DO UPDATE SET
                             campaign_id = EXCLUDED.campaign_id,
                             task_type = EXCLUDED.task_type,
@@ -279,6 +297,12 @@ class TaskStateStore:
                             depends_on_json = EXCLUDED.depends_on_json,
                             acceptance_json = EXCLUDED.acceptance_json,
                             worker_payload_json = EXCLUDED.worker_payload_json,
+                            retry_count = EXCLUDED.retry_count,
+                            error_class = EXCLUDED.error_class,
+                            error_detail = EXCLUDED.error_detail,
+                            blocked_by_task_id = EXCLUDED.blocked_by_task_id,
+                            blocked_reason = EXCLUDED.blocked_reason,
+                            next_retry_at = EXCLUDED.next_retry_at,
                             updated_at = NOW();
                         """,
                         (
@@ -292,6 +316,8 @@ class TaskStateStore:
                             json.dumps(task.depends_on),
                             json.dumps(task.acceptance),
                             json.dumps(task.worker_payload),
+                            task.retry_count, task.error_class, task.error_detail,
+                            task.blocked_by_task_id, task.blocked_reason, task.next_retry_at,
                         ),
                     )
             conn.commit()
@@ -301,7 +327,7 @@ class TaskStateStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT task_id, task_type, status, priority, company_id, run_id, depends_on_json, acceptance_json, worker_payload_json
+                    SELECT task_id, task_type, status, priority, company_id, run_id, depends_on_json, acceptance_json, worker_payload_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at
                     FROM orchestrator_task_state
                     WHERE campaign_id = %s
                     ORDER BY priority ASC, updated_at ASC;
@@ -320,9 +346,16 @@ class TaskStateStore:
                 depends_on=list(row[6] or []),
                 acceptance=list(row[7] or []),
                 worker_payload=dict(row[8] or {}),
+                retry_count=int(row[9] or 0), error_class=row[10], error_detail=row[11],
+                blocked_by_task_id=row[12], blocked_reason=row[13],
+                next_retry_at=row[14].isoformat() if row[14] else None,
             )
             for row in rows
         ]
+
+
+class TaskStateLoadError(RuntimeError):
+    """Raised when task state could not be loaded from durable storage."""
 
 
 app = FastAPI(
@@ -333,10 +366,13 @@ app = FastAPI(
 
 task_state: dict[str, dict[str, OrchestratorTask]] = {}
 task_state_lock = threading.Lock()
+task_state_hydrations: dict[str, threading.Event] = {}
 retry_state: dict[str, int] = {}
 retry_state_lock = threading.Lock()
 operation_audit_logs: list[OperationAuditEntry] = []
 operation_rate_limit_state: dict[str, list[float]] = {}
+active_message_ids: set[str] = set()
+active_message_ids_lock = threading.Lock()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 POSTGRES_DSN = os.getenv("POSTGRES_DSN", "")
@@ -351,11 +387,21 @@ INTERNAL_API_KEY = os.getenv("CHATBOT_INTERNAL_API_KEY", "").strip() or os.geten
 GROUP_NAME = "orchestrator"
 CONSUMER_NAME = "orchestrator-1"
 MAX_RETRY = 2
+PENDING_MESSAGE_IDLE_MS = max(1000, int(os.getenv("PENDING_MESSAGE_IDLE_MS", "300000")))
+PENDING_RECLAIM_BACKOFF_SECONDS = max(0.1, float(os.getenv("PENDING_RECLAIM_BACKOFF_SECONDS", "1")))
+MESSAGE_CLAIM_TTL_SECONDS = max(1, int(os.getenv("MESSAGE_CLAIM_TTL_SECONDS", "900")))
+LEASE_HEARTBEAT_INTERVAL_SECONDS = max(0.1, float(os.getenv("LEASE_HEARTBEAT_INTERVAL_SECONDS", str(MESSAGE_CLAIM_TTL_SECONDS / 3))))
 OPS_RATE_LIMIT = 20
 OPS_WINDOW_SECONDS = 60
 
-redis_module = importlib.import_module("redis")
-redis_client = redis_module.Redis.from_url(REDIS_URL, decode_responses=True)
+try:
+    redis_module = importlib.import_module("redis")
+    redis_client = redis_module.Redis.from_url(REDIS_URL, decode_responses=True)
+except ModuleNotFoundError:
+    class _UnavailableRedis:
+        def __getattr__(self, name: str):
+            raise RuntimeError("redis package is required for orchestrator queue operations")
+    redis_client = _UnavailableRedis()
 
 audit_store: OperationAuditStore | None = None
 task_state_store: TaskStateStore | None = None
@@ -384,6 +430,72 @@ TOPICS = list(TASK_TOPIC_MAP.values())
 DLQ_TOPIC = "task.dlq"
 
 
+def classify_worker_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    code = getattr(exc, "code", None)
+    if code == 429 or any(term in text for term in ("quota", "rate limit", "rate_limit", "too many requests")):
+        return "quota" if code == 429 or "quota" in text else "rate_limit"
+    if isinstance(exc, (TimeoutError,)) or "timeout" in text or "timed out" in text:
+        return "timeout"
+    if code in {400, 422} or "validation" in text or "unprocessable entity" in text:
+        return "validation"
+    if code is not None or any(term in text for term in ("provider", "upstream", "http error", "service unavailable", "503", "502")):
+        return "provider_error"
+    return "unknown"
+
+
+def sanitize_error_detail(detail: str) -> str:
+    sanitized = detail or ""
+    try:
+        structured = ast.literal_eval(sanitized)
+    except (SyntaxError, ValueError):
+        structured = None
+    if isinstance(structured, (dict, list)):
+        def redact(value: Any, key: str = "") -> Any:
+            if key.lower().replace("-", "_") in {"api_key", "token", "password", "authorization", "credentials", "credential", "secret"}:
+                return "[REDACTED]"
+            if isinstance(value, dict):
+                return {name: redact(item, str(name)) for name, item in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, str):
+                return re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
+            return value
+        sanitized = json.dumps(redact(structured), separators=(",", ":"))
+    sanitized = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", sanitized)
+    sanitized = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", sanitized)
+    sanitized = re.sub(
+        r"(?i)([\"']?(?:api[_-]?key|token|password|secret|credentials?|authorization)[\"']?\s*[:=]\s*[\"']?)([^\"',}\s]+)",
+        r"\1[REDACTED]",
+        sanitized,
+    )
+    for secret in (INTERNAL_API_KEY,):
+        if secret:
+            sanitized = sanitized.replace(secret, "[REDACTED]")
+    return sanitized[:2000]
+
+
+def next_retry_delay(attempt: int, base_seconds: float = 5.0, max_seconds: float = 300.0) -> float:
+    return min(max_seconds, base_seconds * (2 ** max(0, attempt - 1)))
+
+
+def block_pending_descendants(campaign_tasks: dict[str, OrchestratorTask], failed_task_id: str) -> None:
+    changed = True
+    while changed:
+        changed = False
+        for candidate in campaign_tasks.values():
+            if candidate.status != "pending" or not any(
+                dep_id == failed_task_id or (campaign_tasks.get(dep_id) and campaign_tasks[dep_id].status == "blocked")
+                for dep_id in candidate.depends_on
+            ):
+                continue
+            blocker = next((dep_id for dep_id in candidate.depends_on if dep_id == failed_task_id or campaign_tasks.get(dep_id, candidate).status == "blocked"), failed_task_id)
+            candidate.status = "blocked"
+            candidate.blocked_by_task_id = blocker
+            candidate.blocked_reason = f"blocked by failed task {blocker}"
+            changed = True
+
+
 def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     req = request.Request(
         url,
@@ -399,10 +511,53 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
             body = exc.read().decode("utf-8", errors="replace")
         except Exception:
             body = ""
-        detail = f" HTTP response body: {body[:1000]}" if body else ""
+        detail = f" HTTP response body: {sanitize_error_detail(body[:1000])}" if body else ""
         raise RuntimeError(f"Worker request failed for {url}: HTTP Error {exc.code}: {exc.reason}.{detail}") from exc
     except (error.URLError, TimeoutError) as exc:
         raise RuntimeError(f"Worker request failed for {url}: {exc}") from exc
+
+
+def capture_worker_payload(
+    payload: dict[str, Any], task_type: str, campaign_id: str, task_id: str, company_id: str
+) -> None:
+    if not CAMPAIGN_SERVICE_URL or not INTERNAL_API_KEY:
+        raise RuntimeError("LLM payload capture is not configured")
+    capture_payload = {
+        "task_type": task_type,
+        "campaign_id": campaign_id,
+        "task_id": task_id,
+        "company_id": company_id,
+        "payload": payload,
+    }
+    req = request.Request(
+        f"{CAMPAIGN_SERVICE_URL}/internal/llm-generation-payloads",
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Internal-Api-Key": INTERNAL_API_KEY},
+        data=json.dumps(capture_payload).encode("utf-8"),
+    )
+    try:
+        with request.urlopen(req, timeout=15) as response:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"LLM payload capture failed with HTTP {response.status}")
+    except error.HTTPError as exc:
+        raise RuntimeError(f"LLM payload capture failed with HTTP {exc.code}") from exc
+    except (error.URLError, TimeoutError) as exc:
+        raise RuntimeError("LLM payload capture request failed") from exc
+
+
+def capture_worker_payload_best_effort(
+    payload: dict[str, Any], task_type: str, campaign_id: str, task_id: str, company_id: str
+) -> None:
+    try:
+        capture_worker_payload(payload, task_type, campaign_id, task_id, company_id)
+    except Exception as exc:
+        logger.warning(
+            "LLM payload capture unavailable; continuing worker dispatch for campaign=%s task=%s type=%s: %s",
+            campaign_id,
+            task_id,
+            task_type,
+            sanitize_error_detail(str(exc)),
+        )
 
 
 def get_json(url: str) -> dict[str, Any]:
@@ -415,7 +570,7 @@ def get_json(url: str) -> dict[str, Any]:
             body = exc.read().decode("utf-8", errors="replace")
         except Exception:
             body = ""
-        detail = f" HTTP response body: {body[:1000]}" if body else ""
+        detail = f" HTTP response body: {sanitize_error_detail(body[:1000])}" if body else ""
         raise RuntimeError(f"Worker request failed for {url}: HTTP Error {exc.code}: {exc.reason}.{detail}") from exc
     except (error.URLError, TimeoutError) as exc:
         raise RuntimeError(f"Worker request failed for {url}: {exc}") from exc
@@ -447,31 +602,54 @@ def append_operation_audit(operator: str, operation: str, target: str, result: s
             logger.warning(f"Failed to append audit log: {exc}")
 
 
-def persist_campaign_task_state(campaign_id: str, campaign_tasks: dict[str, OrchestratorTask]) -> None:
+def persist_campaign_task_state(campaign_id: str, campaign_tasks: dict[str, OrchestratorTask]) -> bool:
     if task_state_store is None:
-        return
+        return True
     try:
         task_state_store.save_campaign_tasks(campaign_id, list(campaign_tasks.values()))
-    except Exception:
-        pass
+        return True
+    except Exception as exc:
+        logger.error("persistence_error: failed to save task state for %s: %s", campaign_id, sanitize_error_detail(str(exc)))
+        return False
 
 
 def get_or_hydrate_campaign_tasks(campaign_id: str) -> dict[str, OrchestratorTask] | None:
-    with task_state_lock:
-        campaign_tasks = task_state.get(campaign_id)
-        if campaign_tasks is not None:
-            return campaign_tasks
-        if task_state_store is None:
-            return None
+    while True:
+        with task_state_lock:
+            campaign_tasks = task_state.get(campaign_id)
+            if campaign_tasks is not None:
+                return campaign_tasks
+            if task_state_store is None:
+                return None
+            hydration = task_state_hydrations.get(campaign_id)
+            if hydration is None:
+                hydration = threading.Event()
+                task_state_hydrations[campaign_id] = hydration
+                break
+        # Wait without holding the global lock; another caller owns the load.
+        hydration.wait()
+
+    try:
         try:
             loaded = task_state_store.load_campaign_tasks(campaign_id)
-        except Exception:
-            return None
+        except Exception as exc:
+            logger.error(
+                "persistence_error: failed to load task state for %s: %s",
+                campaign_id,
+                sanitize_error_detail(str(exc)),
+            )
+            raise TaskStateLoadError(campaign_id) from exc
         if not loaded:
             return None
         hydrated = {task.task_id: task for task in loaded}
-        task_state[campaign_id] = hydrated
-        return hydrated
+        with task_state_lock:
+            # Do not overwrite a dispatch or another state update that won the race.
+            return task_state.setdefault(campaign_id, hydrated)
+    finally:
+        with task_state_lock:
+            hydration = task_state_hydrations.pop(campaign_id, None)
+            if hydration is not None:
+                hydration.set()
 
 
 def check_and_mark_operation_rate_limit(operator: str, operation: str) -> bool:
@@ -546,10 +724,13 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             "variants": 3,
         }
         payload.update(worker_payload)
+        capture_worker_payload_best_effort(payload, task.task_type, campaign_id, task.task_id, company_id)
         result = post_json(
             f"{WORKER_COPY_URL}/internal/workers/copy/run",
             payload,
         )
+        if worker_payload.get("generation_context_id"):
+            result.setdefault("generation_context_id", worker_payload["generation_context_id"])
         _report_worker_result_to_campaign_service(task.task_type, result, campaign_id, company_id, run_id)
         return result
     elif task.task_type == "image_generation":
@@ -562,10 +743,13 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             "style_profile": {"mood": "minimal luxury"},
         }
         payload.update(worker_payload)
+        capture_worker_payload_best_effort(payload, task.task_type, campaign_id, task.task_id, company_id)
         result = post_json(
             f"{WORKER_IMAGE_URL}/internal/workers/image/run",
             payload,
         )
+        if worker_payload.get("generation_context_id"):
+            result.setdefault("generation_context_id", worker_payload["generation_context_id"])
         _report_worker_result_to_campaign_service(task.task_type, result, campaign_id, company_id, run_id)
         return result
     elif task.task_type == "video_generation":
@@ -578,10 +762,13 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             "aspect_ratio": "9:16",
         }
         payload.update(worker_payload)
+        capture_worker_payload_best_effort(payload, task.task_type, campaign_id, task.task_id, company_id)
         result = post_json(
             f"{WORKER_VIDEO_URL}/internal/workers/video/run",
             payload,
         )
+        if worker_payload.get("generation_context_id"):
+            result.setdefault("generation_context_id", worker_payload["generation_context_id"])
         _report_worker_result_to_campaign_service(task.task_type, result, campaign_id, company_id, run_id)
         return result
     elif task.task_type == "ads_strategy":
@@ -594,10 +781,13 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             "platforms": ["facebook", "instagram", "google_display"],
         }
         payload.update(worker_payload)
+        capture_worker_payload_best_effort(payload, task.task_type, campaign_id, task.task_id, company_id)
         result = post_json(
             f"{WORKER_ADS_URL}/internal/workers/ads/run",
             payload,
         )
+        if worker_payload.get("generation_context_id"):
+            result.setdefault("generation_context_id", worker_payload["generation_context_id"])
         _report_worker_result_to_campaign_service(task.task_type, result, campaign_id, company_id, run_id)
         return result
     return {}
@@ -634,26 +824,46 @@ def _report_worker_result_to_campaign_service(task_type: str, result: dict[str, 
         )
         with _req.urlopen(req, timeout=15) as response:
             body = response.read().decode("utf-8")
-            logger.info(f"Worker result reported to campaign_service: {body}")
+            logger.info("Worker result reported to campaign_service: %s", sanitize_error_detail(body))
     except Exception as exc:
         # Log as error (not warning) since this means assets may not be persisted
         # The campaign_service failover mechanism (generate_outputs_via_workers) should handle this
-        logger.error(f"Orchestrator: failed to report worker result to campaign_service: {exc}")
+        logger.error("Orchestrator: failed to report worker result to campaign_service: %s", sanitize_error_detail(str(exc)))
 
 
-def process_task(campaign_id: str, task_id: str) -> None:
-    campaign_tasks = get_or_hydrate_campaign_tasks(campaign_id)
+def process_task(campaign_id: str, task_id: str) -> bool:
+    campaign_tasks = None
+    for attempt in range(1, MAX_RETRY + 2):
+        try:
+            campaign_tasks = get_or_hydrate_campaign_tasks(campaign_id)
+            break
+        except TaskStateLoadError:
+            if attempt == MAX_RETRY + 1:
+                logger.error("persistence_error: task %s could not be loaded after retries", task_id)
+                return False
+            time.sleep(next_retry_delay(attempt))
     if campaign_tasks is None:
-        return
+        return True
 
     task = campaign_tasks.get(task_id)
     if task is None:
-        return
+        return True
 
     task.status = "running"
-    campaign_tasks[task_id] = task
+    if not persist_campaign_task_state(campaign_id, campaign_tasks):
+        logger.error("persistence_error: task %s remains retryable because running state was not durable", task_id)
+        task.status = "retrying"
+        task.error_class = "persistence_error"
+        task.error_detail = "Unable to persist task state"
+        campaign_tasks[task_id] = task
+        with task_state_lock:
+            task_state[campaign_id] = campaign_tasks
+        return False
+    with task_state_lock:
+        task_state[campaign_id] = campaign_tasks
 
     retry_key = f"{campaign_id}:{task_id}"
+    durable = True
 
     try:
         run_worker(task, campaign_id)
@@ -661,32 +871,221 @@ def process_task(campaign_id: str, task_id: str) -> None:
         campaign_tasks[task_id] = task
 
         next_tasks = mark_ready_tasks_as_planned(campaign_tasks)
-        for next_task in next_tasks:
-            publish_task(TASK_TOPIC_MAP[next_task.task_type], campaign_id, next_task)
+        if not persist_campaign_task_state(campaign_id, campaign_tasks):
+            durable = False
+            logger.error("persistence_error: successful task %s is kept retryable and descendants were not published", task_id)
+            task.status = "retrying"
+            task.error_class = "persistence_error"
+            task.error_detail = "Unable to persist completed task state"
+            campaign_tasks[task_id] = task
+            for next_task in next_tasks:
+                next_task.status = "pending"
+        else:
+            with task_state_lock:
+                task_state[campaign_id] = campaign_tasks
+            for next_task in next_tasks:
+                publish_task(TASK_TOPIC_MAP[next_task.task_type], campaign_id, next_task)
         with retry_state_lock:
             retry_state.pop(retry_key, None)
-    except RuntimeError as exc:
+    except Exception as exc:
+        error_class = classify_worker_error(exc)
         with retry_state_lock:
             current_retry = retry_state.get(retry_key, 0) + 1
             retry_state[retry_key] = current_retry
 
-        if current_retry <= MAX_RETRY:
-            task.status = "retrying"
-            campaign_tasks[task_id] = task
+        retryable = error_class in {"quota", "rate_limit", "timeout", "provider_error"}
+        if retryable and current_retry <= MAX_RETRY:
             task.status = "planned"
+            task.retry_count = current_retry
+            task.error_class = error_class
+            task.error_detail = sanitize_error_detail(str(exc))
             campaign_tasks[task_id] = task
-            publish_task(TASK_TOPIC_MAP[task.task_type], campaign_id, task)
+            time.sleep(next_retry_delay(current_retry))
+            if not persist_campaign_task_state(campaign_id, campaign_tasks):
+                durable = False
+                logger.error("persistence_error: retry for task %s remains retryable and was not published", task_id)
+                task.status = "retrying"
+                task.error_class = "persistence_error"
+                task.error_detail = "Unable to persist retry state"
+                campaign_tasks[task_id] = task
+            else:
+                with task_state_lock:
+                    task_state[campaign_id] = campaign_tasks
+                publish_task(TASK_TOPIC_MAP[task.task_type], campaign_id, task)
         else:
             task.status = "failed"
+            task.retry_count = current_retry
+            task.error_class = error_class
+            task.error_detail = sanitize_error_detail(str(exc))
             campaign_tasks[task_id] = task
-            publish_dlq(campaign_id, task, str(exc))
-
-    # Persist to Postgres FIRST, then update in-memory state.
-    # This ensures that if we crash between persist and memory update,
-    # on restart we reload from Postgres (which has the correct state).
-    persist_campaign_task_state(campaign_id, campaign_tasks)
+            block_pending_descendants(campaign_tasks, task_id)
+            if not persist_campaign_task_state(campaign_id, campaign_tasks):
+                durable = False
+                logger.error("persistence_error: terminal failure for task %s is not durable", task_id)
+            publish_dlq(campaign_id, task, task.error_detail or "worker failure")
+    # Persistence is attempted before publishing or updating the shared state.
     with task_state_lock:
         task_state[campaign_id] = campaign_tasks
+    return durable
+
+
+LEASE_RENEW_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end"
+LEASE_RELEASE_SCRIPT = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+
+
+def _renew_lease(key: str, token: str) -> bool:
+    try:
+        return bool(redis_client.eval(LEASE_RENEW_SCRIPT, 1, key, token, MESSAGE_CLAIM_TTL_SECONDS * 1000))
+    except Exception:
+        logger.exception("Failed to renew lease %s", key)
+        return False
+
+
+def _release_lease(key: str, token: str) -> None:
+    try:
+        redis_client.eval(LEASE_RELEASE_SCRIPT, 1, key, token)
+    except Exception:
+        logger.warning("Failed to release lease %s", key)
+
+
+def process_queue_message(stream_name: str, message_id: str, fields: dict[str, str]) -> bool:
+    message_key = f"orchestrator:message-claim:{stream_name}:{message_id}"
+    message_token = uuid.uuid4().hex
+    task_key: str | None = None
+    task_token: str | None = None
+    heartbeat_failed = threading.Event()
+    heartbeat_stop = threading.Event()
+    heartbeat_lock = threading.Lock()
+    heartbeat_thread: threading.Thread | None = None
+    acknowledged = False
+    redis_set = getattr(redis_client, "set", None)
+    active_key = f"{stream_name}:{message_id}"
+    with active_message_ids_lock:
+        if active_key in active_message_ids:
+            logger.info("Skipping duplicate delivery of active message %s", message_id)
+            return False
+        active_message_ids.add(active_key)
+
+    if callable(redis_set):
+        try:
+            if not redis_set(message_key, message_token, nx=True, ex=MESSAGE_CLAIM_TTL_SECONDS):
+                with active_message_ids_lock:
+                    active_message_ids.discard(active_key)
+                logger.info("Skipping duplicate distributed delivery of message %s", message_id)
+                return False
+
+            campaign_id = fields.get("campaign_id")
+            task_id = fields.get("task_id")
+            if campaign_id and task_id:
+                task_key = f"orchestrator:task-claim:{campaign_id}:{task_id}"
+                task_token = uuid.uuid4().hex
+                if not redis_set(task_key, task_token, nx=True, ex=MESSAGE_CLAIM_TTL_SECONDS):
+                    _release_lease(message_key, message_token)
+                    with active_message_ids_lock:
+                        active_message_ids.discard(active_key)
+                    logger.info("Task %s is already claimed; leaving message %s pending", task_id, message_id)
+                    return False
+
+            def heartbeat() -> None:
+                while not heartbeat_stop.wait(LEASE_HEARTBEAT_INTERVAL_SECONDS):
+                    with heartbeat_lock:
+                        if not _renew_lease(message_key, message_token):
+                            heartbeat_failed.set()
+                            return
+                        if task_key and task_token and not _renew_lease(task_key, task_token):
+                            heartbeat_failed.set()
+                            return
+
+            heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+            heartbeat_thread.start()
+        except Exception:
+            if task_key and task_token:
+                _release_lease(task_key, task_token)
+            _release_lease(message_key, message_token)
+            with active_message_ids_lock:
+                active_message_ids.discard(active_key)
+            logger.exception("Failed to acquire distributed claim for message %s", message_id)
+            return False
+    try:
+        campaign_id = fields.get("campaign_id")
+        task_id = fields.get("task_id")
+        if not campaign_id or not task_id:
+            ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
+            if ack_result is not None and not ack_result:
+                logger.warning("XACK did not acknowledge message %s", message_id)
+                return False
+            acknowledged = True
+            return True
+        if not process_task(campaign_id, task_id) or heartbeat_failed.is_set():
+            logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)
+            return False
+
+        # Join the heartbeat before the final ownership check so renewal and ACK
+        # cannot race, then retain claims unless the ACK is confirmed.
+        heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join()
+        if callable(redis_set):
+            with heartbeat_lock:
+                ownership_valid = not heartbeat_failed.is_set() and _renew_lease(message_key, message_token)
+                if task_key and task_token:
+                    ownership_valid = ownership_valid and _renew_lease(task_key, task_token)
+                if not ownership_valid:
+                    heartbeat_failed.set()
+                    logger.warning("Lease ownership lost before acknowledging message %s", message_id)
+                    return False
+        with heartbeat_lock:
+            ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
+            if ack_result is not None and not ack_result:
+                logger.warning("XACK did not acknowledge message %s", message_id)
+                return False
+            acknowledged = True
+            return True
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join()
+        with active_message_ids_lock:
+            active_message_ids.discard(active_key)
+        if callable(redis_set) and acknowledged:
+            if task_key and task_token:
+                _release_lease(task_key, task_token)
+            _release_lease(message_key, message_token)
+
+
+def reclaim_pending_messages() -> int:
+    reclaimed = 0
+    for topic in TOPICS:
+        start_id = "0-0"
+        while True:
+            try:
+                result = redis_client.xautoclaim(
+                    name=topic,
+                    groupname=GROUP_NAME,
+                    consumername=CONSUMER_NAME,
+                    min_idle_time=PENDING_MESSAGE_IDLE_MS,
+                    start_id=start_id,
+                    count=10,
+                )
+            except Exception as exc:
+                logger.warning("Consumer loop: xautoclaim failed for %s: %s", topic, exc)
+                break
+
+            # redis-py returns (next_start_id, messages, deleted_ids).
+            next_start_id = result[0] if result else "0-0"
+            messages = result[1] if len(result) > 1 else []
+            for message_id, fields in messages:
+                with active_message_ids_lock:
+                    if f"{topic}:{message_id}" in active_message_ids:
+                        logger.info("Skipping recovery of active message %s", message_id)
+                        continue
+                reclaimed += 1
+                process_queue_message(topic, message_id, fields)
+
+            if next_start_id in ("0-0", b"0-0") or next_start_id == start_id:
+                break
+            start_id = next_start_id
+    return reclaimed
 
 
 def ensure_groups() -> None:
@@ -707,6 +1106,9 @@ def consumer_loop() -> None:
     streams_dict = {topic: ">" for topic in TOPICS}
 
     while True:
+        reclaimed = reclaim_pending_messages()
+        if reclaimed:
+            time.sleep(PENDING_RECLAIM_BACKOFF_SECONDS)
         try:
             messages = redis_client.xreadgroup(
                 groupname=GROUP_NAME,
@@ -725,11 +1127,7 @@ def consumer_loop() -> None:
 
         for stream_name, stream_messages in messages:
             for message_id, fields in stream_messages:
-                campaign_id = fields.get("campaign_id")
-                task_id = fields.get("task_id")
-                if campaign_id and task_id:
-                    process_task(campaign_id, task_id)
-                redis_client.xack(stream_name, GROUP_NAME, message_id)
+                process_queue_message(stream_name, message_id, fields)
 
 
 @app.on_event("startup")
@@ -750,9 +1148,13 @@ def dispatch(payload: DispatchRequest) -> DispatchResponse:
         task.status = "planned" if len(task.depends_on) == 0 else "pending"
         campaign_tasks[task.task_id] = task
 
+    if not persist_campaign_task_state(payload.campaign_id, campaign_tasks):
+        logger.error("persistence_error: dispatch for campaign %s was not durable; tasks remain retryable", payload.campaign_id)
+        with task_state_lock:
+            task_state[payload.campaign_id] = campaign_tasks
+        return DispatchResponse(campaign_id=payload.campaign_id, status="persistence_failed", tasks=list(campaign_tasks.values()))
     with task_state_lock:
         task_state[payload.campaign_id] = campaign_tasks
-    persist_campaign_task_state(payload.campaign_id, campaign_tasks)
 
     for task in campaign_tasks.values():
         if task.status == "planned":
@@ -776,6 +1178,7 @@ def task_complete(payload: TaskCompleteRequest) -> TaskCompleteResponse:
     if campaign_tasks is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
+    previous_state = {task_id: task.model_copy(deep=True) for task_id, task in campaign_tasks.items()}
     current = campaign_tasks.get(payload.task_id)
     if current is None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -784,13 +1187,18 @@ def task_complete(payload: TaskCompleteRequest) -> TaskCompleteResponse:
     campaign_tasks[payload.task_id] = current
 
     next_tasks = mark_ready_tasks_as_planned(campaign_tasks)
+    if not persist_campaign_task_state(payload.campaign_id, campaign_tasks):
+        logger.error("persistence_error: completion for task %s was not durable; ready descendants were not published", payload.task_id)
+        campaign_tasks.clear()
+        campaign_tasks.update(previous_state)
+        with task_state_lock:
+            task_state[payload.campaign_id] = campaign_tasks
+        raise HTTPException(status_code=503, detail="Task state persistence unavailable")
+    with task_state_lock:
+        task_state[payload.campaign_id] = campaign_tasks
     for task in next_tasks:
         topic = TASK_TOPIC_MAP[task.task_type]
         publish_task(topic, payload.campaign_id, task)
-
-    with task_state_lock:
-        task_state[payload.campaign_id] = campaign_tasks
-    persist_campaign_task_state(payload.campaign_id, campaign_tasks)
     return TaskCompleteResponse(
         campaign_id=payload.campaign_id,
         task_id=payload.task_id,

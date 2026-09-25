@@ -3,37 +3,45 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createKnowledgeItem,
+  createFolder,
+  deleteFolder,
   deleteKnowledgeItem,
+  fetchCampaignContent,
   listKnowledgeItems,
+  listFolders,
   updateKnowledgeItem,
   uploadKnowledgeItem,
+  type FolderRecord,
   type KnowledgeItemRecord,
 } from "@/lib/api/campaigns";
 import { useI18n } from "@/lib/i18n/context";
 import { formatDateTime } from "@/lib/i18n/format";
+import { mergeBatchUploadStates, uploadBatchItems, type BatchUploadFileState } from "@/lib/api/batch-upload";
+import { FilePreviewModal } from "@/components/files/file-preview-modal";
 
 type KnowledgeTab = "all" | "ai" | "manual";
-
-type Folder = { name: string };
+const MAX_BATCH_UPLOAD_FILES = 20;
 
 export default function ContentStudioPage() {
   const { t, locale } = useI18n();
   const [items, setItems] = useState<KnowledgeItemRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
+  const [filePreview, setFilePreview] = useState<{ source: File | string; fileName: string } | null>(null);
   const [tab, setTab] = useState<KnowledgeTab>("all");
   const [query, setQuery] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
   const [assetType, setAssetType] = useState<"copy" | "image" | "video">("copy");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploadStates, setUploadStates] = useState<BatchUploadFileState<File>[]>([]);
   const [fileKey, setFileKey] = useState(0);
   const [busy, setBusy] = useState(false);
 
   // Folder state
-  const [folders, setFolders] = useState<Folder[]>([]);
-  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [folders, setFolders] = useState<FolderRecord[]>([]);
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
 
@@ -53,11 +61,7 @@ export default function ContentStudioPage() {
 
   const loadFolders = useCallback(async function loadFolders() {
     try {
-      const res = await fetch("/api/folders");
-      if (res.ok) {
-        const data = (await res.json()) as { items: Folder[] };
-        setFolders(data.items);
-      }
+      setFolders(await listFolders());
     } catch {
       // folders not critical, ignore errors
     }
@@ -71,63 +75,41 @@ export default function ContentStudioPage() {
     return () => window.clearTimeout(timer);
   }, [loadItems, loadFolders]);
 
-  const allCategories = useMemo(() => {
-    const cats = new Set<string>();
-    for (const item of items) {
-      const cat = String(item.metadata.category ?? "General");
-      cats.add(cat);
-    }
-    return Array.from(cats).sort();
-  }, [items]);
-
-  const availableFolders = useMemo(() => {
-    // Combine user-created folders with categories from items
-    const combined = new Set([...folders.map((f) => f.name), ...allCategories]);
-    return Array.from(combined).sort();
-  }, [folders, allCategories]);
+  const availableFolders = useMemo(() => folders, [folders]);
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return items.filter((item) => {
       if (tab === "ai" && item.source !== "ai") return false;
       if (tab === "manual" && item.source !== "manual") return false;
-      if (selectedFolder && String(item.metadata.category ?? "General") !== selectedFolder) return false;
+      if (selectedFolderId && item.folder_id !== selectedFolderId) return false;
       if (!normalized) return true;
       return `${item.title} ${item.description} ${String(item.metadata.file_name ?? "")} ${String(item.metadata.category ?? "")}`.toLowerCase().includes(normalized);
     });
-  }, [items, query, tab, selectedFolder]);
+  }, [items, query, tab, selectedFolderId]);
 
   async function handleCreateFolder() {
     const name = newFolderName.trim();
     if (!name) return;
     try {
-      const res = await fetch("/api/folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      if (res.ok) {
-        setNewFolderName("");
-        setShowNewFolderInput(false);
-        void loadFolders();
-      }
+      await createFolder(name);
+      setNewFolderName("");
+      setShowNewFolderInput(false);
+      void loadFolders();
     } catch {
       // ignore errors
     }
   }
 
-  async function handleDeleteFolder(folderName: string) {
+  async function handleDeleteFolder(folder: FolderRecord) {
     if (!window.confirm(t("knowledge.deleteConfirm"))) return;
     try {
-      const res = await fetch(`/api/folders/${encodeURIComponent(folderName)}`, {
-        method: "DELETE",
-      });
-      if (res.ok) {
-        if (selectedFolder === folderName) setSelectedFolder(null);
-        void loadFolders();
-      }
+      await deleteFolder(folder.folder_id);
+      if (selectedFolderId === folder.folder_id) setSelectedFolderId(null);
+      await loadItems();
+      void loadFolders();
     } catch {
-      // ignore errors
+      setMessage(t("knowledge.deleteFailed"));
     }
   }
 
@@ -140,7 +122,8 @@ export default function ContentStudioPage() {
         title: cleanTitle,
         source: "manual",
         description,
-        metadata: { category: category || "General", source_label: "manual_copy", asset_type: "copy" },
+        folder_id: category || null,
+        metadata: { category: folders.find((folder) => folder.folder_id === category)?.name || "General", source_label: "manual_copy", asset_type: "copy" },
       });
       setTitle("");
       setDescription("");
@@ -155,15 +138,22 @@ export default function ContentStudioPage() {
   }
 
   async function handleUpload() {
-    if (!file || assetType === "copy") return;
+    if (files.length === 0 || assetType === "copy") return;
     setBusy(true);
     try {
-      await uploadKnowledgeItem(file, title || file.name, description, category || "General", assetType);
-      setTitle("");
-      setDescription("");
-      setCategory("");
-      setFile(null);
-      setFileKey((prev) => prev + 1);
+      const initialStates = files.map((file) => ({ file, status: "pending" as const }));
+      setUploadStates(initialStates);
+      const results = await uploadBatchItems(initialStates, (file) => uploadKnowledgeItem(file, title.trim() || file.name, description, folders.find((folder) => folder.folder_id === category)?.name || "General", assetType, category || undefined).then((item) => ({ referenceId: item.item_id, folderId: item.folder_id })), 3, (updates) => setUploadStates((current) => mergeBatchUploadStates(current, updates)));
+      if (results.every((item) => item.status === "success")) {
+        setTitle("");
+        setDescription("");
+        setCategory("");
+        setFiles([]);
+        setUploadStates([]);
+        setFileKey((prev) => prev + 1);
+      } else {
+        setMessage(t("knowledge.uploadFailed"));
+      }
       await loadItems();
       void loadFolders();
     } catch {
@@ -186,12 +176,33 @@ export default function ContentStudioPage() {
     }
   }
 
-  async function handleMoveItem(item: KnowledgeItemRecord, folderName: string) {
-    const currentFolder = String(item.metadata.category ?? "General");
-    if (!folderName || folderName === currentFolder) return;
+  async function handleDownload(item: KnowledgeItemRecord) {
+    const contentUrl = item.content_url || (typeof item.metadata.download_url === "string" ? item.metadata.download_url : null);
+    if (!contentUrl && !item.description.trim()) return;
+    try {
+      const blob = contentUrl
+        ? await fetchCampaignContent(contentUrl)
+        : new Blob([item.description], { type: "text/plain;charset=utf-8" });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = String(item.metadata.file_name ?? `${item.title}.txt`);
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      setMessage(t("campaigns.knowledge.downloadFailed"));
+    }
+  }
+
+  async function handleMoveItem(item: KnowledgeItemRecord, folderId: string) {
+    if (!folderId || folderId === item.folder_id) return;
+    const target = folders.find((folder) => folder.folder_id === folderId);
+    if (!target || target.scope === "platform") return;
     setBusy(true);
     try {
-      await updateKnowledgeItem(item.item_id, { category: folderName });
+      await updateKnowledgeItem(item.item_id, { category: target.name, folder_id: target.folder_id });
       setMessage(t("knowledge.moveSuccess"));
       await loadItems();
       void loadFolders();
@@ -259,24 +270,25 @@ export default function ContentStudioPage() {
 
         <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => setSelectedFolder(null)}
-            className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolder === null ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
+            onClick={() => setSelectedFolderId(null)}
+            className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolderId === null ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
           >
             {t("knowledge.folderAll")}
           </button>
-          {availableFolders.map((folder) => (
-            <div key={folder} className="group relative">
+          {folders.map((folder) => (
+            <div key={folder.folder_id} className="group relative">
               <button
-                onClick={() => setSelectedFolder(selectedFolder === folder ? null : folder)}
-                className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolder === folder ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
+                onClick={() => setSelectedFolderId(selectedFolderId === folder.folder_id ? null : folder.folder_id)}
+                className={`rounded-xl px-3 py-1.5 text-sm ${selectedFolderId === folder.folder_id ? "bg-slate-900 text-white dark:bg-slate-700" : "border border-slate-200 dark:border-slate-700"}`}
               >
-                {folder}
+                {folder.name}{folder.scope === "platform" ? " · read-only" : ""}
               </button>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   void handleDeleteFolder(folder);
                 }}
+                disabled={folder.scope === "platform"}
                 className="absolute -right-1 -top-1 hidden h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-xs text-white group-hover:flex"
                 title={t("knowledge.folderDelete")}
               >
@@ -289,20 +301,20 @@ export default function ContentStudioPage() {
 
       {/* Create/upload form */}
       <div className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-        <h2 className="text-sm font-semibold">新增素材</h2>
+        <h2 className="text-sm font-semibold">{t("knowledge.createTitle")}</h2>
         <div className="grid gap-3 md:grid-cols-[0.8fr_1fr_1fr_1fr_1.2fr_auto]">
           <select
             value={assetType}
             onChange={(event) => {
               const next = event.target.value as "copy" | "image" | "video";
               setAssetType(next);
-              if (next === "copy") setFile(null);
+              if (next === "copy") { setFiles([]); setUploadStates([]); }
             }}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
-            <option value="copy">文案</option>
-            <option value="image">圖片</option>
-            <option value="video">影片</option>
+            <option value="copy">{t("assets.type.copy")}</option>
+            <option value="image">{t("assets.type.image")}</option>
+            <option value="video">{t("assets.type.video")}</option>
           </select>
           <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("knowledge.itemTitle")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950" />
           <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={assetType === "copy" ? "文案內容" : t("knowledge.description")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950" />
@@ -313,7 +325,7 @@ export default function ContentStudioPage() {
           >
             <option value="">{t("knowledge.folderSelect")}</option>
             {availableFolders.map((f) => (
-              <option key={f} value={f}>{f}</option>
+              <option key={f.folder_id} value={f.folder_id}>{f.name}</option>
             ))}
           </select>
           <div className={`relative flex min-h-10 items-center justify-center rounded-xl border border-slate-200 text-sm dark:border-slate-700 dark:bg-slate-950 ${assetType === "copy" ? "opacity-50" : ""}`}>
@@ -321,7 +333,8 @@ export default function ContentStudioPage() {
               id={`knowledge-file-input-${fileKey}`}
               key={fileKey}
               type="file"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              multiple
+              onChange={(event) => { const selected = Array.from(event.target.files ?? []); if (selected.length > MAX_BATCH_UPLOAD_FILES) { setMessage(t("campaigns.form.maxBatchFiles", { count: MAX_BATCH_UPLOAD_FILES })); setFiles([]); setUploadStates([]); return; } setFiles(selected); setUploadStates(selected.map((file) => ({ file, status: "pending" as const }))); }}
               disabled={assetType === "copy"}
               accept={assetType === "image" ? "image/*" : assetType === "video" ? "video/*" : undefined}
               className="sr-only"
@@ -330,15 +343,26 @@ export default function ContentStudioPage() {
               htmlFor={`knowledge-file-input-${fileKey}`}
               className="flex h-full min-h-10 w-full cursor-pointer items-center justify-center gap-2 px-3 py-2 text-center leading-none text-slate-600 dark:text-slate-300"
             >
-              <span className="font-medium text-slate-800 dark:text-slate-100">{assetType === "copy" ? "文案不需檔案" : t("knowledge.chooseFile")}</span>
-              <span className="truncate text-slate-500">{assetType === "copy" ? "" : file ? file.name : t("knowledge.noFileSelected")}</span>
+              <span className="font-medium text-slate-800 dark:text-slate-100">{assetType === "copy" ? t("knowledge.copyNoFile") : t("knowledge.chooseFile")}</span>
+              <span className="truncate text-slate-500">{assetType === "copy" ? "" : files.length > 0 ? `${files.length} file(s) selected` : t("knowledge.noFileSelected")}</span>
             </label>
           </div>
           <div className="flex min-w-32 flex-col gap-2">
-            <button onClick={handleCreateText} disabled={busy || assetType !== "copy" || !title.trim()} className="whitespace-nowrap rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700">新增文案</button>
-            <button onClick={handleUpload} disabled={busy || assetType === "copy" || !file} className="whitespace-nowrap rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">新增{assetType === "video" ? "影片" : "圖片"}</button>
+            <button onClick={handleCreateText} disabled={busy || assetType !== "copy" || !title.trim()} className="whitespace-nowrap rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700">{t("knowledge.createText")}</button>
+            <button onClick={handleUpload} disabled={busy || assetType === "copy" || files.length === 0} className="whitespace-nowrap rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{t("knowledge.add", { type: t(`assets.type.${assetType}`) })}</button>
           </div>
         </div>
+        {uploadStates.length > 0 ? (
+          <ul className="space-y-1 text-xs" aria-label={t("knowledge.uploadFailed")}>
+            {uploadStates.map((item) => (
+              <li key={`${item.file.name}-${item.file.lastModified}`} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
+                <span className="truncate">{item.file.name}</span>
+                <button type="button" onClick={() => setFilePreview({ source: item.file, fileName: item.file.name })} className="font-medium text-blue-600">{t("campaigns.knowledge.preview")}</button>
+                <span>{item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : t("campaigns.form.uploadFailed")}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
 
       {/* Search */}
@@ -372,16 +396,19 @@ export default function ContentStudioPage() {
                 <td className="px-4 py-3">{formatDateTime(locale, item.created_at)}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
-                    {item.content_url ? <a href={item.content_url} target="_blank" rel="noreferrer" className="text-xs font-medium text-blue-600 hover:underline">{t("knowledge.download")}</a> : null}
+                    {(item.content_url || typeof item.metadata.download_url === "string" || item.description.trim()) ? <>
+                      <button type="button" onClick={() => setFilePreview({ source: item.content_url || (typeof item.metadata.download_url === "string" ? String(item.metadata.download_url) : new File([item.description], `${item.title}.txt`, { type: "text/plain" })), fileName: String(item.metadata.file_name ?? `${item.title}.txt`) })} className="text-xs font-medium text-blue-600 hover:underline">{t("campaigns.knowledge.preview")}</button>
+                      <button type="button" onClick={() => void handleDownload(item)} className="text-xs font-medium text-emerald-600 hover:underline">{t("campaigns.knowledge.download")}</button>
+                    </> : null}
                     <select
-                      value={String(item.metadata.category ?? "General")}
+                      value={item.folder_id ?? ""}
                       onChange={(event) => void handleMoveItem(item, event.target.value)}
                       disabled={busy || availableFolders.length === 0}
                       className="rounded-md border border-slate-200 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
                     >
                       <option value="">{t("knowledge.moveTo")}</option>
-                      {availableFolders.map((folder) => (
-                        <option key={folder} value={folder}>{folder}</option>
+                      {availableFolders.filter((folder) => folder.scope !== "platform").map((folder) => (
+                        <option key={folder.folder_id} value={folder.folder_id}>{folder.name}</option>
                       ))}
                     </select>
                     <button onClick={() => handleDelete(item.item_id)} className="text-xs font-medium text-rose-600 hover:underline">{t("common.delete")}</button>
@@ -392,6 +419,7 @@ export default function ContentStudioPage() {
           </tbody>
         </table>
       </div>
+      <FilePreviewModal source={filePreview?.source ?? null} fileName={filePreview?.fileName ?? ""} open={Boolean(filePreview)} onClose={() => setFilePreview(null)} />
     </section>
   );
 }

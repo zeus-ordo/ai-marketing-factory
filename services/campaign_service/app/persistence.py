@@ -1,14 +1,35 @@
 import importlib
 import json
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Any
 
 from .schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord, ValidationResult
+from .context_assembler import GenerationContextSnapshot
+
+
+def legacy_folder_id(label: str | None, folders: list[dict[str, Any]]) -> str | None:
+    """Infer a legacy text folder only when exactly one ID is unambiguous."""
+    normalized = (label or "").strip().casefold()
+    if not normalized or normalized in {"general", "unfiled"}:
+        return None
+    matches = [folder["folder_id"] for folder in folders if str(folder.get("name", "")).strip().casefold() == normalized]
+    return matches[0] if len(matches) == 1 else None
 
 try:
     psycopg = importlib.import_module("psycopg")
 except ModuleNotFoundError:
     psycopg = None
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set)):
+        return [_jsonable(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
 
 
 class PostgresPersistence:
@@ -46,6 +67,72 @@ class PostgresPersistence:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS generation_contexts (
+                        generation_context_id TEXT PRIMARY KEY,
+                        campaign_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        internal_token_count INTEGER NOT NULL,
+                        external_token_count INTEGER NOT NULL,
+                        internal_ratio NUMERIC(8,6) NOT NULL,
+                        external_ratio NUMERIC(8,6) NOT NULL,
+                        external_source_urls_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        external_search_status TEXT NOT NULL DEFAULT 'not_requested',
+                        external_search_error TEXT,
+                        task_id TEXT,
+                        selected_reference_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        matched_folder_names_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        UNIQUE (campaign_id, run_id)
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS generation_context_items (
+                        generation_context_item_id TEXT PRIMARY KEY,
+                        generation_context_id TEXT NOT NULL,
+                        position INTEGER NOT NULL,
+                        source_type TEXT NOT NULL,
+                        source_id TEXT NOT NULL,
+                        label TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        folder TEXT,
+                        url TEXT,
+                        provider TEXT,
+                        query TEXT,
+                        token_count INTEGER NOT NULL,
+                        retrieved_at TIMESTAMP,
+                        metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+                    );
+                    """
+                )
+                for statement in (
+                    "ALTER TABLE generation_contexts ADD COLUMN IF NOT EXISTS external_search_error TEXT;",
+                    "ALTER TABLE generation_contexts ADD COLUMN IF NOT EXISTS task_id TEXT;",
+                    "ALTER TABLE generation_contexts ADD COLUMN IF NOT EXISTS selected_reference_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb;",
+                    "ALTER TABLE generation_contexts ADD COLUMN IF NOT EXISTS matched_folder_names_json JSONB NOT NULL DEFAULT '[]'::jsonb;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS folder TEXT;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS url TEXT;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS provider TEXT;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS query TEXT;",
+                    "ALTER TABLE generation_context_items ADD COLUMN IF NOT EXISTS retrieved_at TIMESTAMP;",
+                ):
+                    cur.execute(statement)
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS campaign_task_attempts (
+                        attempt_id BIGSERIAL PRIMARY KEY,
+                        task_id TEXT NOT NULL,
+                        campaign_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        error_class TEXT,
+                        error_detail TEXT,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS campaign_tasks (
                         task_id TEXT PRIMARY KEY,
                         campaign_id TEXT NOT NULL,
@@ -55,6 +142,17 @@ class PostgresPersistence:
                         priority INTEGER NOT NULL,
                         depends_on_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                         acceptance_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        retry_count INTEGER NOT NULL DEFAULT 0,
+                        error_class TEXT,
+                        error_detail TEXT,
+                        blocked_by_task_id TEXT,
+                        blocked_reason TEXT,
+                        next_retry_at TIMESTAMP,
+                        generation_context_id TEXT,
+                        provider TEXT,
+                        model TEXT,
+                        retryable BOOLEAN,
+                        run_id TEXT,
                         created_at TIMESTAMP NOT NULL DEFAULT NOW()
                     );
                     """
@@ -65,6 +163,20 @@ class PostgresPersistence:
                     ON campaign_tasks (campaign_id, priority ASC, created_at ASC);
                     """
                 )
+                for statement in (
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS error_class TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS error_detail TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS blocked_by_task_id TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS blocked_reason TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMP;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS generation_context_id TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS provider TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS model TEXT;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS retryable BOOLEAN;",
+                    "ALTER TABLE campaign_tasks ADD COLUMN IF NOT EXISTS run_id TEXT;",
+                ):
+                    cur.execute(statement)
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS campaign_runs (
@@ -203,6 +315,21 @@ class PostgresPersistence:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS folders (
+                        folder_id TEXT PRIMARY KEY,
+                        scope TEXT NOT NULL CHECK (scope IN ('platform', 'company')),
+                        company_id TEXT,
+                        name TEXT NOT NULL,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        CHECK ((scope = 'platform' AND company_id IS NULL) OR (scope = 'company' AND company_id IS NOT NULL))
+                    );
+                    """
+                )
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_platform_name ON folders (LOWER(name)) WHERE scope = 'platform';")
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_company_name ON folders (company_id, LOWER(name)) WHERE scope = 'company';")
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS workflow_templates (
                         template_id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
@@ -220,6 +347,8 @@ class PostgresPersistence:
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS content_url TEXT;")
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb;")
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;")
+                cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT;")
+                cur.execute("ALTER TABLE campaign_references ADD COLUMN IF NOT EXISTS folder_id TEXT;")
                 cur.execute(
                     """
                     CREATE INDEX IF NOT EXISTS idx_knowledge_items_company_created
@@ -502,6 +631,74 @@ class PostgresPersistence:
                 cur.execute("UPDATE campaigns SET status = %s WHERE campaign_id = %s", (status, campaign_id))
             conn.commit()
 
+    def save_generation_context(self, snapshot: GenerationContextSnapshot, run_id: str) -> None:
+        """Insert an immutable context snapshot and its included source rows."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO generation_contexts
+                        (generation_context_id, campaign_id, run_id, internal_token_count,
+                         external_token_count, internal_ratio, external_ratio,
+                         external_source_urls_json, external_search_status, external_search_error,
+                         task_id, selected_reference_ids_json, matched_folder_names_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb, %s::jsonb)
+                    ON CONFLICT (generation_context_id) DO NOTHING;
+                    """,
+                    (snapshot.generation_context_id, snapshot.campaign_id, run_id,
+                     snapshot.internal_token_count, snapshot.external_token_count,
+                     snapshot.internal_ratio, snapshot.external_ratio,
+                     json.dumps(snapshot.external_source_urls), snapshot.external_search_status,
+                     snapshot.external_search_error, snapshot.task_id,
+                     json.dumps(snapshot.selected_reference_ids), json.dumps(snapshot.matched_folder_names)),
+                )
+                for position, item in enumerate(snapshot.items):
+                    metadata = dict(item.metadata) if isinstance(item.metadata, Mapping) else {}
+                    cur.execute(
+                        """
+                        INSERT INTO generation_context_items
+                            (generation_context_item_id, generation_context_id, position,
+                             source_type, source_id, label, text, folder, url, provider,
+                             query, token_count, retrieved_at, metadata_json)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                        ON CONFLICT (generation_context_item_id) DO NOTHING;
+                        """,
+                        (f"{snapshot.generation_context_id}_{position}", snapshot.generation_context_id,
+                         position, item.source_type, item.source_id, item.label, item.text,
+                         metadata.get("folder") or metadata.get("folder_name"), metadata.get("url"),
+                         metadata.get("provider"), metadata.get("query"),
+                         max(1, (len(item.text.encode("utf-8")) + 3) // 4),
+                         metadata.get("retrieved_at").isoformat() if hasattr(metadata.get("retrieved_at"), "isoformat") else metadata.get("retrieved_at"),
+                         json.dumps(_jsonable(metadata))),
+                    )
+            conn.commit()
+
+    def load_generation_context(self, campaign_id: str, run_id: str) -> GenerationContextSnapshot | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT generation_context_id, internal_token_count, external_token_count, internal_ratio, external_ratio, external_source_urls_json, external_search_status, external_search_error, task_id, selected_reference_ids_json, matched_folder_names_json FROM generation_contexts WHERE campaign_id = %s AND run_id = %s",
+                    (campaign_id, run_id),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                cur.execute(
+                    "SELECT source_type, source_id, label, text, metadata_json FROM generation_context_items WHERE generation_context_id = %s ORDER BY position",
+                    (row[0],),
+                )
+                items = cur.fetchall()
+        from .context_assembler import ContextSourceItem
+        return GenerationContextSnapshot(
+            generation_context_id=row[0], campaign_id=campaign_id,
+            internal_token_count=int(row[1]), external_token_count=int(row[2]),
+            internal_ratio=float(row[3]), external_ratio=float(row[4]),
+            items=tuple(ContextSourceItem(r[0], r[1], r[2], r[3], r[4] or {}) for r in items),
+            external_source_urls=tuple(row[5] or []), external_search_status=row[6],
+            external_search_error=row[7], task_id=row[8],
+            selected_reference_ids=tuple(row[9] or []), matched_folder_names=tuple(row[10] or []),
+        )
+
     def update_campaign_brief(self, campaign_id: str, brief: CampaignBrief) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -528,8 +725,9 @@ class PostgresPersistence:
                     cur.execute(
                         """
                         INSERT INTO campaign_tasks
-                            (task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                            (task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at, generation_context_id, provider, model, retryable, run_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (task_id) DO UPDATE SET status = EXCLUDED.status, retry_count = EXCLUDED.retry_count, error_class = EXCLUDED.error_class, error_detail = EXCLUDED.error_detail, blocked_by_task_id = EXCLUDED.blocked_by_task_id, blocked_reason = EXCLUDED.blocked_reason, next_retry_at = EXCLUDED.next_retry_at, generation_context_id = EXCLUDED.generation_context_id, provider = EXCLUDED.provider, model = EXCLUDED.model, retryable = EXCLUDED.retryable, run_id = EXCLUDED.run_id
                         """,
                         (
                             item.task_id,
@@ -540,6 +738,10 @@ class PostgresPersistence:
                             item.priority,
                             json.dumps(item.depends_on),
                             json.dumps(item.acceptance),
+                            item.retry_count, item.error_class, item.error_detail,
+                            item.blocked_by_task_id, item.blocked_reason, item.next_retry_at,
+                            item.generation_context_id, item.provider, item.model, item.retryable,
+                            item.run_id,
                         ),
                     )
             conn.commit()
@@ -549,7 +751,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json
+                    SELECT task_id, campaign_id, company_id, task_type, status, priority, depends_on_json, acceptance_json, retry_count, error_class, error_detail, blocked_by_task_id, blocked_reason, next_retry_at, generation_context_id, provider, model, retryable, run_id
                     FROM campaign_tasks
                     WHERE campaign_id = %s
                     ORDER BY priority ASC, created_at ASC;
@@ -567,9 +769,84 @@ class PostgresPersistence:
                 priority=row[5],
                 depends_on=list(row[6] or []),
                 acceptance=list(row[7] or []),
+                retry_count=int(row[8] or 0), error_class=row[9], error_detail=row[10],
+                blocked_by_task_id=row[11], blocked_reason=row[12], next_retry_at=row[13],
+                generation_context_id=row[14], provider=row[15], model=row[16], retryable=row[17],
+                run_id=row[18],
             )
             for row in rows
         ]
+
+    def claim_manual_task_retry(self, campaign_id: str, task_id: str, max_attempts: int) -> TaskRecord | None:
+        """Atomically claim one retry and return the authoritative row."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE campaign_tasks
+                    SET status = 'retrying', retry_count = retry_count + 1,
+                        retryable = TRUE, next_retry_at = NULL
+                    WHERE campaign_id = %s AND task_id = %s
+                      AND status = 'failed' AND COALESCE(retryable, TRUE) = TRUE
+                      AND retry_count < %s
+                    RETURNING task_id, campaign_id, company_id, task_type, status, priority,
+                              depends_on_json, acceptance_json, retry_count, error_class,
+                              error_detail, blocked_by_task_id, blocked_reason, next_retry_at,
+                              generation_context_id, provider, model, retryable, run_id
+                    """,
+                    (campaign_id, task_id, max_attempts),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            return None
+        return TaskRecord(
+            task_id=row[0], campaign_id=row[1], company_id=row[2], task_type=row[3], status=row[4],
+            priority=row[5], depends_on=list(row[6] or []), acceptance=list(row[7] or []),
+            retry_count=int(row[8] or 0), error_class=row[9], error_detail=row[10],
+            blocked_by_task_id=row[11], blocked_reason=row[12], next_retry_at=row[13],
+            generation_context_id=row[14], provider=row[15], model=row[16], retryable=row[17],
+            run_id=row[18],
+        )
+
+    def fail_manual_task_retry(self, campaign_id: str, task_id: str, error_class: str, error_detail: str) -> bool:
+        """Durably reconcile a claimed retry after worker dispatch fails."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE campaign_tasks
+                       SET status = 'failed', retryable = TRUE, error_class = %s, error_detail = %s,
+                           next_retry_at = NULL
+                       WHERE campaign_id = %s AND task_id = %s AND status = 'retrying'
+                       RETURNING task_id, status""",
+                    (error_class, error_detail, campaign_id, task_id),
+                )
+                updated = cur.fetchone()
+            conn.commit()
+        return updated is not None and updated[1] == "failed"
+
+    def release_manual_task_retry(self, campaign_id: str, task_id: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE campaign_tasks SET status = 'failed', retry_count = GREATEST(0, retry_count - 1)
+                       WHERE campaign_id = %s AND task_id = %s AND status = 'retrying'""",
+                    (campaign_id, task_id),
+                )
+            conn.commit()
+
+    def record_task_attempt(self, task: TaskRecord) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO campaign_task_attempts
+                        (task_id, campaign_id, status, error_class, error_detail)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (task.task_id, task.campaign_id, task.status, task.error_class, task.error_detail),
+                )
+            conn.commit()
 
     def create_campaign_run(
         self,
@@ -1104,6 +1381,91 @@ class PostgresPersistence:
             conn.commit()
         return deleted_count
 
+    def list_folders(self, company_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT folder_id, scope, company_id, name, created_at, updated_at FROM folders WHERE scope = 'platform' OR (scope = 'company' AND company_id = %s) ORDER BY scope, LOWER(name)", (company_id,))
+                rows = cur.fetchall()
+        return [self._folder_dict(row) for row in rows]
+
+    @staticmethod
+    def _folder_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {"folder_id": row[0], "scope": row[1], "company_id": row[2], "name": row[3], "created_at": row[4], "updated_at": row[5]}
+
+    def get_folder(self, folder_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT folder_id, scope, company_id, name, created_at, updated_at FROM folders WHERE folder_id = %s", (folder_id,))
+                row = cur.fetchone()
+        return self._folder_dict(row) if row is not None else None
+
+    def create_folder(self, folder: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO folders (folder_id, scope, company_id, name, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s) RETURNING folder_id, scope, company_id, name, created_at, updated_at", (folder["folder_id"], folder["scope"], folder.get("company_id"), folder["name"], folder["created_at"], folder["updated_at"]))
+                row = cur.fetchone()
+            conn.commit()
+        return self._folder_dict(row)
+
+    def update_folder(self, folder_id: str, name: str, updated_at: datetime) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE folders SET name = %s, updated_at = %s WHERE folder_id = %s RETURNING folder_id, scope, company_id, name, created_at, updated_at", (name, updated_at, folder_id))
+                row = cur.fetchone()
+            conn.commit()
+        return self._folder_dict(row) if row is not None else None
+
+    def delete_folder(self, folder_id: str) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM folders WHERE folder_id = %s", (folder_id,))
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
+
+    def delete_folder_with_content(self, folder_id: str) -> list[str]:
+        """Delete a company folder and its durable content in one DB transaction."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT metadata_json->>'stored_path'
+                    FROM knowledge_items
+                    WHERE folder_id = %s;
+                    """,
+                    (folder_id,),
+                )
+                paths = [str(row[0]) for row in cur.fetchall() if row[0]]
+                cur.execute(
+                    """
+                    DELETE FROM campaign_references
+                    WHERE folder_id = %s
+                    RETURNING stored_path;
+                    """,
+                    (folder_id,),
+                )
+                paths.extend(str(row[0]) for row in cur.fetchall() if row[0])
+                cur.execute("DELETE FROM knowledge_items WHERE folder_id = %s", (folder_id,))
+                cur.execute("DELETE FROM folders WHERE folder_id = %s", (folder_id,))
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return paths if deleted else []
+
+    def count_folder_associations(self, folder_id: str) -> int:
+        """Return durable content references before allowing a folder delete."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM knowledge_items WHERE folder_id = %s AND deleted_at IS NULL)
+                        + (SELECT COUNT(*) FROM campaign_references WHERE folder_id = %s);
+                    """,
+                    (folder_id, folder_id),
+                )
+                row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
     def save_campaign_reference(
         self,
         reference_id: str,
@@ -1115,14 +1477,15 @@ class PostgresPersistence:
         stored_path: str,
         operator: str | None,
         folder: str = "General",
+        folder_id: str | None = None,
     ) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO campaign_references
-                        (reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, operator, folder)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, operator, folder, folder_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (reference_id) DO UPDATE SET
                         file_name = EXCLUDED.file_name,
                         file_type = EXCLUDED.file_type,
@@ -1130,7 +1493,8 @@ class PostgresPersistence:
                         uploaded_at = EXCLUDED.uploaded_at,
                         stored_path = EXCLUDED.stored_path,
                         operator = EXCLUDED.operator,
-                        folder = EXCLUDED.folder;
+                        folder = EXCLUDED.folder,
+                        folder_id = EXCLUDED.folder_id;
                     """,
                     (
                         reference_id,
@@ -1142,6 +1506,7 @@ class PostgresPersistence:
                         stored_path,
                         operator,
                         folder,
+                        folder_id,
                     ),
                 )
             conn.commit()
@@ -1151,7 +1516,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, folder
+                    SELECT reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, folder, folder_id
                     FROM campaign_references
                     WHERE campaign_id = %s
                     ORDER BY uploaded_at DESC;
@@ -1172,6 +1537,7 @@ class PostgresPersistence:
                     "uploaded_at": row[5],
                     "stored_path": row[6],
                     "folder": row[7] or "General",
+                    "folder_id": row[8],
                 }
             )
         return items
@@ -1181,7 +1547,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, folder
+                    SELECT reference_id, campaign_id, file_name, file_type, file_size, uploaded_at, stored_path, folder, folder_id
                     FROM campaign_references
                     WHERE campaign_id = %s AND reference_id = %s
                     LIMIT 1;
@@ -1202,18 +1568,19 @@ class PostgresPersistence:
             "uploaded_at": row[5],
             "stored_path": row[6],
             "folder": row[7] or "General",
+            "folder_id": row[8],
         }
 
-    def update_campaign_reference_folder(self, campaign_id: str, reference_id: str, folder: str) -> bool:
+    def update_campaign_reference_folder(self, campaign_id: str, reference_id: str, folder: str, folder_id: str | None = None) -> bool:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE campaign_references
-                    SET folder = %s
+                    SET folder = %s, folder_id = %s
                     WHERE campaign_id = %s AND reference_id = %s;
                     """,
-                    (folder, campaign_id, reference_id),
+                    (folder, folder_id, campaign_id, reference_id),
                 )
                 updated = cur.rowcount > 0
             conn.commit()
@@ -2191,6 +2558,79 @@ class PostgresPersistence:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS llm_generation_payloads (
+                        payload_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                        campaign_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        task_id TEXT NOT NULL,
+                        generation_context_id TEXT NOT NULL,
+                        task_type TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        context_json JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    "ALTER TABLE llm_generation_payloads ADD COLUMN IF NOT EXISTS payload_id UUID DEFAULT uuid_generate_v4();"
+                )
+                cur.execute(
+                    "UPDATE llm_generation_payloads SET payload_id = uuid_generate_v4() WHERE payload_id IS NULL;"
+                )
+                cur.execute("ALTER TABLE llm_generation_payloads ALTER COLUMN payload_id SET NOT NULL;")
+                cur.execute(
+                    """
+                    DO $$
+                    DECLARE
+                        existing_pk TEXT;
+                        pk_columns TEXT[];
+                    BEGIN
+                        SELECT c.conname, array_agg(a.attname ORDER BY k.ordinality)
+                        INTO existing_pk, pk_columns
+                        FROM pg_catalog.pg_constraint c
+                        JOIN pg_catalog.pg_class t ON t.oid = c.conrelid
+                        JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+                        JOIN unnest(c.conkey) WITH ORDINALITY AS k(attnum, ordinality) ON TRUE
+                        JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+                        WHERE n.nspname = current_schema()
+                          AND t.relname = 'llm_generation_payloads'
+                          AND c.contype = 'p'
+                        GROUP BY c.oid, c.conname;
+
+                        IF existing_pk IS NOT NULL AND pk_columns IS DISTINCT FROM ARRAY['payload_id']::TEXT[] THEN
+                            EXECUTE format('ALTER TABLE llm_generation_payloads DROP CONSTRAINT %I', existing_pk);
+                        END IF;
+
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM pg_catalog.pg_constraint c
+                            JOIN pg_catalog.pg_class t ON t.oid = c.conrelid
+                            JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+                            WHERE n.nspname = current_schema()
+                              AND t.relname = 'llm_generation_payloads'
+                              AND c.contype = 'p'
+                        ) THEN
+                            ALTER TABLE llm_generation_payloads ADD PRIMARY KEY (payload_id);
+                        END IF;
+                    END $$;
+                    """
+                )
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_generation_payloads_id ON llm_generation_payloads (payload_id);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_generation_payloads_campaign ON llm_generation_payloads (campaign_id, created_at DESC);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_generation_payloads_run ON llm_generation_payloads (run_id, created_at DESC);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_llm_generation_payloads_context ON llm_generation_payloads (generation_context_id, created_at DESC);"
+                )
+                cur.execute(
+                    """
                     INSERT INTO llm_model_pricing (model, provider, prompt_price_per_m, completion_price_per_m)
                     VALUES ('deepseek-v3', 'deepseek', 0.27, 1.10)
                     ON CONFLICT (model) DO NOTHING;
@@ -2218,6 +2658,32 @@ class PostgresPersistence:
                     """
                 )
                 conn.commit()
+
+    def save_llm_generation_payload(self, payload: dict[str, Any]) -> None:
+        """Persist one exact worker request without allowing later mutation."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO llm_generation_payloads
+                        (campaign_id, run_id, task_id, generation_context_id, task_type,
+                         provider, model, prompt, context_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT DO NOTHING;
+                    """,
+                    (
+                        str(payload["campaign_id"]),
+                        str(payload["run_id"]),
+                        str(payload["task_id"]),
+                        str(payload["generation_context_id"]),
+                        str(payload["task_type"]),
+                        str(payload.get("provider") or "unknown"),
+                        str(payload.get("model") or "unknown"),
+                        str(payload["prompt"]),
+                        json.dumps(_jsonable(payload.get("context", {})), ensure_ascii=False),
+                    ),
+                )
+            conn.commit()
 
     def flush_llm_usage_batch(self, rows: list[dict[str, Any]]) -> None:
         """Bulk insert from Redis buffer."""
@@ -2468,7 +2934,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT item_id, company_id, title, source, description, content_url, metadata_json, created_at
+                    SELECT item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id
                     FROM knowledge_items
                     WHERE company_id = %s AND deleted_at IS NULL
                     ORDER BY created_at DESC;
@@ -2486,6 +2952,7 @@ class PostgresPersistence:
                 "content_url": row[5],
                 "metadata": dict(row[6] or {}),
                 "created_at": row[7],
+                "folder_id": row[8],
             }
             for row in rows
         ]
@@ -2496,14 +2963,15 @@ class PostgresPersistence:
                 cur.execute(
                     """
                     INSERT INTO knowledge_items
-                        (item_id, company_id, title, source, description, content_url, metadata_json, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+                        (item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
                     ON CONFLICT (item_id) DO UPDATE SET
                         title = EXCLUDED.title,
                         source = EXCLUDED.source,
                         description = EXCLUDED.description,
                         content_url = EXCLUDED.content_url,
                         metadata_json = EXCLUDED.metadata_json,
+                        folder_id = EXCLUDED.folder_id,
                         deleted_at = NULL;
                     """,
                     (
@@ -2515,6 +2983,7 @@ class PostgresPersistence:
                         item.get("content_url"),
                         json.dumps(item.get("metadata", {})),
                         item["created_at"],
+                        item.get("folder_id"),
                     ),
                 )
             conn.commit()
@@ -2533,6 +3002,7 @@ class PostgresPersistence:
         title = str(updates.get("title") or current.get("title") or "").strip()
         description = str(updates.get("description") if updates.get("description") is not None else current.get("description") or "").strip()
         content_url = updates.get("content_url") if updates.get("content_url") is not None else current.get("content_url")
+        folder_id = updates.get("folder_id") if "folder_id" in updates else current.get("folder_id")
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -2541,11 +3011,12 @@ class PostgresPersistence:
                     SET title = %s,
                         description = %s,
                         content_url = %s,
-                        metadata_json = %s::jsonb
+                        metadata_json = %s::jsonb,
+                        folder_id = %s
                     WHERE company_id = %s AND item_id = %s AND deleted_at IS NULL
-                    RETURNING item_id, company_id, title, source, description, content_url, metadata_json, created_at;
+                    RETURNING item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id;
                     """,
-                    (title, description, content_url, json.dumps(metadata), company_id, item_id),
+                    (title, description, content_url, json.dumps(metadata), folder_id, company_id, item_id),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -2560,6 +3031,7 @@ class PostgresPersistence:
             "content_url": row[5],
             "metadata": dict(row[6] or {}),
             "created_at": row[7],
+            "folder_id": row[8],
         }
 
     def soft_delete_knowledge_item(self, company_id: str, item_id: str) -> bool:

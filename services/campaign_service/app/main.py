@@ -1,10 +1,14 @@
 import base64
+import binascii
+import ast
+import hashlib
 import json
 import logging
 import mimetypes
 import os
 import re
 import shutil
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -29,7 +33,7 @@ from .auth import (
     check_permission,
     PLATFORM_ADMIN_KEY,
 )
-from .persistence import PostgresPersistence, now_utc
+from .persistence import PostgresPersistence, legacy_folder_id, now_utc
 from .schemas import (
     AssetOutput,
     AssetVersion,
@@ -55,6 +59,11 @@ from .schemas import (
     WorkerResultRequest,
 )
 from .store import InMemoryStore
+from .validation import validate_campaign_brief
+from .industry_matching import match_industry_items
+from .external_search import ExternalSearchResult, build_campaign_search_query, build_search_provider
+from .external_search import ExternalSearchError
+from .context_assembler import ContextSourceItem, GenerationContextSnapshot, assemble_generation_context, select_image_reference_items
 
 
 class QueueHealthResponse(BaseModel):
@@ -197,6 +206,9 @@ class ReviewItem(BaseModel):
     submitted_at: str
     assignee: str | None = None
     run_id: str | None = None
+    generation_context_id: str | None = None
+    source_summary: dict[str, Any] | None = None
+    source_provenance: list[dict[str, Any]] = []
 
 
 class ReviewQueueResponse(BaseModel):
@@ -217,6 +229,7 @@ class ReviewActionResponse(BaseModel):
 
 class ReviewAuditEntry(BaseModel):
     timestamp: str
+    company_id: str | None = None
     operator: str
     action: str
     target: str
@@ -270,6 +283,7 @@ class KnowledgeItemRecord(BaseModel):
     description: str = ""
     content_url: str | None = None
     metadata: dict[str, Any] = {}
+    folder_id: str | None = None
     created_at: datetime
 
 
@@ -284,6 +298,7 @@ class KnowledgeItemCreateRequest(BaseModel):
     description: str = ""
     content_url: str | None = None
     metadata: dict[str, Any] = {}
+    folder_id: str | None = None
 
 
 class KnowledgeItemUpdateRequest(BaseModel):
@@ -292,6 +307,7 @@ class KnowledgeItemUpdateRequest(BaseModel):
     content_url: str | None = None
     category: str | None = None
     metadata: dict[str, Any] | None = None
+    folder_id: str | None = None
 
 
 class KnowledgeItemDeleteResponse(BaseModel):
@@ -377,10 +393,12 @@ class CampaignReferenceRecord(BaseModel):
     uploaded_at: str
     download_url: str
     folder: str = "General"
+    folder_id: str | None = None
 
 
 class CampaignReferenceUpdateRequest(BaseModel):
     folder: str | None = None
+    folder_id: str | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -399,6 +417,30 @@ class CampaignReferenceAttachRequest(BaseModel):
     content: str
     file_type: str = "text/plain"
     operator: str | None = None
+    folder_id: str | None = None
+
+
+class FolderRecord(BaseModel):
+    folder_id: str
+    scope: Literal["platform", "company"]
+    company_id: str | None = None
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class FolderListResponse(BaseModel):
+    items: list[FolderRecord]
+    total: int
+
+
+class FolderCreateRequest(BaseModel):
+    name: str
+    scope: Literal["platform", "company"] = "company"
+
+
+class FolderUpdateRequest(BaseModel):
+    name: str
 
 
 class ChatbotAuditWriteRequest(BaseModel):
@@ -821,12 +863,29 @@ CAMPAIGN_RUNNING_TIMEOUT_SECONDS = max(300, int(os.getenv("CAMPAIGN_RUNNING_TIME
 WEBHOOK_NOTIFY_URL = os.getenv("WEBHOOK_NOTIFY_URL", "").strip()
 WORKER_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("WORKER_RETRY_MAX_ATTEMPTS", "2")))
 WORKER_RETRY_BACKOFF_SECONDS = max(0.0, float(os.getenv("WORKER_RETRY_BACKOFF_SECONDS", "0.5")))
+MANUAL_RETRY_MAX_ATTEMPTS = max(1, int(os.getenv("MANUAL_RETRY_MAX_ATTEMPTS", "3")))
+manual_retry_lock = threading.Lock()
+ASSET_WORKER_TASK_TYPES = {"copywriting", "image_generation", "video_generation", "ads_strategy"}
 WORKER_REQUEST_TIMEOUT_SECONDS = max(15.0, float(os.getenv("WORKER_REQUEST_TIMEOUT_SECONDS", "180")))
 WORKER_COPY_URL = os.getenv("WORKER_COPY_URL", "http://worker-copy:8091").strip()
 WORKER_IMAGE_URL = os.getenv("WORKER_IMAGE_URL", "http://worker-image:8092").strip()
 WORKER_VIDEO_URL = os.getenv("WORKER_VIDEO_URL", "http://worker-video:8093").strip()
 WORKER_ADS_URL = os.getenv("WORKER_ADS_URL", "http://worker-ads:8094").strip()
+GENERATION_CONTEXT_TOKEN_BUDGET = max(1, int(os.getenv("GENERATION_CONTEXT_TOKEN_BUDGET", "4000")))
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0").strip()
+EXTERNAL_SEARCH_PROVIDER = os.getenv("EXTERNAL_SEARCH_PROVIDER", "disabled").strip()
+EXTERNAL_SEARCH_API_KEY = os.getenv("EXTERNAL_SEARCH_API_KEY", "").strip()
+EXTERNAL_SEARCH_ENGINE_ID = os.getenv("EXTERNAL_SEARCH_ENGINE_ID", "").strip()
+try:
+    external_search_provider = build_search_provider(
+        {
+            "EXTERNAL_SEARCH_PROVIDER": EXTERNAL_SEARCH_PROVIDER,
+            "EXTERNAL_SEARCH_API_KEY": EXTERNAL_SEARCH_API_KEY,
+            "EXTERNAL_SEARCH_ENGINE_ID": EXTERNAL_SEARCH_ENGINE_ID,
+        }
+    )
+except ExternalSearchError:
+    external_search_provider = None
 _last_sla_scan_at: datetime | None = None
 
 if not CHATBOT_INTERNAL_API_KEY:
@@ -847,6 +906,8 @@ if REQUIRE_POSTGRES:
 asset_cache: dict[str, list[AssetOutput]] = {}
 validation_cache: dict[str, list[ValidationResult]] = {}
 campaign_run_cache: dict[str, list[dict[str, Any]]] = {}
+generation_context_cache: dict[str, GenerationContextSnapshot] = {}
+generation_context_run_cache: dict[tuple[str, str], str] = {}
 review_status_overrides: dict[str, str] = {}
 review_audit_logs: list[ReviewAuditEntry] = []
 workflow_templates: dict[str, WorkflowTemplate] = {}
@@ -854,6 +915,7 @@ workflow_template_versions: dict[str, list[WorkflowTemplateVersion]] = {}
 campaign_references: dict[str, list[CampaignReferenceRecord]] = {}
 campaign_reference_files: dict[str, dict[str, str]] = {}
 knowledge_items: dict[str, list[KnowledgeItemRecord]] = {}
+folders_cache: dict[str, dict[str, Any]] = {}
 chatbot_audit_logs: list[ChatbotAuditRecord] = []
 campaign_traces: dict[str, CampaignTraceRecord] = {}
 campaign_trace_events: dict[str, list[CampaignTraceEventRecord]] = {}
@@ -868,6 +930,7 @@ MANUAL_ASSETS_DIR = os.getenv("MANUAL_ASSETS_DIR", os.path.join(os.getcwd(), "ma
 GENERATED_ASSETS_DIR = os.getenv("GENERATED_ASSETS_DIR", os.path.join(os.getcwd(), "generated_assets"))
 KNOWLEDGE_UPLOADS_DIR = os.getenv("KNOWLEDGE_UPLOADS_DIR", os.path.join(os.getcwd(), "knowledge_uploads"))
 REFERENCE_MAX_SIZE_BYTES = int(os.getenv("REFERENCE_MAX_SIZE_BYTES", str(50 * 1024 * 1024)))
+REFERENCE_UPLOAD_TIMEOUT_SECONDS = float(os.getenv("REFERENCE_UPLOAD_TIMEOUT_SECONDS", "60"))
 LLM_USAGE_BUFFER_KEY = "llm_usage_buffer"
 LLM_USAGE_FLUSH_INTERVAL = 60  # seconds
 
@@ -909,6 +972,26 @@ REFERENCE_ALLOWED_MIME_TYPES = {
     "video/x-matroska",
     "video/webm",
 }
+REFERENCE_EXTENSION_MIME_TYPES = {
+    ".pdf": {"application/pdf"},
+    ".txt": {"text/plain"},
+    ".md": {"text/markdown", "text/plain"},
+    ".doc": {"application/msword", "application/octet-stream"},
+    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream"},
+    ".ppt": {"application/vnd.ms-powerpoint", "application/octet-stream"},
+    ".pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/octet-stream"},
+    ".png": {"image/png"},
+    ".jpg": {"image/jpeg"},
+    ".jpeg": {"image/jpeg"},
+    ".webp": {"image/webp"},
+    ".gif": {"image/gif"},
+    ".mp4": {"video/mp4"},
+    ".mov": {"video/quicktime"},
+    ".avi": {"video/x-msvideo"},
+    ".mkv": {"video/x-matroska"},
+    ".webm": {"video/webm"},
+}
+REFERENCE_OCTET_STREAM_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx"}
 os.makedirs(CAMPAIGN_REFERENCES_DIR, exist_ok=True)
 os.makedirs(GENERATED_ASSETS_DIR, exist_ok=True)
 
@@ -953,6 +1036,128 @@ def _classify_worker_error(message: str) -> str:
     return "WORKER_UNKNOWN_ERROR"
 
 
+def classify_worker_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "429" in text or "quota" in text or "rate limit" in text:
+        return "quota" if "quota" in text or "429" in text else "rate_limit"
+    if isinstance(exc, TimeoutError) or "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "422" in text or "validation" in text:
+        return "validation"
+    if any(value in text for value in ("provider", "upstream", "502", "503", "http error")):
+        return "provider_error"
+    return "unknown"
+
+
+def sanitize_worker_error_detail(message: str) -> str:
+    text = (message or "").strip()
+    try:
+        structured = ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        structured = None
+    if isinstance(structured, (dict, list)):
+        def redact(value: Any, key: str = "") -> Any:
+            if key.lower().replace("-", "_") in {"api_key", "token", "password", "authorization", "credentials", "credential", "secret"}:
+                return "[REDACTED]"
+            if isinstance(value, dict):
+                return {name: redact(item, str(name)) for name, item in value.items()}
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, str):
+                return re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
+            return value
+        text = json.dumps(redact(structured), separators=(",", ":"))
+    text = re.sub(r"(?i)(api[_-]?key|token|password|secret)=([^&\s]+)", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]", text)
+    text = re.sub(
+        r"(?i)([\"']?(?:api[_-]?key|token|password|secret|credentials?|authorization)[\"']?\s*[:=]\s*[\"']?)([^\"',}\s]+)",
+        r"\1[REDACTED]",
+        text,
+    )
+    for secret in (CHATBOT_INTERNAL_API_KEY, EXTERNAL_SEARCH_API_KEY):
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return text[:2000]
+
+
+def worker_failure_trace_payload(
+    message: str,
+    *,
+    task_id: str,
+    task_type: str,
+    attempt: int,
+    retryable: bool,
+    provider: str | None = None,
+) -> dict[str, Any]:
+    error_code = classify_worker_error(RuntimeError(message))
+    status_match = re.search(r"\b(?:http\s+)?(\d{3})\b", message or "", re.IGNORECASE)
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "task_type": task_type,
+        "attempt": attempt,
+        "attempts": attempt,
+        "retryable": retryable,
+        "error_code": error_code,
+        "error": "Worker request failed",
+        "error_detail": "Worker request failed",
+        "worker_url": None,
+        "message": "Worker request failed",
+    }
+    if status_match:
+        payload["status_code"] = int(status_match.group(1))
+    if isinstance(provider, str) and provider.strip().lower() in {"gemini", "minimax", "stability"}:
+        payload["provider"] = provider.strip().lower()
+    else:
+        payload["provider"] = "unknown"
+    return payload
+
+
+def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dict[str, Any]) -> list[TaskRecord]:
+    """Apply one worker result while isolating dependent branches."""
+    by_id = {task.task_id: task for task in tasks}
+    current = by_id.get(task_id)
+    if current is None:
+        return tasks
+    status = str(result.get("status", "passed"))
+    if status in {"passed", "accepted", "success"} and current.task_type in ASSET_WORKER_TASK_TYPES and not worker_result_has_displayable_assets(current.task_type, result):
+        status = "failed"
+        result = {**result, "status": status, "error": "worker returned no displayable assets"}
+    if status in {"failed", "error"} or result.get("error"):
+        current = current.model_copy(update={
+            "status": "failed",
+            "error_class": classify_worker_error(RuntimeError(str(result.get("error", "worker failure")))),
+            "error_detail": sanitize_worker_error_detail(str(result.get("error", "worker failure"))),
+            "provider": result.get("provider") or current.provider,
+            "model": result.get("model") or result.get("model_name") or current.model,
+        })
+        by_id[task_id] = current
+        changed = True
+        while changed:
+            changed = False
+            for candidate in by_id.values():
+                if candidate.status != "pending" or not any(by_id.get(dep) and by_id[dep].status in {"failed", "blocked"} for dep in candidate.depends_on):
+                    continue
+                blocker = next(dep for dep in candidate.depends_on if by_id.get(dep) and by_id[dep].status in {"failed", "blocked"})
+                by_id[candidate.task_id] = candidate.model_copy(update={
+                    "status": "blocked", "blocked_by_task_id": blocker,
+                    "blocked_reason": f"blocked by failed task {blocker}",
+                })
+                changed = True
+    elif status in {"retrying", "retry"}:
+        for candidate in by_id.values():
+            if candidate.task_id == task_id or (candidate.status == "blocked" and any(dep == task_id or (by_id.get(dep) and by_id[dep].status == "blocked") for dep in candidate.depends_on)):
+                by_id[candidate.task_id] = candidate.model_copy(update={"status": "retrying" if candidate.task_id == task_id else "pending", "blocked_by_task_id": None, "blocked_reason": None})
+    else:
+        by_id[task_id] = current.model_copy(update={"status": "passed", "error_class": None, "error_detail": None,
+                                                    "provider": result.get("provider") or current.provider,
+                                                    "model": result.get("model") or result.get("model_name") or current.model})
+    return [by_id[task.task_id] for task in tasks]
+
+
+def manual_retry_allowed(task: TaskRecord, max_attempts: int = 3) -> bool:
+    return task.status == "failed" and task.retryable is not False and task.retry_count < max_attempts
+
+
 def _extract_worker_error_detail(message: str) -> str:
     text = (message or "").strip()
     # common format: "... HTTP Error 422: Unprocessable Entity"
@@ -960,7 +1165,56 @@ def _extract_worker_error_detail(message: str) -> str:
     return text
 
 
+def _sanitize_persisted_context(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[Any, Any] = {}
+        for key, nested_value in value.items():
+            normalized_key = key.lower() if isinstance(key, str) else key
+            if normalized_key == "reference_images":
+                continue
+            sanitized[key] = _sanitize_persisted_context(nested_value)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_persisted_context(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_persisted_context(item) for item in value)
+    return value
+
+
+def _capture_worker_payload(
+    payload: dict[str, Any],
+    task_type: str,
+    campaign_id: str,
+    task_id: str,
+    *,
+    raise_on_failure: bool = False,
+) -> None:
+    if persistence is None:
+        if raise_on_failure:
+            raise RuntimeError("LLM payload persistence is not configured")
+        return
+    try:
+        persistence.save_llm_generation_payload({
+            "campaign_id": payload.get("campaign_id") or campaign_id,
+            "run_id": payload.get("run_id") or "",
+            "task_id": payload.get("task_id") or task_id,
+            "generation_context_id": payload.get("generation_context_id") or "",
+            "task_type": task_type,
+            "provider": payload.get("provider") or "unknown",
+            "model": payload.get("model") or "unknown",
+            "prompt": payload.get("prompt") or payload.get("context") or "",
+            # Reference image bytes are transient worker input, not persisted context.
+            "context": _sanitize_persisted_context(payload),
+        })
+    except Exception as exc:
+        # Capture is diagnostic and must never change generation behavior.
+        logger.warning("Unable to persist worker generation payload")
+        if raise_on_failure:
+            raise RuntimeError("Unable to persist worker generation payload") from exc
+
+
 def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaign_id: str, task_id: str, company_id: str) -> dict[str, Any]:
+    _capture_worker_payload(payload, task_type, campaign_id, task_id)
     last_exc: RuntimeError | None = None
     for attempt in range(1, WORKER_RETRY_MAX_ATTEMPTS + 1):
         try:
@@ -971,34 +1225,35 @@ def _worker_post_json(url: str, payload: dict[str, Any], task_type: str, campaig
             last_exc = exc
             metrics.inc("worker_dispatch_failed_total")
             error_text = str(exc)
-            error_code = _classify_worker_error(error_text)
-            error_detail = _extract_worker_error_detail(error_text)
+            error_code = classify_worker_error(exc)
+            retryable = error_code in {"quota", "rate_limit", "timeout", "provider_error"}
+            trace_payload = worker_failure_trace_payload(
+                error_text,
+                task_id=task_id,
+                task_type=task_type,
+                attempt=attempt,
+                retryable=retryable,
+                provider=payload.get("provider"),
+            )
             append_trace_event(
                 campaign_id=campaign_id,
                 event_type="worker_dispatch_retrying" if attempt < WORKER_RETRY_MAX_ATTEMPTS else "worker_dispatch_failed",
                 actor_id="system",
                 actor_role="system",
                 summary=f"Worker request failed (attempt {attempt}/{WORKER_RETRY_MAX_ATTEMPTS}) for {task_id}",
-                payload={
-                    "task_id": task_id,
-                    "task_type": task_type,
-                    "attempt": attempt,
-                    "error_code": error_code,
-                    "error": error_text,
-                    "error_detail": error_detail,
-                    "worker_url": url,
-                    "worker_payload": payload,
-                },
+                payload=trace_payload,
                 source="workers",
                 company_id=company_id,
             )
+            if error_code not in {"quota", "rate_limit", "timeout", "provider_error"}:
+                break
             if attempt < WORKER_RETRY_MAX_ATTEMPTS and WORKER_RETRY_BACKOFF_SECONDS > 0:
-                time.sleep(WORKER_RETRY_BACKOFF_SECONDS)
-    raise RuntimeError(str(last_exc) if last_exc else "unknown worker failure")
+                time.sleep(min(300.0, max(5.0, 5.0 * (2 ** (attempt - 1)))))
+    raise RuntimeError(sanitize_worker_error_detail(str(last_exc)) if last_exc else "unknown worker failure")
 
 
 TaskType = Literal["copywriting", "image_generation", "video_generation", "ads_strategy"]
-TaskStatus = Literal["pending", "planned", "running", "validating", "passed", "failed", "retrying"]
+TaskStatus = Literal["pending", "planned", "running", "validating", "passed", "failed", "blocked", "retrying"]
 
 
 def normalize_task_payload(payload: dict[str, Any], campaign_id: str) -> TaskRecord:
@@ -1011,7 +1266,7 @@ def normalize_task_payload(payload: dict[str, Any], campaign_id: str) -> TaskRec
     task_type = cast(TaskType, raw_task_type)
 
     raw_status = str(payload.get("status", "pending"))
-    if raw_status not in {"pending", "planned", "running", "validating", "passed", "failed", "retrying"}:
+    if raw_status not in {"pending", "planned", "running", "validating", "passed", "failed", "blocked", "retrying"}:
         raw_status = "pending"
     status = cast(TaskStatus, raw_status)
 
@@ -1042,6 +1297,17 @@ def normalize_task_payload(payload: dict[str, Any], campaign_id: str) -> TaskRec
         priority=priority,
         depends_on=depends_on,
         acceptance=acceptance,
+        retry_count=int(payload.get("retry_count", 0) or 0),
+        error_class=payload.get("error_class"),
+        error_detail=payload.get("error_detail"),
+        blocked_by_task_id=payload.get("blocked_by_task_id"),
+        blocked_reason=payload.get("blocked_reason"),
+        next_retry_at=payload.get("next_retry_at"),
+        generation_context_id=payload.get("generation_context_id") or payload.get("worker_payload", {}).get("generation_context_id"),
+        provider=payload.get("provider") or payload.get("worker_payload", {}).get("provider"),
+        model=payload.get("model") or payload.get("model_name") or payload.get("worker_payload", {}).get("model"),
+        retryable=payload.get("retryable", status == "failed"),
+        run_id=payload.get("run_id"),
     )
 
 
@@ -1627,13 +1893,15 @@ def cache_generated_asset_url(
     if value.startswith("data:"):
         header, _, data = value.partition(",")
         content_type = header.removeprefix("data:").split(";", 1)[0] or ("video/mp4" if asset_type == "video" else "image/png")
-        if ";base64" in header:
+        if ";base64" in header.lower():
             payload = base64.b64decode(data)
         else:
             payload = parse.unquote_to_bytes(data)
     elif value.startswith("file://"):
         file_path = value[7:]  # strip "file://"
         file_path = parse.unquote(file_path)
+        if os.name == "nt" and file_path.startswith("/") and len(file_path) > 2 and file_path[2] == ":":
+            file_path = file_path[1:]
         if not os.path.isabs(file_path):
             file_path = os.path.abspath(file_path)
         if not os.path.exists(file_path):
@@ -1672,7 +1940,6 @@ def cache_generated_asset_url(
         "stored_path": stored_path,
         "file_name": safe_file,
         "content_type": content_type,
-        "original_url": value,
         "file_size": len(payload),
     }
 
@@ -1683,8 +1950,19 @@ def is_openable_asset_url(url: str) -> bool:
         return False
     if value.startswith(("stub://", "minimax-quota://", "minimax://")):
         return False
-    if value.startswith(("http://", "https://", "data:image/", "file://")):
+    if value.startswith(("http://", "https://", "file://")):
         return True
+    if value.startswith("data:image/"):
+        header, separator, data = value.partition(",")
+        mime_type = header[5:].split(";", 1)[0].lower()
+        if mime_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            return False
+        if not separator or not data or not header.lower().endswith(";base64"):
+            return False
+        try:
+            return bool(base64.b64decode(data, validate=True))
+        except (ValueError, binascii.Error):
+            return False
     if value.startswith("/api/"):
         return True
     return False
@@ -1842,6 +2120,12 @@ def prepare_regeneration_naming(campaign: CampaignRecord, source_asset: AssetOut
 
 
 def apply_regeneration_metadata(metadata: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("generation_context_id"):
+        metadata["generation_context_id"] = result["generation_context_id"]
+    if result.get("provider"):
+        metadata["provider"] = result["provider"]
+    if result.get("model_name") or result.get("model"):
+        metadata["model_name"] = result.get("model_name") or result.get("model")
     context = result.get("regeneration_context")
     if isinstance(context, dict):
         for key in ("parent_asset_id", "root_asset_id", "asset_base_name", "asset_version", "asset_name", "is_regenerated"):
@@ -1997,7 +2281,7 @@ def safe_reference_excerpt(stored_path: str | None, file_type: str | None, max_c
         return ""
 
 
-def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
+def list_campaign_reference_context(campaign: CampaignRecord, limit: int = 8) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if persistence is not None:
         try:
@@ -2011,22 +2295,36 @@ def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 
                 "file_name": item.file_name,
                 "file_type": item.file_type,
                 "stored_path": campaign_reference_files.get(campaign.campaign_id, {}).get(item.reference_id),
+                "folder": item.folder,
             })
 
-    lines: list[str] = []
+    context: list[dict[str, Any]] = []
     for row in rows[:limit]:
+        folder = str(row.get("folder") or "")
+        source_type = "immediate_upload" if folder == "即時上傳" else "campaign_reference"
+        context.append({**row, "source_type": source_type, "folder": folder})
+    return context
+
+
+def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
+    lines: list[str] = []
+    for row in list_campaign_reference_context(campaign, limit):
+        reference_id = str(row.get("reference_id") or "")
         file_name = str(row.get("file_name") or "reference")
         file_type = str(row.get("file_type") or "")
         stored_path = str(row.get("stored_path") or "")
+        source_type = str(row["source_type"])
+        folder = str(row.get("folder") or "General")
+        trace = f"[source_type={source_type}] [reference_id={reference_id}] [folder={folder}]"
         excerpt = safe_reference_excerpt(stored_path, file_type)
         if excerpt:
-            lines.append(f"- Manual/campaign reference: {file_name}\n  Excerpt: {excerpt}")
+            lines.append(f"- Manual/campaign reference: {trace} {file_name}\n  Excerpt: {excerpt}")
         else:
-            lines.append(f"- Manual/campaign reference: {file_name} ({file_type or 'unknown type'})")
+            lines.append(f"- Manual/campaign reference: {trace} {file_name} ({file_type or 'unknown type'})")
     return lines
 
 
-def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
+def list_industry_knowledge_context(campaign: CampaignRecord, limit: int = 8) -> list[dict[str, Any]]:
     industry = (getattr(campaign.brief, "industry_category", "") or "").strip().lower()
     if not industry:
         return []
@@ -2039,33 +2337,177 @@ def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 
     if not rows:
         rows = [item.model_dump(mode="python") for item in knowledge_items.get(campaign.company_id, [])]
 
-    matched: list[dict[str, Any]] = []
+    selected: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     for row in rows:
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-        category = str(metadata.get("category") or metadata.get("folder") or metadata.get("folder_name") or "")
-        searchable = " ".join([
-            str(row.get("title") or ""),
-            str(row.get("description") or ""),
-            category,
-            str(metadata.get("file_name") or ""),
-        ]).lower()
-        if industry in searchable or any(part and part in searchable for part in re.split(r"[\s,/，、|]+", industry)):
-            matched.append(row)
-
-    lines: list[str] = []
+        source_type = str(metadata.get("source_type") or "")
+        if source_type == "user_selected" or metadata.get("selected") is True:
+            selected.append({**row, "source_type": "user_selected"})
+        else:
+            candidates.append(row)
+    matched = [*selected, *match_industry_items(
+        campaign.brief.industry_category,
+        campaign.brief.product_name,
+        campaign.brief.objective,
+        candidates,
+        limit=max(0, limit - len(selected)),
+    )]
+    context: list[dict[str, Any]] = []
     for row in matched[:limit]:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        folder = str(metadata.get("folder") or metadata.get("folder_name") or metadata.get("category") or "")
+        context.append({**row, "source_type": str(row.get("source_type") or "industry_matched"), "folder": folder})
+    return context
+
+
+def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 8) -> list[str]:
+    lines: list[str] = []
+    for row in list_industry_knowledge_context(campaign, limit):
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         category = str(metadata.get("category") or metadata.get("folder") or metadata.get("folder_name") or "uncategorized")
         file_name = str(metadata.get("file_name") or "")
         title = str(row.get("title") or file_name or "knowledge item")
         description = str(row.get("description") or "").strip()
-        detail = f"- Industry-matched knowledge folder/item: [{category}] {title}"
+        source_type = str(row["source_type"])
+        item_id = str(row.get("item_id") or "")
+        detail = f"- Industry-matched knowledge folder/item: [source_type={source_type}] [item_id={item_id}] [folder={category}] {title}"
         if file_name and file_name != title:
             detail += f" / file: {file_name}"
         if description:
             detail += f"\n  Summary: {description[:600]}"
         lines.append(detail)
     return lines
+
+
+def build_external_search_query(campaign: CampaignRecord) -> str:
+    return build_campaign_search_query(
+        campaign.brief.product_name,
+        campaign.brief.industry_category,
+        campaign.brief.objective,
+    )
+
+
+def search_campaign_external_context(campaign: CampaignRecord, limit: int = 8) -> list[ExternalSearchResult]:
+    """Search the campaign context seam; Task 4 can add these results to its snapshot."""
+    if external_search_provider is None:
+        return []
+    return external_search_provider.search(build_external_search_query(campaign), limit)
+
+
+def create_generation_context(campaign: CampaignRecord, run_id: str) -> GenerationContextSnapshot:
+    selected: list[ContextSourceItem] = []
+    for row in list_campaign_reference_context(campaign):
+        reference_id = str(row.get("reference_id") or "")
+        selected.append(ContextSourceItem(
+            str(row.get("source_type") or "campaign_reference"), reference_id,
+            str(row.get("file_name") or "reference"),
+            safe_reference_excerpt(str(row.get("stored_path") or ""), str(row.get("file_type") or "")),
+            {**row, "folder": str(row.get("folder") or "")},
+        ))
+    industry: list[ContextSourceItem] = []
+    for row in list_industry_knowledge_context(campaign):
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        item_id = str(row.get("item_id") or "")
+        industry.append(ContextSourceItem(
+            str(row.get("source_type") or "industry_matched"), item_id,
+            str(row.get("title") or row.get("file_name") or "knowledge item"),
+            str(row.get("description") or ""), {**metadata, "folder": row.get("folder")},
+        ))
+    external: list[ContextSourceItem] = []
+    search_status = "not_configured" if external_search_provider is None else "available"
+    search_error: str | None = None
+    if external_search_provider is not None:
+        try:
+            for result in search_campaign_external_context(campaign):
+                external.append(ContextSourceItem(
+                    result.source_type, result.url, result.title, result.summary,
+                    {"url": result.url, "provider": result.provider, "query": result.query, "retrieved_at": result.retrieved_at},
+                ))
+            search_status = "succeeded"
+        except ExternalSearchError as exc:
+            search_status = exc.category
+            search_error = str(exc)
+        except Exception:
+            search_status = "provider_error"
+            search_error = "External search provider failed"
+    snapshot = assemble_generation_context(campaign, selected, industry, external, GENERATION_CONTEXT_TOKEN_BUDGET)
+    return GenerationContextSnapshot(
+        **{**snapshot.__dict__, "external_search_status": search_status, "external_search_error": search_error}
+    )
+
+
+def cache_generation_context(snapshot: GenerationContextSnapshot, run_id: str | None = None) -> None:
+    generation_context_cache[snapshot.generation_context_id] = snapshot
+    if run_id:
+        generation_context_run_cache[(snapshot.campaign_id, run_id)] = snapshot.generation_context_id
+
+
+def snapshot_for_campaign(campaign: CampaignRecord, run_id: str | None = None) -> GenerationContextSnapshot | None:
+    if run_id:
+        context_id = generation_context_run_cache.get((campaign.campaign_id, run_id))
+        snapshot = generation_context_cache.get(context_id) if context_id else None
+        if snapshot is not None:
+            return snapshot
+        if persistence is not None:
+            snapshot = persistence.load_generation_context(campaign.campaign_id, run_id)
+            if snapshot is not None:
+                cache_generation_context(snapshot, run_id)
+            return snapshot
+        return None
+    cached = next((item for item in reversed(list(generation_context_cache.values())) if item.campaign_id == campaign.campaign_id), None)
+    if cached is not None:
+        return cached
+    if persistence is not None:
+        try:
+            runs = persistence.list_campaign_runs(campaign.campaign_id)
+            for run in runs:
+                snapshot = persistence.load_generation_context(campaign.campaign_id, str(run["run_id"]))
+                if snapshot is not None:
+                    cache_generation_context(snapshot, str(run["run_id"]))
+                    return snapshot
+        except Exception:
+            logger.warning("Failed to hydrate generation diagnostics", exc_info=True)
+    return None
+
+
+def generation_diagnostics(campaign: CampaignRecord, run_id: str | None = None) -> dict[str, Any] | None:
+    snapshot = snapshot_for_campaign(campaign, run_id)
+    if snapshot is None:
+        return None
+    source_counts: dict[str, int] = {}
+    provenance: list[dict[str, Any]] = []
+    for item in snapshot.items:
+        source_counts[item.source_type] = source_counts.get(item.source_type, 0) + 1
+        metadata = dict(item.metadata)
+        provenance.append({"source_type": item.source_type, "source_id": item.source_id, "label": item.label,
+                          "folder": metadata.get("folder") or metadata.get("folder_name"), "url": metadata.get("url"),
+                          "provider": metadata.get("provider"), "query": metadata.get("query"), "retrieved_at": metadata.get("retrieved_at")})
+    internal_count = sum(source_counts.get(kind, 0) for kind in ("user_selected", "immediate_upload", "campaign_reference", "industry_matched"))
+    return {"generation_context_id": snapshot.generation_context_id, "internal_source_count": internal_count,
+            "external_source_count": source_counts.get("external_web", 0), "internal_token_count": snapshot.internal_token_count,
+            "external_token_count": snapshot.external_token_count, "internal_ratio": snapshot.internal_ratio,
+            "external_ratio": snapshot.external_ratio, "source_counts": source_counts,
+            "selected_reference_ids": list(snapshot.selected_reference_ids), "matched_folder_names": list(snapshot.matched_folder_names),
+            "external_source_urls": list(snapshot.external_source_urls), "external_search_status": snapshot.external_search_status,
+            "external_search_error": snapshot.external_search_error, "provenance": provenance}
+
+
+def enrich_campaign_diagnostics(campaign: CampaignRecord) -> CampaignRecord:
+    diagnostics = generation_diagnostics(campaign)
+    tasks = store.get_tasks(campaign.campaign_id)
+    context_id = diagnostics.get("generation_context_id") if diagnostics else None
+    if context_id:
+        tasks = [task.model_copy(update={"generation_context_id": task.generation_context_id or context_id}) for task in tasks]
+    return campaign.model_copy(update={"generation_context_id": context_id, "source_summary": diagnostics, "tasks": tasks or None})
+
+
+def snapshot_prompt_context(snapshot: GenerationContextSnapshot | None) -> str:
+    if snapshot is None:
+        return ""
+    return "\n\nPersisted generation snapshot sources:\n" + "\n".join(
+        f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
+    )
 
 
 def build_campaign_prompt_context(campaign: CampaignRecord) -> str:
@@ -2113,12 +2555,32 @@ def build_campaign_prompt_context(campaign: CampaignRecord) -> str:
     return "\n".join(parts)
 
 
+REFERENCE_PRIORITY_POLICY = """
+Reference policy:
+1. Treat user-uploaded or user-selected campaign references as the highest-priority source of truth（優先使用使用者上傳或選擇的參考資料）。
+2. Use the matching reference folder for the requested copy, image, or video style/concept.
+3. Use industry-matched knowledge as supporting context only.
+4. Use external search context only to learn similar keywords, tone, format, style, and concepts; never copy claims or wording blindly.
+5. When external context is present, preserve the assembled context balance: user-selected/uploaded plus folder context first, external web context approximately 75:25 overall.
+6. 生成後校稿：確認內容符合活動需求、參考資料優先級、資料夾風格與禁止事項，再輸出結果。
+""".strip()
+
+
 def build_image_generation_prompt(campaign: CampaignRecord) -> str:
     brief = campaign.brief
     parts = [
         build_campaign_prompt_context(campaign),
         "",
         "Image generation task: Create campaign visual assets using all campaign context above.",
+        REFERENCE_PRIORITY_POLICY,
+        """
+Visual type policy:
+1. Infer the requested visual type from the campaign brief. Choose the closest of: 主視覺 KV、Banner（橫置／9:16需求）、社群圖文（方形 1:1）、特殊規則（直式 2:1）。
+2. Follow the selected type's composition, focal point, hierarchy, safe area, and intended placement. Treat the requested ratio as a design requirement and do not silently change it.
+3. Match the selected folder's visual style and concept before using generic model style.
+4. Before returning, self-check composition, style consistency, brand/product accuracy, legibility, unwanted artifacts, and whether the concept matches the campaign.
+5. Return only the requested image-generation output; do not describe the self-check in the asset itself.
+""".strip(),
     ]
 
     intent_text = " ".join(parts).lower()
@@ -2139,6 +2601,15 @@ def build_copy_generation_prompt(campaign: CampaignRecord) -> str:
     return "\n\n".join(
         [
             build_campaign_prompt_context(campaign),
+            REFERENCE_PRIORITY_POLICY,
+            """
+Copy type policy:
+1. Infer the requested copy type from the campaign brief and choose exactly one primary format: 宣傳文宣（100 字內）、社群文章（100-200 字）、 or 公關稿（300-500 字）。
+2. Match the selected copy type's structure, tone, pacing, headline style, and CTA format to the corresponding reference folder.
+3. Use similar keywords from external context to learn tone and format, not to invent unsupported facts or copy wording.
+4. Generate a complete draft, then proofread it before returning: check the selected length range, grammar, tone, campaign objective, mandatory elements, forbidden elements, factual grounding, and CTA.
+5. If the brief is ambiguous, prefer the shortest format that satisfies the objective and state the chosen format in the internal reasoning, not in the copy body.
+""".strip(),
             "Copywriting task: Generate campaign copy using all campaign context above. Preserve the project brief intent and industry context.",
         ]
     )
@@ -2148,24 +2619,112 @@ def build_video_generation_prompt(campaign: CampaignRecord) -> str:
     return "\n\n".join(
         [
             build_campaign_prompt_context(campaign),
+            REFERENCE_PRIORITY_POLICY,
+            """
+Video type policy:
+1. Infer the requested video type from the campaign brief and choose exactly one: 短影音（10 秒）、宣傳短片（15 秒）、網路廣告（30 秒）。
+2. Build the script, shot rhythm, opening hook, visual concept, voice/text density, and CTA for the selected duration and campaign placement.
+3. Match the selected folder's video style and concept before using generic motion-graphic conventions.
+4. Use external context only for comparable style and concept inspiration; do not copy footage, claims, or branded wording.
+5. Before returning, self-check duration intent, shot continuity, readability, product accuracy, brand tone, CTA, and unwanted artifacts.
+""".strip(),
             "Video generation task: Create a polished short vertical social media ad video using all campaign context above.",
             "Output requirements: duration 6 seconds, aspect ratio 9:16 vertical, MP4, 1080p high-definition quality if supported, commercial-grade sharp visuals, smooth motion, readable Traditional Chinese text overlays when text is needed, clear CTA ending, no blurry frames, no distorted logos/text, no misleading claims.",
         ]
     )
 
 
-def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any] | TaskRecord) -> dict[str, Any]:
+MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
+
+
+def build_image_reference_payload(snapshot: GenerationContextSnapshot) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    selected = select_image_reference_items(list(snapshot.items))
+    references: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    for item in selected:
+        metadata = item.metadata
+        reference_id = item.source_id
+        stored_path = str(metadata.get("stored_path") or "")
+        if not stored_path or not os.path.isfile(stored_path):
+            failures.append({"reference_id": reference_id, "category": "missing_file"})
+            continue
+        try:
+            file_size = os.path.getsize(stored_path)
+            if file_size > MAX_REFERENCE_IMAGE_BYTES:
+                failures.append({"reference_id": reference_id, "category": "file_too_large"})
+                continue
+            raw = open(stored_path, "rb").read()
+            mime_type = str(metadata.get("mime_type") or metadata.get("file_type") or metadata.get("content_type") or "image/png")
+            references.append({
+                "reference_id": reference_id,
+                "file_name": item.label,
+                "mime_type": mime_type,
+                "data": base64.b64encode(raw).decode("ascii"),
+                "folder": str(metadata.get("folder") or metadata.get("folder_name") or ""),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
+        except OSError:
+            failures.append({"reference_id": reference_id, "category": "read_error"})
+    audit_references = [
+        {key: reference[key] for key in ("reference_id", "file_name", "mime_type", "folder", "sha256")}
+        for reference in references
+    ]
+    return references, {
+        "selected_count": len(selected),
+        "attached_count": len(references),
+        "failures": failures,
+        "multimodal": bool(references),
+        "references": audit_references,
+    }
+
+
+def build_worker_payload_for_task(
+    campaign: CampaignRecord,
+    task: dict[str, Any] | TaskRecord,
+    snapshot: GenerationContextSnapshot | None = None,
+) -> dict[str, Any]:
     """Build the exact worker payload from the campaign brief so orchestrator does not use generic English defaults."""
     task_id = task.get("task_id") if isinstance(task, dict) else task.task_id
     task_type = task.get("task_type") if isinstance(task, dict) else task.task_type
     company_id = campaign.company_id or ""
     campaign_id = campaign.campaign_id
+    context_payload = {
+        "generation_context_id": snapshot.generation_context_id,
+        "context_sources": [
+            {"source_type": item.source_type, "source_id": item.source_id, "label": item.label, "text": item.text}
+            for item in snapshot.items
+        ],
+    } if snapshot else {}
+    task_provider = task.get("provider") if isinstance(task, dict) else task.provider
+    task_model = task.get("model") if isinstance(task, dict) else task.model
+    task_run_id = task.get("run_id") if isinstance(task, dict) else task.run_id
+    reference_images, reference_audit = build_image_reference_payload(snapshot) if task_type == "image_generation" and snapshot else ([], {})
+    if reference_audit.get("failures"):
+        _capture_worker_payload(
+            {
+                "campaign_id": campaign_id,
+                "task_id": task_id,
+                "generation_context_id": snapshot.generation_context_id if snapshot else "",
+                "run_id": task_run_id or "",
+                "reference_audit": reference_audit,
+            },
+            "image_generation",
+            campaign_id,
+            task_id,
+        )
+        raise HTTPException(status_code=422, detail={"message": "Selected Reference images could not be attached", "failures": reference_audit["failures"]})
+    if task_type == "image_generation":
+        context_payload["reference_audit"] = reference_audit
+    context_payload.update({key: value for key, value in {"provider": task_provider, "model": task_model, "run_id": task_run_id}.items() if value})
+    context_text = "\n\nSnapshot source context:\n" + "\n".join(
+        f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
+    ) if snapshot else ""
     if task_type == "copywriting":
         return {
             "task_id": task_id,
             "campaign_id": campaign_id,
             "company_id": company_id,
-            "prompt": build_copy_generation_prompt(campaign),
+            "prompt": build_copy_generation_prompt(campaign) + context_text,
             "brand_context": {
                 "campaign_name": campaign.brief.campaign_name,
                 "product_name": campaign.brief.product_name,
@@ -2179,6 +2738,7 @@ def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any]
                 "deadline": campaign.brief.deadline.isoformat() if hasattr(campaign.brief.deadline, "isoformat") else str(campaign.brief.deadline),
             },
             "variants": min(10, max(0, int(campaign.brief.deliverables.copy_variants or 0))),
+            **context_payload,
         }
     if task_type == "image_generation":
         image_prompt = build_image_generation_prompt(campaign)
@@ -2186,18 +2746,22 @@ def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any]
             "task_id": task_id,
             "campaign_id": campaign_id,
             "company_id": company_id,
-            "prompt": image_prompt,
+            "prompt": image_prompt + context_text,
             "sizes": image_sizes_for_count(campaign.brief.deliverables.image_assets),
             "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
+            "reference_images": reference_images,
+            "reference_audit": reference_audit,
+            **context_payload,
         }
     if task_type == "video_generation":
         return {
             "task_id": task_id,
             "campaign_id": campaign_id,
             "company_id": company_id,
-            "prompt": build_video_generation_prompt(campaign),
+            "prompt": build_video_generation_prompt(campaign) + context_text,
             "duration": 6,
             "aspect_ratio": "9:16",
+            **context_payload,
         }
     if task_type == "ads_strategy":
         return {
@@ -2207,6 +2771,8 @@ def build_worker_payload_for_task(campaign: CampaignRecord, task: dict[str, Any]
             "objective": campaign.brief.objective,
             "budget": float(campaign.brief.budget),
             "platforms": campaign.brief.platforms,
+            "context": context_text,
+            **context_payload,
         }
     return {}
 
@@ -2275,22 +2841,37 @@ def normalize_visual_only_deliverables(brief: CampaignBrief) -> CampaignBrief:
     return brief.model_copy(update={"deliverables": deliverables})
 
 
-def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: CampaignRecord, tasks: list[TaskRecord], run_id: str | None = None) -> tuple[list[AssetOutput], list[ValidationResult]]:
+def generate_outputs_via_workers(
+    company_id: str,
+    campaign_id: str,
+    campaign: CampaignRecord,
+    tasks: list[TaskRecord],
+    run_id: str | None = None,
+    generation_context_id: str | None = None,
+    task_context: dict[str, Any] | None = None,
+    strict: bool = False,
+) -> tuple[list[AssetOutput], list[ValidationResult]]:
     company_id = company_id or ""
     now = now_utc()
     assets: list[AssetOutput] = []
     validations: list[ValidationResult] = []
+    worker_context = {"generation_context_id": generation_context_id} if generation_context_id else {}
+    if task_context:
+        worker_context.update({key: value for key, value in task_context.items() if value is not None})
+    snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.generation_context_id == generation_context_id), None) if generation_context_id else snapshot_for_campaign(campaign, run_id)
+    prompt_context = snapshot_prompt_context(snapshot)
 
     for task in tasks:
         if task.task_type not in {"copywriting", "image_generation", "video_generation", "ads_strategy"}:
             continue
 
+        asset_count_before = len(assets)
         try:
             if not task_enabled_by_deliverables(task.task_type, campaign.brief):
                 continue
 
             if task.task_type == "copywriting":
-                copy_prompt = build_copy_generation_prompt(campaign)
+                copy_prompt = build_copy_generation_prompt(campaign) + prompt_context
                 copy_resp = _worker_post_json(
                     f"{WORKER_COPY_URL}/internal/workers/copy/run",
                     {
@@ -2311,6 +2892,7 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                             "deadline": campaign.brief.deadline.isoformat() if hasattr(campaign.brief.deadline, "isoformat") else str(campaign.brief.deadline),
                         },
                         "variants": min(10, max(0, int(campaign.brief.deliverables.copy_variants or 0))),
+                        **worker_context,
                     },
                     "copywriting",
                     campaign_id,
@@ -2332,7 +2914,7 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                         task_id=task.task_id,
                         asset_type="copy",
                         url=f"generated://copy/{campaign_id}/{task.task_id}/{idx+1}",
-                        metadata={"variant": variant, "task_type": task.task_type, "priority": task.priority},
+                        metadata={"variant": variant, "task_type": task.task_type, "priority": task.priority, "provider": copy_resp.get("provider"), "model_name": copy_resp.get("model_name")},
                         validation_status="passed",
                         created_at=now,
                         run_id=run_id,
@@ -2343,29 +2925,33 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                     append_validation_for_asset(validations, company_id, campaign_id, asset_id, now, run_id=run_id)
 
             elif task.task_type == "image_generation":
-                image_prompt = build_image_generation_prompt(campaign)
+                image_prompt = build_image_generation_prompt(campaign) + prompt_context
                 image_resp = _worker_post_json(
                     f"{WORKER_IMAGE_URL}/internal/workers/image/run",
                     {
                         "task_id": task.task_id,
                         "campaign_id": campaign_id,
+                        "company_id": company_id,
                         "prompt": image_prompt,
                         "sizes": image_sizes_for_count(campaign.brief.deliverables.image_assets),
                         "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
+                        **worker_context,
                     },
                     "image_generation",
                     campaign_id,
                     task.task_id,
                     company_id,
                 )
-                for image_item in image_resp.get("image_assets", []):
-                    if not isinstance(image_item, dict):
-                        continue
+                image_items = image_resp.get("image_assets", [])
+                if not isinstance(image_items, list) or not image_items or any(
+                    not isinstance(image_item, dict) or not is_openable_asset_url(str(image_item.get("url", "")).strip())
+                    for image_item in image_items
+                ):
+                    raise RuntimeError("worker returned invalid image assets")
+                for image_item in image_items:
                     image_url = str(image_item.get("url", "")).strip()
-                    if not is_openable_asset_url(image_url):
-                        continue
                     asset_id = f"ast_{uuid4().hex[:10]}"
-                    metadata = {"size": image_item.get("size"), "task_type": task.task_type, "priority": task.priority}
+                    metadata = {"size": image_item.get("size"), "task_type": task.task_type, "priority": task.priority, "provider": image_resp.get("provider"), "model_name": image_resp.get("model_name")}
                     try:
                         image_url, cached_metadata = cache_generated_asset_url(
                             company_id=company_id,
@@ -2375,8 +2961,9 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                             source_url=image_url,
                         )
                         metadata.update(cached_metadata)
-                    except Exception as exc:
-                        logger.warning(f"Failed to cache generated image asset {asset_id}: {exc}")
+                    except Exception:
+                        logger.warning("Failed to cache generated image asset %s", asset_id)
+                        raise RuntimeError("image asset cache failed") from None
                     asset = AssetOutput(
                         company_id=company_id,
                         asset_id=asset_id,
@@ -2395,7 +2982,7 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                     append_validation_for_asset(validations, company_id, campaign_id, asset_id, now, run_id=run_id)
 
             elif task.task_type == "video_generation":
-                video_prompt = build_video_generation_prompt(campaign)
+                video_prompt = build_video_generation_prompt(campaign) + prompt_context
                 video_resp = _worker_post_json(
                     f"{WORKER_VIDEO_URL}/internal/workers/video/run",
                     {
@@ -2405,6 +2992,7 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                         "prompt": video_prompt,
                         "duration": 6,
                         "aspect_ratio": "9:16",
+                        **worker_context,
                     },
                     "video_generation",
                     campaign_id,
@@ -2460,6 +3048,8 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                         "objective": campaign.brief.objective,
                         "budget": float(campaign.brief.budget),
                         "platforms": campaign.brief.platforms,
+                        "context": prompt_context,
+                        **worker_context,
                     },
                     "ads_strategy",
                     campaign_id,
@@ -2474,7 +3064,7 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                     task_id=task.task_id,
                     asset_type="ads",
                     url=f"generated://ads/{campaign_id}/{task.task_id}",
-                    metadata={"ads_plan": ads_resp.get("ads_plan", {}), "task_type": task.task_type, "priority": task.priority},
+                    metadata={"ads_plan": ads_resp.get("ads_plan", {}), "task_type": task.task_type, "priority": task.priority, "provider": ads_resp.get("provider"), "model_name": ads_resp.get("model_name")},
                     validation_status="passed",
                     created_at=now,
                     run_id=run_id,
@@ -2495,7 +3085,14 @@ def generate_outputs_via_workers(company_id: str, campaign_id: str, campaign: Ca
                 },
                 company_id=company_id,
             )
+            if strict:
+                raise
 
+        if len(assets) == asset_count_before:
+            raise RuntimeError(f"Worker returned no displayable assets for task {task.task_id}")
+
+    if generation_context_id:
+        assets = [asset.model_copy(update={"metadata": {**asset.metadata, "generation_context_id": generation_context_id}}) for asset in assets]
     return assets, validations
 
 
@@ -2614,10 +3211,13 @@ def build_review_items() -> list[ReviewItem]:
 
     for campaign in store.list_campaigns():
         asset_map = {asset.asset_id: asset for asset in list_assets(campaign.campaign_id) if is_displayable_asset(asset)}
+        task_map = {task.task_id: task for task in store.get_tasks(campaign.campaign_id)}
         validations = list_validation(campaign.campaign_id)
         for validation in validations:
             if validation.asset_id not in asset_map:
                 continue
+            asset = asset_map[validation.asset_id]
+            source_task = task_map.get(asset.task_id)
             review_id = f"rev_{validation.validation_id}"
             status = review_status_overrides.get(review_id, "review_pending")
             items.append(
@@ -2632,7 +3232,7 @@ def build_review_items() -> list[ReviewItem]:
                     status=status,
                     submitted_at=validation.created_at.isoformat(),
                     assignee=None,
-                    run_id=None,
+                    run_id=asset.run_id or (source_task.run_id if source_task else None),
                 )
             )
 
@@ -2647,7 +3247,19 @@ def list_review_items_filtered(status: str | None = None, campaign_id: str | Non
         items = [item for item in items if item.campaign_id == campaign_id]
     if run_id:
         items = [item for item in items if item.run_id == run_id]
-    return items
+    enriched: list[ReviewItem] = []
+    for item in items:
+        campaign = store.get_campaign(item.campaign_id)
+        diagnostics = generation_diagnostics(campaign, item.run_id) if campaign else None
+        if diagnostics:
+            enriched.append(item.model_copy(update={
+                "generation_context_id": diagnostics["generation_context_id"],
+                "source_summary": diagnostics,
+                "source_provenance": diagnostics["provenance"],
+            }))
+        else:
+            enriched.append(item)
+    return enriched
 
 
 def find_review_item(review_id: str) -> ReviewItem | None:
@@ -2663,10 +3275,12 @@ def append_review_audit(
     result: str,
     operator: str,
     reason: str | None = None,
+    company_id: str | None = None,
 ) -> None:
     review_audit_logs.append(
         ReviewAuditEntry(
             timestamp=now_utc().isoformat(),
+            company_id=company_id,
             operator=operator,
             action=action,
             target=target,
@@ -2797,16 +3411,48 @@ def to_reference_record(base_url: str, payload: dict[str, Any]) -> CampaignRefer
         uploaded_at=uploaded_at,
         download_url=build_reference_download_url(base_url, campaign_id, reference_id),
         folder=str(payload.get("folder") or "General"),
+        folder_id=str(payload.get("folder_id")) if payload.get("folder_id") else None,
     )
 
 
 def validate_reference_upload(file_name: str, file_type: str, file_size: int) -> None:
     ext = os.path.splitext(file_name)[1].lower()
     if ext not in REFERENCE_ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Unsupported file extension")
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
 
     if file_size > REFERENCE_MAX_SIZE_BYTES:
-        raise HTTPException(status_code=400, detail="File size exceeds upload limit")
+        raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+
+    if file_type not in REFERENCE_ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
+    expected_types = REFERENCE_EXTENSION_MIME_TYPES.get(ext, set())
+    if file_type == "application/octet-stream" and ext not in REFERENCE_OCTET_STREAM_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
+    if file_type != "application/octet-stream" and expected_types and file_type not in expected_types:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
+
+
+def cleanup_reference_upload(stored_path: str) -> None:
+    try:
+        if os.path.exists(stored_path):
+            os.remove(stored_path)
+        parent = os.path.dirname(stored_path)
+        if parent and os.path.isdir(parent) and not os.listdir(parent):
+            os.rmdir(parent)
+    except OSError:
+        logger.warning("Reference upload cleanup failed")
+
+
+def cleanup_persisted_reference(campaign_id: str, reference_id: str) -> None:
+    if persistence is None:
+        return
+    delete_reference = getattr(persistence, "delete_campaign_reference", None)
+    if not callable(delete_reference):
+        return
+    try:
+        delete_reference(campaign_id, reference_id)
+    except Exception:
+        logger.warning("Reference persistence cleanup failed")
 
 
 def get_reference_payload_or_404(campaign_id: str, reference_id: str) -> dict[str, Any]:
@@ -2831,6 +3477,8 @@ def get_reference_payload_or_404(campaign_id: str, reference_id: str) -> dict[st
                 "file_size": item.file_size,
                 "uploaded_at": item.uploaded_at,
                 "stored_path": stored_path,
+                "folder": item.folder,
+                "folder_id": item.folder_id,
             }
 
     raise HTTPException(status_code=404, detail="Campaign reference not found")
@@ -2893,12 +3541,12 @@ def require_internal_api_key(req: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def require_review_action_access(req: Request) -> None:
+def require_review_action_access(req: Request) -> JWTPayload | None:
     """Allow review actions from internal automation, platform admin, or privileged company members."""
-    if is_internal_api_key_request(req):
-        return
     if is_platform_admin_request(req):
-        return
+        return None
+    if is_internal_api_key_request(req):
+        return None
     payload = require_jwt(req)
     require_any_permission(
         payload,
@@ -2907,11 +3555,9 @@ def require_review_action_access(req: Request) -> None:
             "review:approve",
             "review:reject",
             "review:revision",
-            "campaign:review",
-            "campaign:approve",
-            "role:manage",
         },
     )
+    return payload
 
 
 def is_internal_api_key_request(req: Request) -> bool:
@@ -2961,6 +3607,90 @@ def has_any_permission(payload: JWTPayload, allowed: set[str]) -> bool:
 def require_any_permission(payload: JWTPayload, allowed: set[str]) -> None:
     if not has_any_permission(payload, allowed):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+
+def authorize_folder_access(folder: dict[str, Any], payload: JWTPayload, action: str) -> None:
+    """Authorize company JWT access; platform-key mutations are handled by routes."""
+    scope = folder.get("scope")
+    if scope == "platform":
+        if action in {"read", "use"}:
+            return
+        raise HTTPException(status_code=403, detail="Platform folders are read-only for company users")
+    if scope == "company" and folder.get("company_id") != (payload.company_id or ""):
+        raise HTTPException(status_code=403, detail="Folder belongs to another company")
+    if folder.get("folder_id") is None:
+        return
+    check_permission(payload, f"folder:{action}")
+
+
+def folder_payload(folder: dict[str, Any]) -> FolderRecord:
+    return FolderRecord(**folder)
+
+
+def apply_legacy_folder_association(item: dict[str, Any], folders: list[dict[str, Any]]) -> dict[str, Any]:
+    """Make legacy text useful without guessing across duplicate scoped folders."""
+    if item.get("folder_id"):
+        return item
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    label = item.get("folder") or metadata.get("category") or metadata.get("folder")
+    inferred = legacy_folder_id(label, folders)
+    return {**item, "folder_id": inferred} if inferred else item
+
+
+def count_in_memory_folder_associations(folder_id: str) -> int:
+    return sum(
+        1 for rows in knowledge_items.values() for item in rows
+        if getattr(item, "folder_id", None) == folder_id
+    ) + sum(
+        1 for rows in campaign_references.values() for item in rows
+        if getattr(item, "folder_id", None) == folder_id
+    )
+
+
+def delete_in_memory_folder_content(folder_id: str) -> list[str]:
+    paths: list[str] = []
+    for company_id, rows in knowledge_items.items():
+        kept = []
+        for item in rows:
+            if getattr(item, "folder_id", None) != folder_id:
+                kept.append(item)
+                continue
+            metadata = item.metadata if isinstance(item.metadata, dict) else {}
+            stored_path = metadata.get("stored_path")
+            if isinstance(stored_path, str):
+                paths.append(stored_path)
+        knowledge_items[company_id] = kept
+
+    for campaign_id, rows in campaign_references.items():
+        kept = []
+        for item in rows:
+            if getattr(item, "folder_id", None) != folder_id:
+                kept.append(item)
+                continue
+            stored_path = campaign_reference_files.get(campaign_id, {}).pop(getattr(item, "reference_id", ""), None)
+            if stored_path:
+                paths.append(stored_path)
+        campaign_references[campaign_id] = kept
+    return paths
+
+
+def get_folder_or_404(folder_id: str) -> dict[str, Any]:
+    if persistence is not None:
+        folder = persistence.get_folder(folder_id)
+    else:
+        folder = folders_cache.get(folder_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return folder
+
+
+def resolve_folder_for_actor(req: Request, folder_id: str | None, action: str = "use") -> dict[str, Any] | None:
+    if not folder_id:
+        return None
+    folder = get_folder_or_404(folder_id)
+    if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
+        authorize_folder_access(folder, require_jwt(req), action)
+    return folder
 
 
 def require_campaign_access(req: Request, campaign: CampaignRecord) -> JWTPayload | None:
@@ -3773,6 +4503,73 @@ def list_sla_backlog_data(limit: int, overdue_only: bool) -> tuple[list[SlaBackl
     return result, overdue_pending
 
 
+@app.get("/api/v1/folders", response_model=FolderListResponse)
+def list_folders(req: Request) -> FolderListResponse:
+    if is_platform_admin_request(req) or is_internal_api_key_request(req):
+        rows = persistence.list_folders("") if persistence is not None else [folder for folder in folders_cache.values() if folder["scope"] == "platform"]
+    else:
+        actor = require_jwt(req)
+        rows = persistence.list_folders(actor.company_id or "") if persistence is not None else [
+            folder for folder in folders_cache.values()
+            if folder["scope"] == "platform" or folder.get("company_id") == actor.company_id
+        ]
+    return FolderListResponse(items=[folder_payload(row) for row in rows], total=len(rows))
+
+
+@app.post("/api/v1/folders", response_model=FolderRecord, status_code=201)
+def create_folder(req: Request, payload: FolderCreateRequest) -> FolderRecord:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    if payload.scope == "platform":
+        if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
+            raise HTTPException(status_code=403, detail="Platform folder mutation requires platform administration")
+        company_id = None
+    else:
+        actor = require_jwt(req)
+        check_permission(actor, "folder:create")
+        company_id = actor.company_id or ""
+    now = now_utc()
+    folder = {"folder_id": f"folder_{uuid4().hex[:12]}", "scope": payload.scope, "company_id": company_id, "name": name, "created_at": now, "updated_at": now}
+    if persistence is not None:
+        folder = persistence.create_folder(folder)
+    else:
+        folders_cache[folder["folder_id"]] = folder
+    return folder_payload(folder)
+
+
+@app.patch("/api/v1/folders/{folder_id}", response_model=FolderRecord)
+def update_folder(req: Request, folder_id: str, payload: FolderUpdateRequest) -> FolderRecord:
+    folder = get_folder_or_404(folder_id)
+    if is_platform_admin_request(req) or is_internal_api_key_request(req):
+        pass
+    else:
+        authorize_folder_access(folder, require_jwt(req), "edit")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    updated = persistence.update_folder(folder_id, name, now_utc()) if persistence is not None else {**folder, "name": name, "updated_at": now_utc()}
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if persistence is None:
+        folders_cache[folder_id] = updated
+    return folder_payload(updated)
+
+
+@app.delete("/api/v1/folders/{folder_id}")
+def delete_folder(req: Request, folder_id: str) -> dict[str, Any]:
+    folder = get_folder_or_404(folder_id)
+    if folder.get("scope") == "platform":
+        raise HTTPException(status_code=403, detail="Platform folders are read-only")
+    if not (is_platform_admin_request(req) or is_internal_api_key_request(req)):
+        authorize_folder_access(folder, require_jwt(req), "delete")
+    paths = persistence.delete_folder_with_content(folder_id) if persistence is not None else delete_in_memory_folder_content(folder_id)
+    deleted = True if persistence is not None else folders_cache.pop(folder_id, None) is not None
+    for path in paths:
+        cleanup_reference_upload(path)
+    return {"folder_id": folder_id, "deleted": deleted}
+
+
 def get_redis_stats() -> RedisStats:
     try:
         import redis as redis_lib
@@ -3969,10 +4766,11 @@ def create_campaign(req: Request, brief: CampaignBrief) -> CampaignCreatedRespon
         actor_role = "system"
     else:
         payload = require_jwt(req)
-        check_permission(payload, "campaign.create")
+        check_permission(payload, "campaign:create")
         actor_company_id = payload.company_id or ""
         actor_id = payload.sub
         actor_role = "member"
+    validate_campaign_brief(brief)
     brief = normalize_visual_only_deliverables(brief)
     campaign = store.create_campaign(actor_company_id, brief)
     metrics.inc("campaign_created_total")
@@ -3991,6 +4789,15 @@ def create_campaign(req: Request, brief: CampaignBrief) -> CampaignCreatedRespon
     return CampaignCreatedResponse(campaign_id=campaign.campaign_id, company_id=campaign.company_id, status=campaign.status)
 
 
+@app.get("/api/v1/campaigns/upload-policy")
+def campaign_upload_policy() -> dict[str, Any]:
+    return {
+        "maxBytes": REFERENCE_MAX_SIZE_BYTES,
+        "allowedExtensions": sorted(REFERENCE_ALLOWED_EXTENSIONS),
+        "mimeTypes": {extension: sorted(types) for extension, types in REFERENCE_EXTENSION_MIME_TYPES.items()},
+    }
+
+
 @app.get(
     "/api/v1/campaigns/{campaign_id}",
     response_model=CampaignRecord,
@@ -4003,14 +4810,14 @@ def get_campaign(req: Request, campaign_id: str) -> CampaignRecord:
 
     # Platform admin bypass
     if is_platform_admin_request(req):
-        return normalize_campaign_status(campaign)
+        return enrich_campaign_diagnostics(normalize_campaign_status(campaign))
 
     # Verify company_id matches
     payload = require_jwt(req)
     actor_company_id = payload.company_id or ""
     if campaign.company_id != actor_company_id:
         raise HTTPException(status_code=403, detail="Not authorized to access this campaign")
-    return normalize_campaign_status(campaign)
+    return enrich_campaign_diagnostics(normalize_campaign_status(campaign))
 
 
 @app.patch(
@@ -4066,9 +4873,13 @@ def update_campaign_reference(
     require_campaign_access(req, campaign)
 
     folder = (payload.folder or "General").strip() or "General"
+    target_folder = resolve_folder_for_actor(req, payload.folder_id, "edit")
+    if target_folder is not None:
+        folder = target_folder["name"]
     existing = get_reference_payload_or_404(campaign_id, reference_id)
+    folder_id = payload.folder_id if "folder_id" in payload.model_fields_set else existing.get("folder_id")
     if persistence is not None:
-        if not persistence.update_campaign_reference_folder(campaign_id, reference_id, folder):
+        if not persistence.update_campaign_reference_folder(campaign_id, reference_id, folder, folder_id):
             raise HTTPException(status_code=404, detail="Campaign reference not found")
         updated = persistence.get_campaign_reference(campaign_id, reference_id)
         if updated is None:
@@ -4076,9 +4887,11 @@ def update_campaign_reference(
     else:
         updated = dict(existing)
         updated["folder"] = folder
+        updated["folder_id"] = payload.folder_id if "folder_id" in payload.model_fields_set else existing.get("folder_id")
         for item in campaign_references.get(campaign_id, []):
             if item.reference_id == reference_id:
                 item.folder = folder
+                item.folder_id = updated["folder_id"]
                 break
 
     append_trace_event(
@@ -4138,7 +4951,7 @@ def list_campaigns(req: Request, company_id: str | None = None) -> CampaignListR
         payload = require_jwt(req)
         actor_company_id = payload.company_id or ""
         items = store.list_campaigns(company_id=actor_company_id)
-    normalized_items = [normalize_campaign_status(item) for item in items]
+    normalized_items = [enrich_campaign_diagnostics(normalize_campaign_status(item)) for item in items]
     return CampaignListResponse(items=normalized_items, total=len(normalized_items))
 
 
@@ -4173,6 +4986,10 @@ def run_campaign(req: Request, campaign_id: str) -> CampaignRunResponse:
         campaign = store.update_campaign_brief(campaign_id, normalized_brief) or campaign
 
     run_id, run_number = create_campaign_run_record(campaign, actor_id)
+    generation_context = create_generation_context(campaign, run_id)
+    cache_generation_context(generation_context, run_id)
+    if persistence is not None:
+        persistence.save_generation_context(generation_context, run_id)
     finalize_campaign_workflow(
         campaign_id,
         run_id=run_id,
@@ -4208,7 +5025,8 @@ def run_campaign(req: Request, campaign_id: str) -> CampaignRunResponse:
             if isinstance(t, dict):
                 t["company_id"] = campaign.company_id
                 t["run_id"] = run_id
-                t["worker_payload"] = build_worker_payload_for_task(campaign, t)
+                t["generation_context_id"] = generation_context.generation_context_id
+                t["worker_payload"] = build_worker_payload_for_task(campaign, t, generation_context)
         dispatch = post_json(
             f"{OPENCLAW_CONTROLLER_URL}/internal/orchestrator/dispatch",
             {
@@ -4551,6 +5369,12 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
     user_instruction = (payload.user_instruction if payload else None) or ""
     operator = (payload.operator if payload else None) or (actor_payload.sub if actor_payload is not None else "admin")
     regeneration_context = prepare_regeneration_naming(campaign, asset)
+    reviewed_run_id = asset.run_id or (review_item.get("run_id") if review_item else None)
+    run_id = reviewed_run_id or latest_campaign_run_id(asset.campaign_id) or ""
+    snapshot = snapshot_for_campaign(campaign, reviewed_run_id)
+    snapshot_context = snapshot_prompt_context(snapshot)
+    context_payload = {"generation_context_id": snapshot.generation_context_id} if snapshot else {}
+    context_payload["run_id"] = run_id
     if persistence is not None:
         try:
             source_metadata = dict(asset.metadata if isinstance(asset.metadata, dict) else {})
@@ -4579,7 +5403,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
         instruction_block = f"\n\nUser regeneration work order instructions:\n{user_instruction.strip()}"
     company_id = asset.company_id or campaign.company_id
     if asset.asset_type == "copy":
-        base_prompt = build_copy_generation_prompt(campaign) + instruction_block
+        base_prompt = build_copy_generation_prompt(campaign) + snapshot_context + instruction_block
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,
@@ -4597,19 +5421,22 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
                 "target_audience": campaign.brief.target_audience.model_dump(mode="json"),
             },
             "variants": 1,
+            **context_payload,
         }
     elif asset.asset_type == "image":
-        base_prompt = build_image_generation_prompt(campaign) + instruction_block
+        base_prompt = build_image_generation_prompt(campaign) + snapshot_context + instruction_block
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,
+            "company_id": company_id,
             "prompt": base_prompt,
             "reject_reason": reject_reason,
             "sizes": ["1024x1024"],
             "style_profile": {"tone": campaign.brief.brand_tone},
+            **context_payload,
         }
     elif asset.asset_type == "video":
-        base_prompt = build_video_generation_prompt(campaign) + instruction_block
+        base_prompt = build_video_generation_prompt(campaign) + snapshot_context + instruction_block
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,
@@ -4618,6 +5445,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "reject_reason": reject_reason,
             "duration": 6,
             "aspect_ratio": "9:16",
+            **context_payload,
         }
     elif asset.asset_type == "ads":
         revision_payload = {
@@ -4628,11 +5456,19 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "budget": float(campaign.brief.budget),
             "platforms": campaign.brief.platforms,
             "reject_reason": reject_reason,
+            "context": snapshot_context,
+            **context_payload,
         }
     else:
         raise HTTPException(status_code=400, detail=f"Unknown asset type: {asset.asset_type}")
 
     try:
+        _capture_worker_payload(
+            revision_payload,
+            {"copy": "copywriting", "image": "image_generation", "video": "video_generation", "ads": "ads_strategy"}[asset.asset_type],
+            asset.campaign_id,
+            asset.task_id,
+        )
         worker_response = post_json(f"{worker_url}/internal/workers/{asset.asset_type}/regenerate", revision_payload)
         # Save the regenerated asset directly
         task_type_map = {
@@ -4641,7 +5477,6 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "video": "video_generation",
             "ads": "ads_strategy",
         }
-        run_id = asset.run_id or latest_campaign_run_id(asset.campaign_id) or ""
         worker_result = {
             **worker_response,
             "campaign_id": asset.campaign_id,
@@ -4649,6 +5484,8 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "run_id": run_id,
             "regeneration_context": regeneration_context,
         }
+        if snapshot:
+            worker_result["generation_context_id"] = snapshot.generation_context_id
         result_payload = WorkerResultRequest(
             task_type=task_type_map.get(asset.asset_type, asset.asset_type),
             result=worker_result,
@@ -4913,12 +5750,19 @@ def _generate_single_asset_background(campaign: CampaignRecord, payload: SingleA
     })
     try:
         run_id = latest_campaign_run_id(campaign.campaign_id) or ""
+        snapshot = snapshot_for_campaign(campaign, run_id or None)
+        if snapshot is None:
+            snapshot = create_generation_context(campaign, run_id or f"single_{task.task_id}")
+            cache_generation_context(snapshot, run_id or f"single_{task.task_id}")
+            if persistence is not None:
+                persistence.save_generation_context(snapshot, run_id or f"single_{task.task_id}")
         assets, validations = generate_outputs_via_workers(
             campaign.company_id,
             campaign.campaign_id,
             generated_campaign,
             [task],
             run_id=run_id,
+            generation_context_id=snapshot.generation_context_id,
         )
         save_assets_and_validations(assets, validations)
         append_trace_event(
@@ -5085,9 +5929,16 @@ def list_knowledge_items(req: Request, company_id: str | None = None) -> Knowled
 
     if persistence is not None:
         rows = persistence.list_knowledge_items(target_company_id)
+        if not is_platform_admin_request(req) and target_company_id != "platform":
+            rows = persistence.list_knowledge_items("platform") + rows
+        list_persisted_folders = getattr(persistence, "list_folders", lambda _company_id: [])
+        visible_folders = list_persisted_folders(target_company_id) if target_company_id != "platform" else list_persisted_folders("")
+        rows = [apply_legacy_folder_association(row, visible_folders) for row in rows]
         items = [KnowledgeItemRecord(**row) for row in rows]
     else:
-        items = knowledge_items.get(target_company_id, [])
+        items = knowledge_items.get(target_company_id, []) if is_platform_admin_request(req) else [*knowledge_items.get("platform", []), *knowledge_items.get(target_company_id, [])]
+        visible_folders = [folder for folder in folders_cache.values() if folder["scope"] == "platform" or folder.get("company_id") == target_company_id]
+        items = [KnowledgeItemRecord(**apply_legacy_folder_association(item.model_dump(mode="python"), visible_folders)) for item in items]
     return KnowledgeItemListResponse(items=items, total=len(items))
 
 
@@ -5104,6 +5955,7 @@ def create_knowledge_item(req: Request, payload: KnowledgeItemCreateRequest) -> 
     title = payload.title.strip()
     if not title:
         raise HTTPException(status_code=400, detail="title is required")
+    resolve_folder_for_actor(req, payload.folder_id)
 
     item = KnowledgeItemRecord(
         item_id=f"kh_{uuid4().hex[:12]}",
@@ -5113,6 +5965,7 @@ def create_knowledge_item(req: Request, payload: KnowledgeItemCreateRequest) -> 
         description=payload.description.strip(),
         content_url=payload.content_url,
         metadata={**payload.metadata, "created_by": actor_id},
+        folder_id=payload.folder_id,
         created_at=now_utc(),
     )
     if persistence is not None:
@@ -5128,6 +5981,7 @@ def upload_knowledge_item(
     title: str = Form(...),
     description: str = Form(""),
     category: str = Form(""),
+    folder_id: str | None = Form(default=None),
     asset_type: str = Form(""),
     file: UploadFile = File(...),
 ) -> KnowledgeItemRecord:
@@ -5142,6 +5996,7 @@ def upload_knowledge_item(
     cleaned_title = title.strip()
     if not cleaned_title:
         raise HTTPException(status_code=400, detail="title is required")
+    resolve_folder_for_actor(req, folder_id)
 
     original_name = os.path.basename(file.filename or "knowledge-file.bin")
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", original_name).strip("._") or "knowledge-file.bin"
@@ -5173,6 +6028,7 @@ def upload_knowledge_item(
             "category": category.strip(),
             "asset_type": asset_type.strip() or "file",
         },
+        folder_id=folder_id,
         created_at=now_utc(),
     )
     if persistence is not None:
@@ -5192,13 +6048,18 @@ def download_knowledge_item(req: Request, item_id: str, file_name: str) -> FileR
 
     if persistence is not None:
         candidates = persistence.list_knowledge_items(company_id)
+        if company_id != "platform":
+            candidates += persistence.list_knowledge_items("platform")
         for item in candidates:
             metadata = item.get("metadata", {})
             stored_path = metadata.get("stored_path") if isinstance(metadata, dict) else None
             if item.get("item_id") == item_id and isinstance(stored_path, str) and os.path.exists(stored_path):
                 return FileResponse(stored_path, filename=file_name)
     else:
-        for item in knowledge_items.get(company_id, []):
+        candidates = list(knowledge_items.get(company_id, []))
+        if company_id != "platform":
+            candidates += knowledge_items.get("platform", [])
+        for item in candidates:
             stored_path = item.metadata.get("stored_path") if isinstance(item.metadata, dict) else None
             if item.item_id == item_id and isinstance(stored_path, str) and os.path.exists(stored_path):
                 return FileResponse(stored_path, filename=file_name)
@@ -5214,6 +6075,7 @@ def update_knowledge_item(req: Request, item_id: str, payload: KnowledgeItemUpda
         company_id = actor.company_id or ""
 
     updates = payload.model_dump(exclude_unset=True)
+    resolve_folder_for_actor(req, payload.folder_id, "edit")
     if persistence is not None:
         updated = persistence.update_knowledge_item(company_id, item_id, updates)
         if updated is None:
@@ -5234,6 +6096,7 @@ def update_knowledge_item(req: Request, item_id: str, payload: KnowledgeItemUpda
             "description": str(updates.get("description") if updates.get("description") is not None else item.description).strip(),
             "content_url": updates.get("content_url") if updates.get("content_url") is not None else item.content_url,
             "metadata": metadata,
+            "folder_id": updates.get("folder_id") if "folder_id" in updates else item.folder_id,
         })
         rows[index] = updated_item
         knowledge_items[company_id] = rows
@@ -6160,6 +7023,7 @@ def attach_campaign_reference_text(campaign_id: str, payload: CampaignReferenceA
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
     require_campaign_trace_access(req, campaign)
+    target_folder = resolve_folder_for_actor(req, payload.folder_id)
 
     reference_id = f"ref_{uuid4().hex[:12]}"
     safe_name = os.path.basename(payload.file_name.strip() or f"{reference_id}.txt")
@@ -6183,9 +7047,11 @@ def attach_campaign_reference_text(campaign_id: str, payload: CampaignReferenceA
         file_size=file_size,
         uploaded_at=uploaded_at,
         download_url=build_reference_download_url(base_url, campaign_id, reference_id),
+        folder=target_folder["name"] if target_folder else "General",
+        folder_id=payload.folder_id,
     )
     if persistence is not None:
-        persistence.save_campaign_reference(reference_id, campaign_id, safe_name, record.file_type, file_size, uploaded_at_dt, stored_path, payload.operator)
+        persistence.save_campaign_reference(reference_id, campaign_id, safe_name, record.file_type, file_size, uploaded_at_dt, stored_path, payload.operator, record.folder, record.folder_id)
     else:
         campaign_references.setdefault(campaign_id, []).append(record)
         campaign_reference_files.setdefault(campaign_id, {})[reference_id] = stored_path
@@ -6257,6 +7123,7 @@ def list_review_queue(
     campaign_id: str | None = None,
     run_id: str | None = None,
 ) -> ReviewQueueResponse:
+    require_review_action_access(req)
     actor_company_id: str | None = None
     if is_platform_admin_request(req) or is_internal_api_key_request(req):
         actor_company_id = None
@@ -6325,6 +7192,7 @@ def approve_review_item(review_id: str, payload: ReviewActionRequest, req: Reque
         target=review_id,
         result="ok",
         operator=operator,
+        company_id=campaign_record.company_id,
     )
     append_trace_event(
         campaign_id=item.campaign_id,
@@ -6389,6 +7257,7 @@ def reject_review_item(review_id: str, payload: ReviewActionRequest, req: Reques
         result="ok",
         operator=operator,
         reason=reason,
+        company_id=campaign_record.company_id,
     )
     append_trace_event(
         campaign_id=item.campaign_id,
@@ -6548,10 +7417,57 @@ def get_webhook_logs(req: Request, sub_id: str, limit: int = 50) -> WebhookDeliv
 
 class RetryWorkerTaskRequest(BaseModel):
     task_id: str
+    run_id: str | None = None
+    review_id: str | None = None
+    asset_id: str | None = None
 
 
 def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tuple[list[AssetOutput], list[ValidationResult]]:
-    return generate_outputs_via_workers(campaign.company_id, campaign.campaign_id, campaign, [task], run_id=latest_campaign_run_id(campaign.campaign_id))
+    run_id = task.run_id or latest_campaign_run_id(campaign.campaign_id)
+    snapshot = snapshot_for_campaign(campaign, run_id)
+    task_context = {"run_id": run_id, "generation_context_id": snapshot.generation_context_id if snapshot else task.generation_context_id}
+    if task.provider:
+        task_context["provider"] = task.provider
+    if task.model:
+        task_context["model"] = task.model
+    assets, validations = generate_outputs_via_workers(
+        campaign.company_id, campaign.campaign_id, campaign, [task],
+        run_id=run_id,
+        generation_context_id=snapshot.generation_context_id if snapshot else None,
+        task_context=task_context,
+        strict=True,
+    )
+    if not assets:
+        raise RuntimeError(f"Worker returned no displayable assets for task {task.task_id}")
+    return assets, validations
+
+
+def dispatch_ready_retry_descendants(campaign: CampaignRecord, tasks: list[TaskRecord], task_id: str, run_id: str | None = None) -> list[TaskRecord]:
+    snapshot = snapshot_for_campaign(campaign, run_id or latest_campaign_run_id(campaign.campaign_id))
+    descendants: set[str] = {task_id}
+    changed = True
+    while changed:
+        changed = False
+        for task in tasks:
+            if task.run_id == run_id and any(dep in descendants for dep in task.depends_on) and task.task_id not in descendants:
+                descendants.add(task.task_id)
+                changed = True
+    ready = [task for task in tasks if task.run_id == run_id and task.task_id in descendants and task.task_id != task_id and task.status == "pending" and all(
+        next((dependency for dependency in tasks if dependency.task_id == dep), None) is not None
+        and next(dependency for dependency in tasks if dependency.task_id == dep).status == "passed"
+        for dep in task.depends_on
+    )]
+    if not ready:
+        return []
+    payload = {
+        "campaign_id": campaign.campaign_id,
+        "tasks": [
+            {**task.model_dump(mode="json"), "worker_payload": build_worker_payload_for_task(campaign, task, snapshot)}
+            for task in ready
+        ],
+    }
+    response = post_json(f"{OPENCLAW_CONTROLLER_URL}/internal/orchestrator/dispatch", payload)
+    return [normalize_task_payload(item, campaign.campaign_id) for item in response.get("tasks", []) if isinstance(item, dict)]
 
 
 @app.post(
@@ -6559,27 +7475,118 @@ def _dispatch_worker_for_task(campaign: CampaignRecord, task: TaskRecord) -> tup
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
 )
 def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Request) -> dict[str, Any]:
-    require_internal_api_key(req)
-
     campaign = store.get_campaign(campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    require_review_action_access(req)
+    require_campaign_access(req, campaign)
 
-    task = next((item for item in store.get_tasks(campaign_id) if item.task_id == payload.task_id), None)
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    retried = task.model_copy(update={"status": "retrying"})
-    existing_tasks = [retried if item.task_id == payload.task_id else item for item in store.get_tasks(campaign_id)]
-    store.set_tasks(campaign_id, existing_tasks)
+    manual_retry_lock.acquire()
+    try:
+        if not payload.task_id.strip():
+            raise HTTPException(status_code=400, detail="task_id is required")
+        target_task_id = payload.task_id
+        target_run_id = payload.run_id
+        if payload.review_id is not None:
+            if not payload.review_id.strip():
+                raise HTTPException(status_code=400, detail="review_id must not be empty")
+            review_item = find_review_item(payload.review_id)
+            if review_item is None:
+                raise HTTPException(status_code=404, detail="Review item not found")
+            if review_item.campaign_id != campaign_id:
+                raise HTTPException(status_code=400, detail="Review item does not belong to this campaign")
+            if payload.asset_id is not None and payload.asset_id != review_item.asset_id:
+                raise HTTPException(status_code=400, detail="asset_id does not match review item")
+            asset = get_asset_output_by_id(review_item.asset_id)
+            if asset is None:
+                raise HTTPException(status_code=404, detail="Review asset not found")
+            if asset.campaign_id != campaign_id:
+                raise HTTPException(status_code=400, detail="Review asset does not belong to this campaign")
+            if review_item.run_id and asset.run_id != review_item.run_id:
+                raise HTTPException(status_code=400, detail="Review and asset belong to different runs")
+            if asset.run_id is None and not (review_item.run_id is None and target_run_id is None):
+                raise HTTPException(status_code=400, detail="Review asset has no run_id for a run-scoped retry")
+            if payload.task_id != asset.task_id:
+                raise HTTPException(status_code=400, detail="task_id does not match review asset")
+            target_task_id = asset.task_id
+            selected_run_id = review_item.run_id or asset.run_id
+            if target_run_id and selected_run_id and target_run_id != selected_run_id:
+                raise HTTPException(status_code=400, detail="run_id does not match review item")
+            target_run_id = target_run_id or selected_run_id
+        elif payload.asset_id is not None:
+            if not payload.asset_id.strip():
+                raise HTTPException(status_code=400, detail="asset_id must not be empty")
+            asset = get_asset_output_by_id(payload.asset_id)
+            if asset is None:
+                raise HTTPException(status_code=404, detail="Asset not found")
+            if asset.campaign_id != campaign_id:
+                raise HTTPException(status_code=400, detail="Asset does not belong to this campaign")
+            if asset.run_id is None:
+                raise HTTPException(status_code=400, detail="Asset has no run_id for retry")
+            if payload.task_id != asset.task_id:
+                raise HTTPException(status_code=400, detail="task_id does not match asset")
+            if target_run_id and asset.run_id and target_run_id != asset.run_id:
+                raise HTTPException(status_code=400, detail="run_id does not match asset")
+            target_task_id = asset.task_id
+            target_run_id = target_run_id or asset.run_id
+        # Re-read under the lock so concurrent in-memory retries cannot both claim the same task.
+        loaded_tasks = store.get_tasks(campaign_id)
+        task = next((item for item in loaded_tasks if item.task_id == target_task_id and (not target_run_id or item.run_id == target_run_id)), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if not manual_retry_allowed(task, MANUAL_RETRY_MAX_ATTEMPTS):
+            raise HTTPException(status_code=409, detail="Task is not retryable or has reached the maximum attempts")
+        claimed: TaskRecord | bool | None = None
+        if persistence is not None:
+            claimed = persistence.claim_manual_task_retry(campaign_id, task.task_id, MANUAL_RETRY_MAX_ATTEMPTS)
+            if not claimed:
+                raise HTTPException(status_code=409, detail="Task is already being retried or has reached the maximum attempts")
+            task = claimed if isinstance(claimed, TaskRecord) else task
+            try:
+                persistence.record_task_attempt(task)
+            except Exception:
+                logger.warning("Failed to preserve worker task attempt", exc_info=True)
+        retriable = task if isinstance(claimed, TaskRecord) else task.model_copy(
+            update={"retry_count": task.retry_count + 1, "retryable": True, "status": "retrying"}
+        )
+        existing_tasks = [retriable if item.task_id == task.task_id else item for item in loaded_tasks]
+        existing_tasks = apply_worker_result_state(existing_tasks, task.task_id, {"status": "retrying"})
+        try:
+            store.set_tasks(campaign_id, existing_tasks)
+        except Exception:
+            if persistence is not None:
+                persistence.release_manual_task_retry(campaign_id, task.task_id)
+            raise
+        retried = next(item for item in existing_tasks if item.task_id == task.task_id)
+    finally:
+        manual_retry_lock.release()
 
     try:
         assets, validations = _dispatch_worker_for_task(campaign, retried)
-    except RuntimeError as exc:
+    except Exception as exc:
+        error_detail = sanitize_worker_error_detail(str(exc))
+        try:
+            reconciliation_tasks = store.get_tasks(campaign_id)
+            failed_tasks = apply_worker_result_state(
+                [retried if item.task_id == task.task_id else item for item in reconciliation_tasks], task.task_id,
+                {"status": "failed", "error": error_detail},
+            )
+            store.set_tasks(campaign_id, failed_tasks)
+        except Exception:
+            if persistence is None:
+                logger.error("persistence_error: retry failure state could not be reconciled", exc_info=True)
+                raise HTTPException(status_code=503, detail="Retry failure state reconciliation is pending") from exc
+            try:
+                reconciled = persistence.fail_manual_task_retry(campaign_id, task.task_id, classify_worker_error(exc), error_detail)
+                if reconciled is not True:
+                    raise RuntimeError("retry failure reconciliation updated no rows")
+            except Exception:
+                logger.error("persistence_error: retry failure reconciliation failed", exc_info=True)
+                raise HTTPException(status_code=503, detail="Retry failure state reconciliation is pending") from exc
         _notify_webhook(
             event_type="worker_retry_failed",
             campaign_id=campaign_id,
-            payload={"task_id": payload.task_id, "task_type": task.task_type, "error": str(exc)},
+            payload={"task_id": task.task_id, "task_type": task.task_type, "error": sanitize_worker_error_detail(str(exc))},
             company_id=campaign.company_id,
         )
         append_trace_event(
@@ -6587,26 +7594,48 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
             event_type="worker_retry_failed",
             actor_id="system",
             actor_role="system",
-            summary=f"Worker retry failed for task {payload.task_id}",
-            payload={"task_type": task.task_type, "error": str(exc)},
+            summary=f"Worker retry failed for task {task.task_id}",
+            payload=worker_failure_trace_payload(
+                str(exc),
+                task_id=task.task_id,
+                task_type=task.task_type,
+                attempt=task.retry_count,
+                retryable=True,
+                provider=task.provider,
+            ),
             source="workers",
             company_id=campaign.company_id,
         )
-        raise HTTPException(status_code=502, detail=f"Worker retry failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Worker retry failed: {sanitize_worker_error_detail(str(exc))}") from exc
 
     if assets and validations:
         save_assets_and_validations(assets, validations)
 
-    patched = retried.model_copy(update={"status": "passed" if assets else "failed"})
-    final_tasks = [patched if item.task_id == payload.task_id else item for item in store.get_tasks(campaign_id)]
+    diagnostics_asset = next((asset for asset in assets if getattr(asset, "metadata", None)), None)
+    diagnostics_metadata = getattr(diagnostics_asset, "metadata", {}) if diagnostics_asset else {}
+    patched_result = {
+        "status": "passed" if assets else "failed",
+        "error": None if assets else "worker returned no assets",
+        "displayable_asset_count": len(assets),
+        "displayable_assets": [asset.model_dump(mode="json") for asset in assets],
+        "provider": diagnostics_metadata.get("provider") or diagnostics_metadata.get("provider_name"),
+        "model": diagnostics_metadata.get("model") or diagnostics_metadata.get("model_name"),
+    }
+    final_tasks = apply_worker_result_state(existing_tasks, task.task_id, patched_result)
+    dispatched_descendants = dispatch_ready_retry_descendants(campaign, final_tasks, task.task_id, task.run_id or target_run_id)
+    if dispatched_descendants:
+        final_by_id = {item.task_id: item for item in final_tasks}
+        final_by_id.update({item.task_id: item for item in dispatched_descendants})
+        final_tasks = [final_by_id[item.task_id] for item in final_tasks]
     store.set_tasks(campaign_id, final_tasks)
+    persisted_task = next(item for item in final_tasks if item.task_id == task.task_id)
 
     append_trace_event(
         campaign_id=campaign_id,
         event_type="worker_retry_succeeded",
         actor_id="system",
         actor_role="system",
-        summary=f"Worker retry succeeded for task {payload.task_id}",
+        summary=f"Worker retry succeeded for task {task.task_id}",
         payload={"task_type": task.task_type, "assets": len(assets), "validations": len(validations)},
         source="workers",
         company_id=campaign.company_id,
@@ -6614,16 +7643,17 @@ def retry_worker_task(campaign_id: str, payload: RetryWorkerTaskRequest, req: Re
     _notify_webhook(
         event_type="worker_retry_succeeded",
         campaign_id=campaign_id,
-        payload={"task_id": payload.task_id, "task_type": task.task_type, "assets": len(assets)},
+        payload={"task_id": task.task_id, "task_type": task.task_type, "assets": len(assets)},
         company_id=campaign.company_id,
     )
 
     return {
         "campaign_id": campaign_id,
-        "task_id": payload.task_id,
-        "status": patched.status,
+        "task_id": task.task_id,
+        "status": persisted_task.status,
         "assets": len(assets),
         "validations": len(validations),
+        "dispatched_tasks": len(dispatched_descendants),
     }
 
 
@@ -6635,9 +7665,10 @@ def submit_revision_request(payload: RevisionRequestPayload, req: Request) -> di
     campaign = store.get_campaign(payload.campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    require_review_action_access(req)
     actor_payload = require_campaign_access(req, campaign)
     if actor_payload is not None:
-        require_any_permission(actor_payload, {"review:regenerate", "review:manage", "role:manage"})
+        require_any_permission(actor_payload, {"review:manage", "review:revision"})
     worker_url = WORKER_TYPE_TO_URL.get(payload.asset_type)
     if not worker_url:
         raise HTTPException(status_code=400, detail=f"Unknown asset type: {payload.asset_type}")
@@ -6645,6 +7676,7 @@ def submit_revision_request(payload: RevisionRequestPayload, req: Request) -> di
     revision_payload = {
         "task_id": payload.task_id,
         "campaign_id": payload.campaign_id,
+        "company_id": campaign.company_id,
         "prompt": getattr(payload, "prompt", ""),
         "reject_reason": payload.reject_reason,
     }
@@ -6664,6 +7696,12 @@ def submit_revision_request(payload: RevisionRequestPayload, req: Request) -> di
         revision_payload["platforms"] = getattr(payload, "platforms", [])
 
     try:
+        _capture_worker_payload(
+            revision_payload,
+            {"copy": "copywriting", "image": "image_generation", "video": "video_generation", "ads": "ads_strategy"}[payload.asset_type],
+            payload.campaign_id,
+            payload.task_id,
+        )
         post_json(f"{worker_url}/internal/workers/{payload.asset_type}/regenerate", revision_payload)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=f"Revision dispatch failed: {exc}") from exc
@@ -6792,10 +7830,12 @@ def batch_run_campaigns(payload: BatchCampaignRunRequest, req: Request) -> Batch
     response_model=ReviewAuditResponse,
 )
 def list_review_audit_logs(req: Request, page: int = 1, page_size: int = 20) -> ReviewAuditResponse:
-    require_authenticated_read_access(req)
+    actor_payload = require_review_action_access(req)
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
     ordered = sorted(review_audit_logs, key=lambda item: item.timestamp, reverse=True)
+    if actor_payload is not None:
+        ordered = [item for item in ordered if item.company_id == actor_payload.company_id]
 
     start = (page - 1) * page_size
     end = start + page_size
@@ -7012,32 +8052,56 @@ def upload_campaign_reference(
     req: Request,
     file: UploadFile = File(...),
     operator: str | None = Form(default=None),
+    folder_id: str | None = Form(default=None),
 ) -> CampaignReferenceRecord:
     campaign = store.get_campaign(campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        require_campaign_access(req, campaign)
+    except HTTPException as exc:
+        if exc.status_code in {401, 403}:
+            raise HTTPException(status_code=exc.status_code, detail="CAMPAIGN_ACCESS_DENIED") from exc
+        raise
+    target_folder = resolve_folder_for_actor(req, folder_id)
 
     reference_id = f"ref_{uuid4().hex[:12]}"
     original_name = os.path.basename(file.filename or "upload.bin")
     _, ext = os.path.splitext(original_name)
+    file_type = file.content_type or "application/octet-stream"
+    validate_reference_upload(original_name, file_type, 0)
 
     campaign_dir = os.path.join(CAMPAIGN_REFERENCES_DIR, campaign_id)
-    os.makedirs(campaign_dir, exist_ok=True)
-
     stored_name = f"{reference_id}{ext}"
     stored_path = os.path.join(campaign_dir, stored_name)
 
-    with open(stored_path, "wb") as target:
-        shutil.copyfileobj(file.file, target)
-
-    file_size = os.path.getsize(stored_path)
-    file_type = file.content_type or "application/octet-stream"
     try:
+        os.makedirs(campaign_dir, exist_ok=True)
+        file_size = 0
+        deadline = time.monotonic() + REFERENCE_UPLOAD_TIMEOUT_SECONDS
+        with open(stored_path, "wb") as target:
+            while True:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                chunk = file.file.read(1024 * 1024)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > REFERENCE_MAX_SIZE_BYTES:
+                    raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+                target.write(chunk)
         validate_reference_upload(original_name, file_type, file_size)
-    except HTTPException as exc:
-        if os.path.exists(stored_path):
-            os.remove(stored_path)
-        raise exc
+    except HTTPException:
+        cleanup_reference_upload(stored_path)
+        raise
+    except TimeoutError as exc:
+        cleanup_reference_upload(stored_path)
+        raise HTTPException(status_code=504, detail="UPLOAD_TIMEOUT") from exc
+    except Exception as exc:
+        cleanup_reference_upload(stored_path)
+        raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
 
     uploaded_at_dt = now_utc()
     uploaded_at = uploaded_at_dt.isoformat()
@@ -7052,6 +8116,8 @@ def upload_campaign_reference(
         file_size=file_size,
         uploaded_at=uploaded_at,
         download_url=download_url,
+        folder=target_folder["name"] if target_folder else "General",
+        folder_id=folder_id,
     )
 
     if persistence is not None:
@@ -7065,15 +8131,17 @@ def upload_campaign_reference(
                 uploaded_at=uploaded_at_dt,
                 stored_path=stored_path,
                 operator=operator,
+                folder=record.folder,
+                folder_id=record.folder_id,
             )
-        except Exception:
-            campaign_references.setdefault(campaign_id, []).append(record)
-            campaign_references[campaign_id] = sorted(
-                campaign_references[campaign_id],
-                key=lambda item: item.uploaded_at,
-                reverse=True,
-            )
-            campaign_reference_files.setdefault(campaign_id, {})[reference_id] = stored_path
+        except TimeoutError as exc:
+            cleanup_persisted_reference(campaign_id, reference_id)
+            cleanup_reference_upload(stored_path)
+            raise HTTPException(status_code=504, detail="UPLOAD_TIMEOUT") from exc
+        except Exception as exc:
+            cleanup_persisted_reference(campaign_id, reference_id)
+            cleanup_reference_upload(stored_path)
+            raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
     else:
         campaign_references.setdefault(campaign_id, []).append(record)
         campaign_references[campaign_id] = sorted(
@@ -7110,14 +8178,22 @@ def list_campaign_references(campaign_id: str, req: Request) -> CampaignReferenc
     campaign = store.get_campaign(campaign_id)
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    require_campaign_access(req, campaign)
 
     if persistence is not None:
         db_items = persistence.list_campaign_references(campaign_id)
+        list_persisted_folders = getattr(persistence, "list_folders", lambda _company_id: [])
+        db_items = [apply_legacy_folder_association(item, list_persisted_folders(campaign.company_id or "")) for item in db_items]
         base_url = str(req.base_url).rstrip("/")
         items = [to_reference_record(base_url, payload) for payload in db_items if reference_file_exists(payload)]
     else:
         path_map = campaign_reference_files.get(campaign_id, {})
-        items = [item for item in campaign_references.get(campaign_id, []) if os.path.exists(path_map.get(item.reference_id, ""))]
+        visible_folders = [folder for folder in folders_cache.values() if folder["scope"] == "platform" or folder.get("company_id") == campaign.company_id]
+        items = [
+            CampaignReferenceRecord(**apply_legacy_folder_association(item.model_dump(mode="python"), visible_folders))
+            for item in campaign_references.get(campaign_id, [])
+            if os.path.exists(path_map.get(item.reference_id, ""))
+        ]
     return CampaignReferenceListResponse(items=items, total=len(items))
 
 
@@ -7125,7 +8201,11 @@ def list_campaign_references(campaign_id: str, req: Request) -> CampaignReferenc
     "/api/v1/campaigns/{campaign_id}/references/{reference_id}/download",
     responses={404: {"model": ErrorResponse}},
 )
-def download_campaign_reference(campaign_id: str, reference_id: str) -> FileResponse:
+def download_campaign_reference(campaign_id: str, reference_id: str, req: Request) -> FileResponse:
+    campaign = store.get_campaign(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    require_campaign_access(req, campaign)
     payload = get_reference_payload_or_404(campaign_id, reference_id)
     stored_path = str(payload.get("stored_path"))
     record = CampaignReferenceRecord(
@@ -7205,6 +8285,22 @@ def ingest_llm_usage(payload: LlmUsageIngestRequest, req: Request) -> dict[str, 
     return {"status": "accepted"}
 
 
+@app.post("/internal/llm-generation-payloads", status_code=202)
+def ingest_llm_generation_payload(payload: dict[str, Any], req: Request) -> dict[str, str]:
+    require_internal_api_key(req)
+    task_type = str(payload.get("task_type", "")).strip()
+    campaign_id = str(payload.get("campaign_id", "")).strip()
+    task_id = str(payload.get("task_id", "")).strip()
+    worker_payload = payload.get("payload")
+    if not task_type or not campaign_id or not task_id or not isinstance(worker_payload, dict):
+        raise HTTPException(status_code=400, detail="task_type, campaign_id, and task_id are required")
+    try:
+        _capture_worker_payload(worker_payload, task_type, campaign_id, task_id, raise_on_failure=True)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="LLM payload persistence unavailable") from exc
+    return {"status": "accepted"}
+
+
 # ─── Worker Result Ingest ────────────────────────────────────────────────────
 # Workers report their results directly here instead of campaign_service re-calling workers.
 # This eliminates the double-call pattern and ensures assets are saved immediately.
@@ -7222,6 +8318,26 @@ def require_internal_api_key_for_worker(req: Request) -> None:
         raise HTTPException(status_code=403, detail="Invalid internal API key")
 
 
+def worker_result_has_displayable_assets(task_type: str, result: dict[str, Any]) -> bool:
+    persisted_assets = result.get("displayable_assets")
+    if isinstance(persisted_assets, list):
+        if task_type == "copywriting" and any(isinstance(item, dict) and str(item.get("metadata", {}).get("variant", {}).get("body", "")).strip() for item in persisted_assets):
+            return True
+        if task_type in {"image_generation", "video_generation"} and any(isinstance(item, dict) and is_openable_asset_url(str(item.get("url", ""))) for item in persisted_assets):
+            return True
+        if task_type == "ads_strategy" and any(isinstance(item, dict) and item.get("metadata", {}).get("ads_plan") for item in persisted_assets):
+            return True
+    if task_type == "copywriting":
+        return any(isinstance(item, dict) and isinstance(item.get("body"), str) and item["body"].strip() for item in result.get("variants", []))
+    if task_type == "image_generation":
+        return any(isinstance(item, dict) and is_openable_asset_url(str(item.get("url", "")).strip()) for item in result.get("image_assets", []))
+    if task_type == "video_generation":
+        return is_openable_asset_url(str(result.get("video_url", "")).strip())
+    if task_type == "ads_strategy":
+        return bool(result.get("ads_plan"))
+    return False
+
+
 @app.post("/internal/workers/results", status_code=202)
 def ingest_worker_result(payload: WorkerResultRequest, req: Request) -> dict[str, str]:
     """
@@ -7234,16 +8350,30 @@ def ingest_worker_result(payload: WorkerResultRequest, req: Request) -> dict[str
     result = payload.result
     now = now_utc()
 
-    if task_type == "copywriting":
-        return _save_copy_worker_result(result, now)
+    if task_type not in ASSET_WORKER_TASK_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unknown task type: {task_type}")
+    if not worker_result_has_displayable_assets(task_type, result):
+        result = {**result, "status": "failed", "error": "worker returned no displayable assets", "displayable_asset_count": 0}
+        response = {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": result["error"]}
+    elif task_type == "copywriting":
+        response = _save_copy_worker_result(result, now)
     elif task_type == "image_generation":
-        return _save_image_worker_result(result, now)
+        response = _save_image_worker_result(result, now)
     elif task_type == "video_generation":
-        return _save_video_worker_result(result, now)
+        response = _save_video_worker_result(result, now)
     elif task_type == "ads_strategy":
-        return _save_ads_worker_result(result, now)
+        response = _save_ads_worker_result(result, now)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown task type: {task_type}")
+
+    campaign_id = str(result.get("campaign_id", ""))
+    task_id = str(result.get("task_id", ""))
+    if campaign_id and task_id:
+        current_tasks = store.get_tasks(campaign_id)
+        updated_tasks = apply_worker_result_state(current_tasks, task_id, result)
+        if updated_tasks != current_tasks:
+            store.set_tasks(campaign_id, updated_tasks)
+    return response
 
 
 def _save_copy_worker_result(result: dict[str, Any], now: datetime) -> dict[str, str]:
@@ -7298,15 +8428,17 @@ def _save_image_worker_result(result: dict[str, Any], now: datetime) -> dict[str
     if not task_id or not campaign_id:
         raise HTTPException(status_code=400, detail="Missing task_id or campaign_id")
 
+    if not isinstance(image_assets, list) or not image_assets or any(
+        not isinstance(item, dict) or not is_openable_asset_url(str(item.get("url", "")).strip())
+        for item in image_assets
+    ):
+        return {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": "worker returned invalid image assets"}
+
     assets: list[AssetOutput] = []
     validations: list[ValidationResult] = []
 
     for item in image_assets:
-        if not isinstance(item, dict):
-            continue
         image_url = str(item.get("url", "")).strip()
-        if not is_openable_asset_url(image_url):
-            continue
         asset_id = f"ast_{uuid4().hex[:10]}"
         metadata = apply_regeneration_metadata({"size": item.get("size"), "task_type": "image_generation"}, result)
         try:
@@ -7319,7 +8451,8 @@ def _save_image_worker_result(result: dict[str, Any], now: datetime) -> dict[str
             )
             metadata.update(cached_metadata)
         except Exception as exc:
-            logger.warning(f"Failed to cache image worker result {asset_id}: {exc}")
+            logger.warning("Failed to cache image worker result %s", asset_id)
+            return {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": "image asset cache failed"}
         asset = AssetOutput(
             company_id=company_id,
             asset_id=asset_id,
@@ -7336,8 +8469,10 @@ def _save_image_worker_result(result: dict[str, Any], now: datetime) -> dict[str
             assets.append(asset)
             append_validation_for_asset(validations, company_id, campaign_id, asset_id, now, run_id=run_id)
 
-    if assets:
-        save_assets_and_validations(assets, validations)
+    if not assets:
+        return {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": "worker returned no displayable assets"}
+
+    save_assets_and_validations(assets, validations)
 
     return {"status": "accepted", "assets_saved": str(len(assets)), "asset_ids": ",".join(asset.asset_id for asset in assets)}
 

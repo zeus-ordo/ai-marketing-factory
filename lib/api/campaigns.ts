@@ -1,3 +1,8 @@
+import { preflightCampaignReferenceFiles, uploadBatchItems, isCampaignStartEnabled, mergeBatchUploadStates, canStartAfterUploadRemoval, type BatchUploadFileState, type UploadPolicy } from "./batch-upload";
+
+export { preflightCampaignReferenceFiles, uploadBatchItems, isCampaignStartEnabled, mergeBatchUploadStates, canStartAfterUploadRemoval };
+export type { BatchUploadFileState, BatchUploadStatus, UploadPolicy } from "./batch-upload";
+
 export type CampaignStatus = "draft" | "running" | "completed" | "failed";
 
 export type CampaignTask = {
@@ -5,10 +10,49 @@ export type CampaignTask = {
   task_id: string;
   campaign_id: string;
   task_type: "copywriting" | "image_generation" | "video_generation" | "ads_strategy";
-  status: "pending" | "planned" | "running" | "validating" | "passed" | "failed" | "retrying";
+  status: "pending" | "planned" | "running" | "validating" | "passed" | "failed" | "blocked" | "retrying";
   priority: number;
   depends_on: string[];
   acceptance: string[];
+  retry_count?: number;
+  error_class?: string | null;
+  error_detail?: string | null;
+  blocked_by_task_id?: string | null;
+  blocked_reason?: string | null;
+  next_retry_at?: string | null;
+  generation_context_id?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  retryable?: boolean | null;
+  run_id?: string | null;
+};
+
+export type GenerationSourceProvenance = {
+  source_type: string;
+  source_id: string;
+  label: string;
+  folder?: string | null;
+  url?: string | null;
+  provider?: string | null;
+  query?: string | null;
+  retrieved_at?: string | null;
+};
+
+export type GenerationSourceSummary = {
+  generation_context_id: string;
+  internal_source_count: number;
+  external_source_count: number;
+  internal_token_count: number;
+  external_token_count: number;
+  internal_ratio: number;
+  external_ratio: number;
+  source_counts: Record<string, number>;
+  selected_reference_ids: string[];
+  matched_folder_names: string[];
+  external_source_urls: string[];
+  external_search_status?: string;
+  external_search_error?: string | null;
+  provenance: GenerationSourceProvenance[];
 };
 
 export type CampaignBrief = {
@@ -44,6 +88,9 @@ export type CampaignRecord = {
   status: CampaignStatus;
   created_at: string;
   brief: CampaignBrief;
+  generation_context_id?: string | null;
+  source_summary?: GenerationSourceSummary | null;
+  tasks?: CampaignTask[] | null;
 };
 
 export type ValidationResultRecord = {
@@ -185,6 +232,14 @@ type CampaignRunResponse = {
   run_number?: number;
 };
 
+export type RetryTaskResponse = {
+  campaign_id: string;
+  task_id: string;
+  status: string;
+  assets: number;
+  validations: number;
+};
+
 export type CampaignRunSummary = {
   run_id: string;
   campaign_id: string;
@@ -227,6 +282,7 @@ export type CampaignReferenceRecord = {
   uploaded_at: string;
   download_url: string;
   folder?: string | null;
+  folder_id?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -238,6 +294,7 @@ export type KnowledgeItemRecord = {
   description: string;
   content_url: string | null;
   metadata: Record<string, unknown>;
+  folder_id?: string | null;
   created_at: string;
 };
 
@@ -370,6 +427,36 @@ function getMembershipApiBase(): string {
 
 let refreshAccessTokenPromise: Promise<boolean> | null = null;
 
+export class ApiRequestError extends Error {
+  detail: unknown;
+
+  constructor(message: string, detail?: unknown) {
+    super(message);
+    this.name = "ApiRequestError";
+    if (detail !== undefined) {
+      this.detail = detail;
+    } else {
+      try {
+        this.detail = JSON.parse(message);
+      } catch {
+        this.detail = detail;
+      }
+    }
+  }
+}
+
+export function formatApiDetail(detail: unknown): string {
+  if (Array.isArray(detail)) {
+    return detail.map((entry) => {
+      if (!entry || typeof entry !== "object") return String(entry);
+      const item = entry as { loc?: unknown[]; msg?: unknown };
+      return `${Array.isArray(item.loc) ? item.loc.join(".") : "request"}: ${typeof item.msg === "string" ? item.msg : JSON.stringify(item.msg)}`;
+    }).join("\n");
+  }
+  if (detail && typeof detail === "object") return Object.entries(detail as Record<string, unknown>).map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`).join("\n");
+  return typeof detail === "string" ? detail : "";
+}
+
 async function refreshAccessTokenOnce(): Promise<boolean> {
   if (typeof window === "undefined") return false;
   if (refreshAccessTokenPromise) return refreshAccessTokenPromise;
@@ -440,14 +527,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         if (!response.ok) {
           const contentType = response.headers.get("content-type") ?? "";
           let message = `Request failed: ${response.status}`;
+          let detail: unknown;
           if (contentType.includes("application/json")) {
             const payload = (await response.json()) as { detail?: unknown };
+            detail = payload.detail;
             if (typeof payload.detail === "string" && payload.detail.trim()) message = payload.detail;
+            else if (payload.detail !== undefined) message = JSON.stringify(payload.detail);
           } else {
             const errorText = await response.text();
             if (errorText.trim()) message = errorText;
           }
-          throw new Error(message);
+          throw new ApiRequestError(message, detail);
         }
         return (await response.json()) as T;
       }
@@ -463,11 +553,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const contentType = response.headers.get("content-type") ?? "";
     let message = `Request failed: ${response.status}`;
+    let detail: unknown;
 
     if (contentType.includes("application/json")) {
       const payload = (await response.json()) as { detail?: unknown };
+      detail = payload.detail;
       if (typeof payload.detail === "string" && payload.detail.trim()) {
         message = payload.detail;
+      } else if (payload.detail !== undefined) {
+        message = JSON.stringify(payload.detail);
       }
     } else {
       const errorText = await response.text();
@@ -476,7 +570,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       }
     }
 
-    throw new Error(message);
+    throw new ApiRequestError(message, detail);
   }
 
   return (await response.json()) as T;
@@ -541,6 +635,30 @@ export async function regenerateAsset(
 export async function listCampaignTasks(campaignId: string): Promise<CampaignTask[]> {
   const data = await request<CampaignTasksResponse>(`/api/v1/campaigns/${campaignId}/tasks`);
   return data.tasks;
+}
+
+export async function fetchCampaignContent(contentUrl: string): Promise<Blob> {
+  const apiBase = getApiBase();
+  if (!apiBase) throw new Error("NEXT_PUBLIC_CAMPAIGN_API_BASE is not configured");
+  const parsed = apiBase === "/" ? null : new URL(contentUrl, apiBase);
+  const path = parsed ? `${parsed.pathname}${parsed.search}` : contentUrl;
+  const token = getAccessToken();
+  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  let response = await fetch(buildApiUrl(apiBase, path), { headers });
+  if (response.status === 401 && await refreshAccessTokenOnce()) {
+    response = await fetch(buildApiUrl(apiBase, path), {
+      headers: { Authorization: `Bearer ${getAccessToken()}` },
+    });
+  }
+  if (!response.ok) throw new ApiRequestError(`Request failed: ${response.status}`);
+  return response.blob();
+}
+
+export async function retryCampaignTask(campaignId: string, taskId: string): Promise<RetryTaskResponse> {
+  return request<RetryTaskResponse>(`/api/v1/internal/campaigns/${campaignId}/tasks/retry`, {
+    method: "POST",
+    body: JSON.stringify({ task_id: taskId }),
+  });
 }
 
 export async function listValidationResults(campaignId: string): Promise<ValidationResultRecord[]> {
@@ -809,6 +927,18 @@ export type ReviewItem = {
   reject_reason?: string | null;
   rejected_reason?: string | null;
   reason?: string | null;
+  generation_context_id?: string | null;
+  source_summary?: GenerationSourceSummary | null;
+  source_provenance?: GenerationSourceProvenance[];
+};
+
+export type FolderRecord = {
+  folder_id: string;
+  scope: "platform" | "company";
+  company_id: string | null;
+  name: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ReviewQueueResponse = {
@@ -999,21 +1129,54 @@ export async function listCampaignReferences(campaignId: string): Promise<Campai
   return data.items;
 }
 
+export async function listFolders(): Promise<FolderRecord[]> {
+  const data = await request<{ items: FolderRecord[]; total: number }>("/api/v1/folders");
+  return data.items;
+}
+
+export async function getCampaignUploadPolicy(): Promise<UploadPolicy> {
+  return request<UploadPolicy>("/api/v1/campaigns/upload-policy");
+}
+
+export async function createFolder(name: string): Promise<FolderRecord> {
+  return request<FolderRecord>("/api/v1/folders", { method: "POST", body: JSON.stringify({ name, scope: "company" }) });
+}
+
+export async function deleteFolder(folderId: string): Promise<{ folder_id: string; deleted: boolean }> {
+  return request<{ folder_id: string; deleted: boolean }>(`/api/v1/folders/${folderId}`, { method: "DELETE" });
+}
+
 export async function uploadCampaignReference(
   campaignId: string,
   file: File,
   operator?: string,
+  folderId?: string | null,
 ): Promise<CampaignReferenceRecord> {
   const formData = new FormData();
   formData.append("file", file);
   if (operator) {
     formData.append("operator", operator);
   }
+  if (folderId) formData.append("folder_id", folderId);
 
   return request<CampaignReferenceRecord>(`/api/v1/campaigns/${campaignId}/references/upload`, {
     method: "POST",
     body: formData,
   });
+}
+
+export async function uploadCampaignReferences(
+  campaignId: string,
+  files: BatchUploadFileState[],
+  operator = "admin",
+  folderId?: string | null,
+  concurrency = 3,
+  onStateChange?: (states: BatchUploadFileState[]) => void,
+): Promise<BatchUploadFileState[]> {
+  return uploadBatchItems(files, (file) => uploadCampaignReference(campaignId, file, operator, folderId).then((reference) => ({
+    referenceId: reference.reference_id,
+    folderId: reference.folder_id ?? folderId ?? null,
+  })), concurrency, onStateChange);
 }
 
 export async function attachCampaignReferenceText(params: {
@@ -1022,6 +1185,7 @@ export async function attachCampaignReferenceText(params: {
   content: string;
   fileType?: string;
   operator?: string;
+  folderId?: string | null;
 }): Promise<CampaignReferenceRecord> {
   return request<CampaignReferenceRecord>(`/api/v1/campaigns/${params.campaignId}/references/attach-text`, {
     method: "POST",
@@ -1030,6 +1194,7 @@ export async function attachCampaignReferenceText(params: {
       content: params.content,
       file_type: params.fileType ?? "text/plain",
       operator: params.operator ?? "admin",
+      folder_id: params.folderId ?? null,
     }),
   });
 }
@@ -1043,7 +1208,7 @@ export async function deleteCampaignReference(campaignId: string, referenceId: s
 export async function updateCampaignReference(
   campaignId: string,
   referenceId: string,
-  payload: { folder?: string | null; metadata?: Record<string, unknown> },
+  payload: { folder?: string | null; folder_id?: string | null; metadata?: Record<string, unknown> },
 ): Promise<CampaignReferenceRecord> {
   return request<CampaignReferenceRecord>(`/api/v1/campaigns/${campaignId}/references/${referenceId}`, {
     method: "PATCH",
@@ -1062,6 +1227,7 @@ export async function uploadKnowledgeItem(
   description?: string,
   category = "reference-library",
   assetType?: "image" | "video",
+  folderId?: string | null,
 ): Promise<KnowledgeItemRecord> {
   const formData = new FormData();
   formData.append("file", file);
@@ -1069,6 +1235,7 @@ export async function uploadKnowledgeItem(
   formData.append("description", description?.trim() || "");
   formData.append("category", category);
   if (assetType) formData.append("asset_type", assetType);
+  if (folderId) formData.append("folder_id", folderId);
 
   return request<KnowledgeItemRecord>("/api/v1/knowledge-items/upload", {
     method: "POST",
@@ -1082,6 +1249,7 @@ export async function createKnowledgeItem(payload: {
   description?: string;
   content_url?: string | null;
   metadata?: Record<string, unknown>;
+  folder_id?: string | null;
 }): Promise<KnowledgeItemRecord> {
   return request<KnowledgeItemRecord>("/api/v1/knowledge-items", {
     method: "POST",
@@ -1091,6 +1259,7 @@ export async function createKnowledgeItem(payload: {
       description: payload.description ?? "",
       content_url: payload.content_url ?? null,
       metadata: payload.metadata ?? {},
+      folder_id: payload.folder_id ?? null,
     }),
   });
 }
@@ -1103,7 +1272,7 @@ export async function deleteKnowledgeItem(itemId: string): Promise<{ item_id: st
 
 export async function updateKnowledgeItem(
   itemId: string,
-  payload: { title?: string; description?: string; category?: string; metadata?: Record<string, unknown> },
+  payload: { title?: string; description?: string; category?: string; folder_id?: string | null; metadata?: Record<string, unknown> },
 ): Promise<KnowledgeItemRecord> {
   return request<KnowledgeItemRecord>(`/api/v1/knowledge-items/${itemId}`, {
     method: "PATCH",
@@ -1123,6 +1292,7 @@ export async function attachKnowledgeItemToCampaign(campaignId: string, item: Kn
         content: item.description,
         fileType: "text/plain",
         operator: "admin",
+        folderId: item.folder_id,
       });
     }
     throw new Error("Knowledge item has no downloadable content");
@@ -1148,7 +1318,7 @@ export async function attachKnowledgeItemToCampaign(campaignId: string, item: Kn
     ? item.metadata.file_type
     : blob.type || "application/octet-stream";
   const file = new File([blob], fileName, { type: fileType });
-  return uploadCampaignReference(campaignId, file, "admin");
+  return uploadCampaignReference(campaignId, file, "admin", item.folder_id);
 }
 
 export async function getCampaignTrace(campaignId: string): Promise<CampaignTraceSummary> {

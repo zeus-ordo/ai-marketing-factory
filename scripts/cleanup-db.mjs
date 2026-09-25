@@ -14,7 +14,7 @@
  *
  * For direct PostgreSQL access (recommended for production), run the SQL below
  * manually against the marketing_ai database:
- *   psql "postgresql://app:password@localhost:5432/marketing_ai"
+ *   psql "$POSTGRES_DSN"
  */
 
 import fs from "node:fs";
@@ -80,8 +80,8 @@ async function cleanupTraces() {
  * These SQL queries should be run manually via psql or a DB admin tool.
  * They are safe to run — all queries use DELETE with WHERE clauses on old data.
  *
- * Connection string: postgresql://app:password@localhost:5432/marketing_ai
- * (When running on the docker network, use: postgresql://app:password@postgres:5432/marketing_ai)
+ * Connection string is read from POSTGRES_DSN.
+ * Set it in an ignored local environment file; never put credentials in this script.
  */
 const SQL_CLEANUP_QUERIES = [
   {

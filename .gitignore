@@ -17,6 +17,10 @@ __pycache__/
 .eggs/
 dist/
 deploy/volumes/
+deploy/*override*.yml
+deploy/*override*.yaml
+deploy/*secrets*.yml
+deploy/*secrets*.yaml
 campaign_references/
 generated_assets/
 ngrok.yml

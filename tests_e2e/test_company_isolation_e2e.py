@@ -6,24 +6,26 @@ Requires both services to be running:
   - Campaign service:   http://localhost:8080
 
 Run with: pytest tests_e2e/ -v -s
-If services are not running, tests are SKIPPED automatically with clear instructions.
+Set RUN_LIVE_E2E=1 and provide runtime secrets; otherwise live tests are skipped.
 
 Prerequisites:
   1. Start membership: cd services/membership_service && python -m uvicorn app.main:app --port 8095
   2. Start campaign:   cd services/campaign_service   && python -m uvicorn app.main:app --port 8080
   3. PostgreSQL running for membership service
-  4. Env vars: JWT_SECRET=dev-secret-key-for-testing-only
-              PLATFORM_ADMIN_KEY=dev-platform-admin-key-change-me
+  4. Env vars: JWT_SECRET and PLATFORM_ADMIN_KEY must be supplied out of band.
 """
 
 import os
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-PLATFORM_KEY = os.getenv("PLATFORM_ADMIN_KEY", "dev-platform-admin-key-change-me")
-JWT_SECRET  = os.getenv("JWT_SECRET",          "dev-secret-key-for-testing-only")
+pytestmark = pytest.mark.e2e
+
+PLATFORM_KEY = os.getenv("PLATFORM_ADMIN_KEY", "")
+JWT_SECRET = os.getenv("JWT_SECRET", "")
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -49,6 +51,8 @@ def make_jwt(member_id: str, company_id: str, email: str = "test@example.com") -
 
 @pytest.fixture
 def platform_headers() -> dict:
+    if not PLATFORM_KEY:
+        pytest.skip("PLATFORM_ADMIN_KEY must be provided for live E2E")
     return {"X-Platform-Key": PLATFORM_KEY}
 
 
@@ -62,6 +66,8 @@ class TestCompanyIsolationE2E:
     """
 
     def test_full_company_isolation_flow(self, http_client, campaign_client, platform_headers) -> None:
+        if not JWT_SECRET:
+            pytest.skip("JWT_SECRET must be provided for live E2E")
         # ── Step 1: Create two companies via platform admin ──────────────────
         ts = int(time.time())
         company_a_name = f"TestCo-A-{ts}"
@@ -88,17 +94,19 @@ class TestCompanyIsolationE2E:
         # ── Step 2: Create admin accounts for each company ─────────────────
         admin_a_email = f"admin-a-{ts}@test.example.com"
         admin_b_email = f"admin-b-{ts}@test.example.com"
+        password_a = secrets.token_urlsafe(24)
+        password_b = secrets.token_urlsafe(24)
 
         resp_a_admin = http_client.post(
             f"/api/v1/platform/companies/{company_a_id}/admin",
-            json={"email": admin_a_email, "password": "TestPass1234"},
+            json={"email": admin_a_email, "password": password_a},
             headers=platform_headers,
         )
         assert resp_a_admin.status_code == 201, f"Failed to create admin A: {resp_a_admin.text}"
 
         resp_b_admin = http_client.post(
             f"/api/v1/platform/companies/{company_b_id}/admin",
-            json={"email": admin_b_email, "password": "TestPass1234"},
+            json={"email": admin_b_email, "password": password_b},
             headers=platform_headers,
         )
         assert resp_b_admin.status_code == 201, f"Failed to create admin B: {resp_b_admin.text}"
@@ -108,7 +116,7 @@ class TestCompanyIsolationE2E:
         # ── Step 3: Login as admin A to get JWT ─────────────────────────────
         resp_login_a = http_client.post(
             "/api/v1/auth/login",
-            json={"email": admin_a_email, "password": "TestPass1234"},
+            json={"email": admin_a_email, "password": password_a},
         )
         assert resp_login_a.status_code == 200, f"Login A failed: {resp_login_a.text}"
         jwt_a = resp_login_a.json()["access_token"]
@@ -116,7 +124,7 @@ class TestCompanyIsolationE2E:
 
         resp_login_b = http_client.post(
             "/api/v1/auth/login",
-            json={"email": admin_b_email, "password": "TestPass1234"},
+            json={"email": admin_b_email, "password": password_b},
         )
         assert resp_login_b.status_code == 200, f"Login B failed: {resp_login_b.text}"
         jwt_b = resp_login_b.json()["access_token"]
