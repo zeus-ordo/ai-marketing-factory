@@ -476,7 +476,6 @@ def _generate_gemini_image(prompt: str, size: str, api_key: str, reference_image
                                 "type": "image",
                                 "data": reference.data,
                                 "mime_type": reference.mime_type,
-                                "reference_id": reference.reference_id,
                             }
                             for reference in (reference_images or [])
                         ],

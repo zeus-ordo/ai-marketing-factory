@@ -31,7 +31,7 @@ def test_gemini_request_contains_actual_reference_image_parts():
     body = client.post.call_args.kwargs["json"]
     assert body["input"] == [
         {"type": "text", "text": "Create a visual"},
-        {"type": "image", "data": "cmVm", "mime_type": "image/png", "reference_id": "ref-1"},
+        {"type": "image", "data": "cmVm", "mime_type": "image/png"},
     ]
 
 

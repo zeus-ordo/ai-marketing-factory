@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import main
-from app.schemas import ImageRunRequest
+from app.schemas import ImageRunRequest, ReferenceImage
 
 
 FAKE_API_KEY = "fake-provider-key"
@@ -40,6 +40,27 @@ def test_gemini_valid_image_response_returns_data_url():
         result = main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY)
 
     assert result == "data:image/png;base64,aW1hZ2U="
+
+
+def test_gemini_reference_image_request_omits_internal_reference_id():
+    response = _response(
+        200,
+        {"steps": [{"content": [{"type": "image", "data": "aW1hZ2U=", "mime_type": "image/png"}]}]},
+    )
+    client = _client_for([response])
+    reference = ReferenceImage(
+        reference_id="ref-1",
+        file_name="reference.png",
+        mime_type="image/png",
+        data="cmVm",
+    )
+
+    with patch.object(main.httpx, "Client", return_value=client):
+        main._generate_gemini_image("safe prompt", "1024x1024", FAKE_API_KEY, [reference])
+
+    image_item = client.post.call_args.kwargs["json"]["input"][1]
+    assert image_item == {"type": "image", "data": "cmVm", "mime_type": "image/png"}
+    assert "reference_id" not in image_item
 
 
 def test_gemini_empty_steps_raises_retryable_provider_error():
