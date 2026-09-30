@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from app.context_assembler import ContextSourceItem, assemble_generation_context, select_image_reference_items
+from app.context_assembler import (
+    ContextSourceItem,
+    assemble_generation_context,
+    select_image_reference_items,
+    select_reference_pack_items,
+)
 from app.schemas import CampaignBrief, CampaignRecord, Deliverables, TargetAudience
 
 
@@ -53,6 +58,49 @@ def test_image_reference_selection_ignores_non_image_sources():
     ])
 
     assert [source.source_id for source in selected] == ["image-1"]
+
+
+def pack_item(pack_id: str, role: str, item_id: str, **metadata: str) -> ContextSourceItem:
+    return item(
+        "platform_default" if metadata.get("industry") is None else "industry_default",
+        item_id,
+        pack_id=pack_id,
+        pack_role=role,
+        selection_mode=metadata.pop("selection_mode", "optional"),
+        priority=metadata.pop("priority", "0"),
+        max_images=metadata.pop("max_images", "2"),
+        mime_type="image/png",
+        **metadata,
+    )
+
+
+def test_reference_pack_selection_prioritizes_mandatory_brand_product_and_caps_total():
+    sources = [
+        pack_item("style", "style", "style-1", selection_mode="optional", priority="100"),
+        pack_item("brand", "brand_identity", "brand-1", selection_mode="mandatory", priority="1"),
+        pack_item("product", "product", "product-1", selection_mode="mandatory", priority="1"),
+    ] + [item("campaign_reference", f"manual-{index}", file_type="image/png") for index in range(6)]
+
+    selected = select_reference_pack_items(sources, "camp-1", "run-1")
+
+    assert [source.source_id for source in selected[:2]] == ["brand-1", "product-1"]
+    assert len(selected) == 6
+    assert all(source.source_id != "style-1" for source in selected)
+
+
+def test_reference_pack_selection_rotates_stably_and_deduplicates_sha256():
+    sources = [
+        pack_item("style", "style", f"style-{index}", priority="1", sha256=f"sha-{index % 2}")
+        for index in range(4)
+    ]
+
+    first = select_reference_pack_items(sources, "camp-1", "run-1")
+    same = select_reference_pack_items(sources, "camp-1", "run-1")
+    rotated = select_reference_pack_items(sources, "camp-1", "run-2")
+
+    assert [item.source_id for item in first] == [item.source_id for item in same]
+    assert len({item.metadata["sha256"] for item in first}) == len(first)
+    assert [item.source_id for item in first] != [item.source_id for item in rotated]
 
 
 def test_allocates_floor_75_25_budgets_and_records_ratios():

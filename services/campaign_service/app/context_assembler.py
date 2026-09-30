@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 from math import floor
 from types import MappingProxyType
 from typing import Any
@@ -44,6 +45,7 @@ class GenerationContextSnapshot:
     external_search_status: str = "not_requested"
     external_search_error: str | None = None
     task_id: str | None = None
+    run_id: str | None = None
     selected_reference_ids: tuple[str, ...] = ()
     matched_folder_names: tuple[str, ...] = ()
 
@@ -62,6 +64,99 @@ def select_image_reference_items(items: list[ContextSourceItem]) -> tuple[Contex
     manual = [item for item in items if item.source_type in manual_types and is_image(item)]
     industry = [item for item in items if item.source_type == "industry_matched" and is_image(item)]
     return tuple([*manual[:4], *industry[:2]])
+
+
+def select_reference_pack_items(
+    items: list[ContextSourceItem],
+    campaign_id: str,
+    run_id: str,
+    total_limit: int = 6,
+) -> tuple[ContextSourceItem, ...]:
+    """Select Pack and campaign image sources with deterministic bounded priority."""
+    pack_items = [
+        item for item in items
+        if item.source_type in {"platform_default", "industry_default"} and item.metadata.get("pack_id")
+    ]
+    manual_types = {"campaign_reference", "user_selected", "immediate_upload"}
+    manual = [item for item in items if item.source_type in manual_types]
+    company = [item for item in items if item.source_type == "industry_matched"]
+
+    def image(item: ContextSourceItem) -> bool:
+        mime = str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "")
+        return mime.lower().startswith("image/")
+
+    pack_items = [item for item in pack_items if image(item)]
+    manual = [item for item in manual if image(item)]
+    company = [item for item in company if image(item)]
+
+    def rotation(item: ContextSourceItem) -> str:
+        key = f"{campaign_id}:{run_id}:{item.metadata.get('pack_id', '')}:{item.source_id}"
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+    def pack_rank(item: ContextSourceItem) -> tuple[int, int, int, int, str, str]:
+        mode_rank = 0 if item.metadata.get("selection_mode") == "mandatory" else 1
+        role_rank = {"brand_identity": 0, "product": 1}.get(str(item.metadata.get("pack_role") or ""), 2)
+        scope_rank = 0 if item.source_type == "platform_default" else 1
+        return (mode_rank, role_rank, scope_rank, -int(item.metadata.get("priority") or 0), rotation(item), item.source_id)
+
+    selected: list[ContextSourceItem] = []
+    seen_ids: set[str] = set()
+    seen_hashes: set[str] = set()
+    pack_counts: dict[str, int] = {}
+
+    def add(item: ContextSourceItem) -> bool:
+        if len(selected) >= max(0, total_limit) or item.source_id in seen_ids:
+            return False
+        pack_id = str(item.metadata.get("pack_id") or "")
+        if pack_id and pack_counts.get(pack_id, 0) >= pack_limits.get(pack_id, total_limit):
+            return False
+        sha = str(item.metadata.get("sha256") or "")
+        if sha and sha in seen_hashes:
+            return False
+        selected.append(item)
+        seen_ids.add(item.source_id)
+        if pack_id:
+            pack_counts[pack_id] = pack_counts.get(pack_id, 0) + 1
+        if sha:
+            seen_hashes.add(sha)
+        return True
+
+    packs: dict[str, list[ContextSourceItem]] = {}
+    for candidate in pack_items:
+        packs.setdefault(str(candidate.metadata["pack_id"]), []).append(candidate)
+    pack_limits = {
+        pack_id: max(0, int(group[0].metadata.get("max_images") or len(group)))
+        for pack_id, group in packs.items()
+    }
+    ordered_packs = sorted(
+        packs.values(),
+        key=lambda group: pack_rank(group[0]),
+    )
+    for group in ordered_packs:
+        if group[0].metadata.get("selection_mode") != "mandatory":
+            continue
+        group = sorted(group, key=lambda candidate: (rotation(candidate), candidate.source_id))
+        limit = max(0, int(group[0].metadata.get("max_images") or len(group)))
+        if group[0].metadata.get("selection_mode") == "mandatory" and group[0].metadata.get("pack_role") in {"brand_identity", "product"}:
+            limit = min(limit, 2)
+        for candidate in group[:limit]:
+            add(candidate)
+
+    # Manual campaign References outrank optional Pack and company images.
+    for candidate in manual:
+        if len(selected) >= total_limit:
+            break
+        add(candidate)
+    for candidate in sorted(pack_items, key=pack_rank):
+        if len(selected) >= total_limit:
+            break
+        if candidate.metadata.get("selection_mode") == "optional":
+            add(candidate)
+    for candidate in company:
+        if len(selected) >= total_limit:
+            break
+        add(candidate)
+    return tuple(selected)
 
 
 def assemble_generation_context(

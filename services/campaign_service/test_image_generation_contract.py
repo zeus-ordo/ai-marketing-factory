@@ -8,7 +8,58 @@ os.environ.setdefault("CHATBOT_INTERNAL_API_KEY", "test-key")
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app import main
+from app.context_assembler import ContextSourceItem, assemble_generation_context
 from app.schemas import CampaignBrief, CampaignRecord, Deliverables, TaskRecord
+
+
+def pack_snapshot(tmp_path, selection_mode):
+    campaign = CampaignRecord(
+        company_id="company", campaign_id="campaign", created_at=datetime.utcnow(),
+        brief=CampaignBrief(campaign_name="Campaign", product_name="Product", objective="awareness",
+            target_audience={"age_range": "all", "gender": "all", "persona": "all"}, platforms=["social"],
+            budget=1, brand_tone=[], deliverables=Deliverables(image_assets=1), deadline=datetime.utcnow()),
+    )
+    item = ContextSourceItem(
+        "platform_default", "pack-item", "pack.png", "",
+        {"stored_path": str(tmp_path / "missing.png"), "file_type": "image/png", "pack_id": "pack-1",
+         "pack_role": "brand_identity", "selection_mode": selection_mode, "max_images": 1, "priority": 10},
+    )
+    return campaign, assemble_generation_context(campaign, [item], [], [], 100)
+
+
+def test_optional_pack_missing_file_is_audited_without_blocking_generation(tmp_path):
+    campaign, snapshot = pack_snapshot(tmp_path, "optional")
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    assert payload["reference_images"] == []
+    failure = payload["reference_audit"]["failures"][0]
+    assert failure["reference_id"] == "pack-item"
+    assert failure["category"] == "missing_file"
+    assert failure["mandatory"] is False
+    assert failure["reference_pack_id"] == "pack-1"
+
+
+def test_mandatory_pack_missing_file_returns_structured_422(tmp_path):
+    from fastapi import HTTPException
+
+    campaign, snapshot = pack_snapshot(tmp_path, "mandatory")
+
+    try:
+        main.build_worker_payload_for_task(
+            campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+        )
+    except HTTPException as error:
+        assert error.status_code == 422
+        failure = error.detail["failures"][0]
+        assert failure["reference_id"] == "pack-item"
+        assert failure["category"] == "missing_file"
+        assert failure["mandatory"] is True
+        assert failure["reference_pack_id"] == "pack-1"
+    else:
+        raise AssertionError("mandatory Pack attachment failure must return 422")
 
 
 def image_result(image_assets):

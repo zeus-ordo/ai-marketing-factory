@@ -63,7 +63,7 @@ from .validation import validate_campaign_brief
 from .industry_matching import match_industry_items
 from .external_search import ExternalSearchResult, build_campaign_search_query, build_search_provider
 from .external_search import ExternalSearchError
-from .context_assembler import ContextSourceItem, GenerationContextSnapshot, assemble_generation_context, select_image_reference_items
+from .context_assembler import ContextSourceItem, GenerationContextSnapshot, assemble_generation_context, select_image_reference_items, select_reference_pack_items
 
 
 class QueueHealthResponse(BaseModel):
@@ -2451,6 +2451,56 @@ def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 
     return lines
 
 
+def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]]:
+    """Load active global and campaign-industry Pack items without exposing storage paths."""
+    industry = (getattr(campaign.brief, "industry_category", "") or "").strip().lower()
+    if persistence is not None:
+        try:
+            packs = persistence.list_reference_packs(is_active=True)
+            rows_by_pack = {
+                str(pack["pack_id"]): persistence.list_reference_pack_items(str(pack["pack_id"]))
+                for pack in packs
+            }
+        except Exception:
+            packs, rows_by_pack = [], {}
+    else:
+        packs = [pack.model_dump(mode="python") for pack in reference_packs.values() if pack.is_active]
+        rows_by_pack = {
+            str(pack["pack_id"]): [
+                item.model_dump(mode="python") for item in knowledge_items.get("platform", [])
+                if item.reference_pack_id == pack["pack_id"]
+            ]
+            for pack in packs
+        }
+
+    context: list[dict[str, Any]] = []
+    for pack in packs:
+        pack_industry = str(pack.get("industry") or "").strip().lower()
+        if pack_industry and pack_industry != industry:
+            continue
+        source_type = "industry_default" if pack_industry else "platform_default"
+        for row in rows_by_pack.get(str(pack.get("pack_id")), []):
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            context.append({
+                "item_id": row.get("item_id"),
+                "title": row.get("title") or metadata.get("file_name") or "reference pack item",
+                "description": row.get("description") or "",
+                "source_type": source_type,
+                "stored_path": metadata.get("stored_path"),
+                "file_name": metadata.get("file_name") or row.get("title") or "reference",
+                "file_type": metadata.get("file_type") or metadata.get("mime_type") or "image/png",
+                "folder": metadata.get("folder") or metadata.get("folder_name") or "",
+                "pack_id": pack.get("pack_id"),
+                "pack_name": pack.get("name"),
+                "pack_role": pack.get("role"),
+                "selection_mode": pack.get("selection_mode") or "optional",
+                "max_images": pack.get("max_images") or 1,
+                "priority": pack.get("priority") or 0,
+                "industry": pack.get("industry"),
+            })
+    return context
+
+
 def build_external_search_query(campaign: CampaignRecord) -> str:
     return build_campaign_search_query(
         campaign.brief.product_name,
@@ -2476,6 +2526,16 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
             safe_reference_excerpt(str(row.get("stored_path") or ""), str(row.get("file_type") or "")),
             {**row, "folder": str(row.get("folder") or "")},
         ))
+    pack_items = [
+        ContextSourceItem(
+            str(row.get("source_type") or "platform_default"),
+            str(row.get("item_id") or ""),
+            str(row.get("title") or row.get("file_name") or "reference pack item"),
+            str(row.get("description") or ""),
+            row,
+        )
+        for row in list_reference_pack_context(campaign)
+    ]
     industry: list[ContextSourceItem] = []
     for row in list_industry_knowledge_context(campaign):
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
@@ -2502,9 +2562,9 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
         except Exception:
             search_status = "provider_error"
             search_error = "External search provider failed"
-    snapshot = assemble_generation_context(campaign, selected, industry, external, GENERATION_CONTEXT_TOKEN_BUDGET)
+    snapshot = assemble_generation_context(campaign, [*selected, *pack_items], industry, external, GENERATION_CONTEXT_TOKEN_BUDGET)
     return GenerationContextSnapshot(
-        **{**snapshot.__dict__, "external_search_status": search_status, "external_search_error": search_error}
+        **{**snapshot.__dict__, "external_search_status": search_status, "external_search_error": search_error, "run_id": run_id}
     )
 
 
@@ -2708,45 +2768,87 @@ Video type policy:
 MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
 
 
-def build_image_reference_payload(snapshot: GenerationContextSnapshot) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    selected = select_image_reference_items(list(snapshot.items))
+def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    selected = select_reference_pack_items(list(snapshot.items), snapshot.campaign_id, run_id or getattr(snapshot, "run_id", ""))
     references: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    seen_hashes: set[str] = set()
     for item in selected:
         metadata = item.metadata
         reference_id = item.source_id
+        is_pack = item.source_type in {"platform_default", "industry_default"}
         stored_path = str(metadata.get("stored_path") or "")
+        failure_metadata = {
+            "reference_pack_id": metadata.get("pack_id"),
+            "pack_role": metadata.get("pack_role"),
+            "selection_mode": metadata.get("selection_mode"),
+            "priority": metadata.get("priority"),
+            "file_name": item.label,
+            "mime_type": metadata.get("mime_type") or metadata.get("file_type"),
+        }
         if not stored_path or not os.path.isfile(stored_path):
-            failures.append({"reference_id": reference_id, "category": "missing_file"})
+            failure = {"reference_id": reference_id, "category": "missing_file"}
+            if is_pack:
+                failure.update({key: value for key, value in failure_metadata.items() if value is not None})
+                failure["mandatory"] = str(metadata.get("selection_mode")) == "mandatory"
+            failures.append(failure)
             continue
         try:
             file_size = os.path.getsize(stored_path)
             if file_size > MAX_REFERENCE_IMAGE_BYTES:
-                failures.append({"reference_id": reference_id, "category": "file_too_large"})
+                failure = {"reference_id": reference_id, "category": "file_too_large"}
+                if is_pack:
+                    failure.update({key: value for key, value in failure_metadata.items() if value is not None})
+                    failure["mandatory"] = str(metadata.get("selection_mode")) == "mandatory"
+                failures.append(failure)
                 continue
             raw = open(stored_path, "rb").read()
+            sha256 = hashlib.sha256(raw).hexdigest()
+            if sha256 in seen_hashes:
+                continue
+            seen_hashes.add(sha256)
             mime_type = str(metadata.get("mime_type") or metadata.get("file_type") or metadata.get("content_type") or "image/png")
-            references.append({
+            reference = {
                 "reference_id": reference_id,
                 "file_name": item.label,
                 "mime_type": mime_type,
                 "data": base64.b64encode(raw).decode("ascii"),
                 "folder": str(metadata.get("folder") or metadata.get("folder_name") or ""),
-                "sha256": hashlib.sha256(raw).hexdigest(),
-            })
+                "sha256": sha256,
+            }
+            if is_pack:
+                reference.update({
+                    "reference_pack_id": metadata.get("pack_id"),
+                    "pack_name": metadata.get("pack_name"),
+                    "pack_role": metadata.get("pack_role"),
+                    "selection_mode": metadata.get("selection_mode"),
+                    "selection_reason": "mandatory_pack" if metadata.get("selection_mode") == "mandatory" else "optional_pack",
+                    "priority": metadata.get("priority"),
+                    "source_type": item.source_type,
+                    "file_size": file_size,
+                })
+            references.append(reference)
         except OSError:
-            failures.append({"reference_id": reference_id, "category": "read_error"})
+            failure = {"reference_id": reference_id, "category": "read_error"}
+            if is_pack:
+                failure.update({key: value for key, value in failure_metadata.items() if value is not None})
+                failure["mandatory"] = str(metadata.get("selection_mode")) == "mandatory"
+            failures.append(failure)
+    pack_selected = any(item.source_type in {"platform_default", "industry_default"} for item in selected)
     audit_references = [
-        {key: reference[key] for key in ("reference_id", "file_name", "mime_type", "folder", "sha256")}
+        {key: reference[key] for key in (("reference_id", "reference_pack_id", "pack_name", "pack_role", "selection_mode", "selection_reason", "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256") if pack_selected else ("reference_id", "file_name", "mime_type", "folder", "sha256")) if reference.get(key) is not None}
         for reference in references
     ]
-    return references, {
+    audit = {
         "selected_count": len(selected),
         "attached_count": len(references),
         "failures": failures,
         "multimodal": bool(references),
         "references": audit_references,
     }
+    if pack_selected:
+        audit.update({"policy_version": "reference-pack-v1", "candidate_count": len(selected)})
+    return references, audit
 
 
 def build_worker_payload_for_task(
@@ -2769,8 +2871,9 @@ def build_worker_payload_for_task(
     task_provider = task.get("provider") if isinstance(task, dict) else task.provider
     task_model = task.get("model") if isinstance(task, dict) else task.model
     task_run_id = task.get("run_id") if isinstance(task, dict) else task.run_id
-    reference_images, reference_audit = build_image_reference_payload(snapshot) if task_type == "image_generation" and snapshot else ([], {})
-    if reference_audit.get("failures"):
+    reference_images, reference_audit = build_image_reference_payload(snapshot, task_run_id) if task_type == "image_generation" and snapshot else ([], {})
+    blocking_failures = [failure for failure in reference_audit.get("failures", []) if failure.get("mandatory", True)]
+    if blocking_failures:
         _capture_worker_payload(
             {
                 "campaign_id": campaign_id,
@@ -2783,7 +2886,7 @@ def build_worker_payload_for_task(
             campaign_id,
             task_id,
         )
-        raise HTTPException(status_code=422, detail={"message": "Selected Reference images could not be attached", "failures": reference_audit["failures"]})
+        raise HTTPException(status_code=422, detail={"message": "Selected Reference images could not be attached", "failures": blocking_failures})
     if task_type == "image_generation":
         context_payload["reference_audit"] = reference_audit
     context_payload.update({key: value for key, value in {"provider": task_provider, "model": task_model, "run_id": task_run_id}.items() if value})
