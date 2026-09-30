@@ -6,6 +6,8 @@ const contentStudio = await readFile(new URL("../app/content-studio/page.tsx", i
 const api = await readFile(new URL("../lib/api/campaigns.ts", import.meta.url), "utf8");
 const helperSource = await readFile(new URL("../lib/api/batch-upload.ts", import.meta.url), "utf8");
 const translations = await readFile(new URL("../lib/i18n/translations.ts", import.meta.url), "utf8");
+const campaignAuth = await readFile(new URL("../services/campaign_service/app/auth.py", import.meta.url), "utf8");
+const packTests = await readFile(new URL("../services/campaign_service/test_reference_packs.py", import.meta.url), "utf8");
 
 const assertions = [
   [helperSource.includes("export type BatchUploadStatus = \"pending\" | \"uploading\" | \"success\" | \"failed\""), "typed per-file upload states are required"],
@@ -34,10 +36,17 @@ const assertions = [
   [api.includes("/api/v1/reference-packs") && api.includes("selection_mode") && api.includes("is_active"), "reference pack API paths and filters are required"],
   [api.includes("items/upload") && api.includes("FormData") && api.includes("uploadReferencePackItems"), "reference pack uploads must use multipart batch helpers"],
   [api.includes("listReferencePackItems") && api.includes("deleteReferencePackItem") && !api.includes("stored_path"), "pack item helpers must expose safe metadata only"],
-  [contentStudio.includes("hasPermission(user.permissions, \"platform:admin\")") && contentStudio.includes("SystemReferencePacksSection"), "pack settings must be platform-admin-only"],
+  [contentStudio.includes("isPlatformAdmin(user.permissions)") && contentStudio.includes("SystemReferencePacksSection"), "pack settings must be platform-admin-only"],
   [contentStudio.includes("uploadReferencePackItems") && contentStudio.includes("FilePreviewModal") && contentStudio.includes("item.content_url"), "pack UI must support multi-upload and safe previews"],
   [contentStudio.includes("errorCode") && contentStudio.includes("referencePacks.uploadFailed"), "pack UI must retain stable per-file upload errors"],
   [translations.includes("System Reference Packs") && translations.includes("系統參考素材包") && translations.includes("システム参照パック"), "pack labels are required in all supported locales"],
+  [campaignAuth.includes('get_token_from_request(req)') && campaignAuth.includes('"platform:admin" in payload.permissions'), "Pack routes must accept authenticated platform-admin JWTs without exposing a platform key"],
+  [packTests.includes("test_reference_pack_route_accepts_authenticated_platform_admin_jwt") && packTests.includes('"authorization"'), "runtime Pack bearer-auth contract test is required"],
+  [contentStudio.includes("isPlatformAdmin(user.permissions)") && contentStudio.includes("canManageReferencePacks") && !contentStudio.includes("hasPermission(user.permissions, \"platform:admin\")"), "Pack UI must require the exact platform-admin permission"],
+  [contentStudio.includes("fetchCampaignContent") && !contentStudio.includes("<img src={item.content_url}"), "protected Pack content must not be rendered as unauthenticated thumbnails"],
+  [contentStudio.includes("preflightCampaignReferenceFiles([file], uploadPolicy)") && contentStudio.includes("MAX_BATCH_UPLOAD_FILES"), "Pack uploads must use policy preflight and the batch limit"],
+  [contentStudio.includes("clearPackUploadState") && contentStudio.includes("selectedPackRef.current"), "Pack selection changes must clear stale uploads and guard in-flight results"],
+  [contentStudio.includes('t("campaigns.form.uploadPending")') && contentStudio.includes('t("campaigns.form.uploadSuccess")'), "Pack upload statuses must be localized"],
 ];
 
 for (const [condition, message] of assertions) {

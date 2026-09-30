@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import jwt
 from fastapi import HTTPException
 from starlette.datastructures import Headers, UploadFile
 
@@ -14,6 +15,7 @@ os.environ.setdefault("CHATBOT_INTERNAL_API_KEY", "test-key")
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app import main
+from app import auth
 
 
 def req():
@@ -91,6 +93,38 @@ def test_reference_pack_routes_return_403_for_non_admin(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         main.list_reference_packs(req())
     assert exc.value.status_code == 403
+
+
+def test_reference_pack_route_accepts_authenticated_platform_admin_jwt(monkeypatch):
+    monkeypatch.setattr(auth, "JWT_SECRET", "test-jwt-secret")
+    monkeypatch.setattr(auth, "PLATFORM_ADMIN_KEY", "")
+    token = jwt.encode({
+        "sub": "platform-admin",
+        "company_id": None,
+        "email": "platform@example.test",
+        "permissions": ["platform:admin"],
+        "iat": 1,
+        "exp": 4_000_000_000,
+    }, "test-jwt-secret", algorithm="HS256")
+    response = main.list_reference_packs(SimpleNamespace(headers=Headers({"authorization": f"Bearer {token}"})))
+    assert response.total == 0
+
+
+def test_reference_pack_route_rejects_generic_admin_or_wildcard_jwt(monkeypatch):
+    monkeypatch.setattr(auth, "JWT_SECRET", "test-jwt-secret")
+    monkeypatch.setattr(auth, "PLATFORM_ADMIN_KEY", "")
+    for permission in ("admin", "*"):
+        token = jwt.encode({
+            "sub": "non-platform-admin",
+            "company_id": "company-1",
+            "email": "admin@example.test",
+            "permissions": [permission],
+            "iat": 1,
+            "exp": 4_000_000_000,
+        }, "test-jwt-secret", algorithm="HS256")
+        with pytest.raises(HTTPException) as exc:
+            main.list_reference_packs(SimpleNamespace(headers=Headers({"authorization": f"Bearer {token}"})))
+        assert exc.value.status_code == 403
 
 
 @pytest.mark.parametrize("operation", ["create", "update", "delete", "list_items", "upload", "delete_item"])
