@@ -6124,9 +6124,9 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
     stored_path = os.path.abspath(os.path.join(target_dir, f"{item_id}_{safe_name}"))
     if not stored_path.startswith(target_dir):
         raise HTTPException(status_code=400, detail="Invalid file name")
-    validate_reference_upload(original_name, file_type, 0)
     size = 0
     try:
+        validate_reference_upload(original_name, file_type, 0)
         deadline = time.monotonic() + REFERENCE_UPLOAD_TIMEOUT_SECONDS
         with open(stored_path, "wb") as output:
             while True:
@@ -6172,9 +6172,16 @@ def delete_reference_pack_item(req: Request, pack_id: str, item_id: str) -> Refe
     elif persistence is not None:
         deleted = False
     else:
-        before = len(knowledge_items.get("platform", []))
-        knowledge_items["platform"] = [item for item in knowledge_items.get("platform", []) if item.item_id != item_id or item.reference_pack_id != pack_id]
-        deleted = len(knowledge_items.get("platform", [])) < before
+        rows = knowledge_items.get("platform", [])
+        matching = next((item for item in rows if item.item_id == item_id and item.reference_pack_id == pack_id), None)
+        if matching is None:
+            deleted = False
+        else:
+            stored_path = matching.metadata.get("stored_path") if isinstance(matching.metadata, dict) else None
+            knowledge_items["platform"] = [item for item in rows if item is not matching]
+            if isinstance(stored_path, str):
+                cleanup_reference_upload(stored_path)
+            deleted = True
     if not deleted:
         raise HTTPException(status_code=404, detail="Reference pack item not found")
     return ReferencePackItemDeleteResponse(item_id=item_id, deleted=True)

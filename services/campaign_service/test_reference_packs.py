@@ -172,6 +172,14 @@ def test_pack_upload_rejects_mismatched_image_mime(configured):
     assert exc.value.detail == "UNSUPPORTED_FILE_TYPE"
 
 
+def test_pack_upload_validation_failure_removes_empty_platform_directory(configured, tmp_path):
+    pack = main.create_reference_pack(req(), main.ReferencePackCreateRequest(name="Pack", role="style"))
+    with pytest.raises(HTTPException) as exc:
+        main.upload_reference_pack_item(req(), pack.pack_id, title="Image", file=upload(name="image.gif", content_type="image/png"))
+    assert exc.value.detail == "UNSUPPORTED_FILE_TYPE"
+    assert not (tmp_path / "platform").exists()
+
+
 def test_pack_upload_rejects_oversize_and_cleans_file(configured, monkeypatch, tmp_path):
     pack = main.create_reference_pack(req(), main.ReferencePackCreateRequest(name="Pack", role="style"))
     monkeypatch.setattr(main, "REFERENCE_MAX_SIZE_BYTES", 2)
@@ -208,3 +216,16 @@ def test_pack_item_delete_rejects_item_from_another_pack(monkeypatch, tmp_path):
         main.delete_reference_pack_item(req(), "pack-b", "item-a")
     assert exc.value.status_code == 404
     assert main.knowledge_items["platform"][0].item_id == "item-a"
+
+
+def test_pack_item_delete_removes_matching_in_memory_knowledge_item(monkeypatch):
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
+    main.reference_packs.clear()
+    main.knowledge_items.clear()
+    now = datetime.utcnow()
+    main.reference_packs["pack-a"] = main.ReferencePackRecord(pack_id="pack-a", name="pack-a", role="style", created_at=now, updated_at=now)
+    main.knowledge_items["platform"] = [main.KnowledgeItemRecord(item_id="item-a", company_id="platform", title="A", source="manual", created_at=now, reference_pack_id="pack-a")]
+    result = main.delete_reference_pack_item(req(), "pack-a", "item-a")
+    assert result.deleted is True
+    assert main.knowledge_items["platform"] == []
