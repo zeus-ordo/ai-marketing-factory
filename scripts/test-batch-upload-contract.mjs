@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import ts from "typescript";
 
 const page = await readFile(new URL("../app/campaigns/page.tsx", import.meta.url), "utf8");
+const contentStudio = await readFile(new URL("../app/content-studio/page.tsx", import.meta.url), "utf8");
 const api = await readFile(new URL("../lib/api/campaigns.ts", import.meta.url), "utf8");
 const helperSource = await readFile(new URL("../lib/api/batch-upload.ts", import.meta.url), "utf8");
 const translations = await readFile(new URL("../lib/i18n/translations.ts", import.meta.url), "utf8");
@@ -29,6 +30,14 @@ const assertions = [
   [helperSource.includes("CAMPAIGN_ACCESS_DENIED") && helperSource.includes("UPLOAD_TIMEOUT") && helperSource.includes("PERSISTENCE_ERROR"), "all stable upload error codes must be preserved"],
   [page.includes("removeCreateReference") && page.includes("startCampaignAfterUploads"), "removing failed reference files must leave an actionable start path"],
   [helperSource.includes("canStartAfterUploadRemoval"), "removal startability helper is required"],
+  [api.includes("ReferencePackRecord") && api.includes("ReferencePackRole") && api.includes("ReferencePackSelectionMode"), "reference pack API types are required"],
+  [api.includes("/api/v1/reference-packs") && api.includes("selection_mode") && api.includes("is_active"), "reference pack API paths and filters are required"],
+  [api.includes("items/upload") && api.includes("FormData") && api.includes("uploadReferencePackItems"), "reference pack uploads must use multipart batch helpers"],
+  [api.includes("listReferencePackItems") && api.includes("deleteReferencePackItem") && !api.includes("stored_path"), "pack item helpers must expose safe metadata only"],
+  [contentStudio.includes("hasPermission(user.permissions, \"platform:admin\")") && contentStudio.includes("SystemReferencePacksSection"), "pack settings must be platform-admin-only"],
+  [contentStudio.includes("uploadReferencePackItems") && contentStudio.includes("FilePreviewModal") && contentStudio.includes("item.content_url"), "pack UI must support multi-upload and safe previews"],
+  [contentStudio.includes("errorCode") && contentStudio.includes("referencePacks.uploadFailed"), "pack UI must retain stable per-file upload errors"],
+  [translations.includes("System Reference Packs") && translations.includes("系統參考素材包") && translations.includes("システム参照パック"), "pack labels are required in all supported locales"],
 ];
 
 for (const [condition, message] of assertions) {

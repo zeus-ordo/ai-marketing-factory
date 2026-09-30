@@ -555,6 +555,13 @@ export const translations = {
       tabs: { all: "All", ai: "AI Generated", manual: "Manual Upload" },
       table: { title: "Title", source: "Source", category: "Folder", created: "Created", actions: "Actions" },
     },
+    referencePacks: {
+      title: "System Reference Packs",
+      subtitle: "Manage platform-wide image packs used during campaign generation.",
+      loadFailed: "Failed to load reference packs.", itemsLoadFailed: "Failed to load pack images.", saveFailed: "Failed to save reference pack.", saved: "Reference pack saved.", deleteFailed: "Failed to delete reference pack.", deleteConfirm: "Delete this reference pack and its images?", deleted: "Reference pack deleted.", deleteItemConfirm: "Delete this pack image?", deleteItemFailed: "Failed to delete pack image.", uploaded: "Pack images uploaded.", uploadFailed: "Some pack images failed to upload.",
+      new: "New Pack", empty: "No reference packs yet.", selectPack: "Select a pack to edit its settings and images.", name: "Pack name", industry: "Industry (blank = global)", industryFilter: "Filter by industry", allRoles: "All roles", allStatus: "All status", active: "Active", inactive: "Inactive", global: "Global", mandatory: "Mandatory", optional: "Optional", maxImages: "Max images", priority: "Priority", chooseImages: "Choose images", selectedFiles: "{count} image(s) selected", noFiles: "No images selected", upload: "Upload images", imageCount: "{count} images",
+      roles: { brand_identity: "Brand identity", product: "Product", style: "Style", composition: "Composition", campaign_examples: "Campaign examples" },
+    },
     chatbot: {
       title: "Chatbot Control Center",
       subtitle: "Operate campaigns through natural-language commands.",
@@ -1553,6 +1560,10 @@ export const translations = {
       tabs: { all: "全部", ai: "AI 成果", manual: "自行上傳" },
       table: { title: "標題", source: "來源", category: "資料夾", created: "建立時間", actions: "操作" },
     },
+    referencePacks: {
+      title: "系統參考素材包", subtitle: "管理活動生成時使用的平台圖片素材包。", loadFailed: "載入參考素材包失敗。", itemsLoadFailed: "載入素材包圖片失敗。", saveFailed: "儲存參考素材包失敗。", saved: "參考素材包已儲存。", deleteFailed: "刪除參考素材包失敗。", deleteConfirm: "確定要刪除此素材包及其圖片嗎？", deleted: "參考素材包已刪除。", deleteItemConfirm: "確定要刪除此素材包圖片嗎？", deleteItemFailed: "刪除素材包圖片失敗。", uploaded: "素材包圖片已上傳。", uploadFailed: "部分素材包圖片上傳失敗。", new: "新增素材包", empty: "尚無參考素材包。", selectPack: "選擇素材包以編輯設定與圖片。", name: "素材包名稱", industry: "產業（空白＝全域）", industryFilter: "依產業篩選", allRoles: "全部角色", allStatus: "全部狀態", active: "啟用", inactive: "停用", global: "全域", mandatory: "必要", optional: "可選", maxImages: "最多圖片數", priority: "優先級", chooseImages: "選擇圖片", selectedFiles: "已選擇 {count} 張圖片", noFiles: "尚未選擇圖片", upload: "上傳圖片", imageCount: "{count} 張圖片",
+      roles: { brand_identity: "品牌識別", product: "產品", style: "風格", composition: "構圖", campaign_examples: "活動範例" },
+    },
     assets: {
       title: "產出素材庫",
       subtitle: "跨活動搜尋、篩選與檢視已生成素材。",
@@ -2430,6 +2441,10 @@ export const translations = {
       download: "ダウンロード",
       tabs: { all: "すべて", ai: "AI生成", manual: "手動アップロード" },
       table: { title: "タイトル", source: "ソース", category: "フォルダ", created: "作成日時", actions: "操作" },
+    },
+    referencePacks: {
+      title: "システム参照パック", subtitle: "キャンペーン生成で使うプラットフォーム画像パックを管理します。", loadFailed: "参照パックの読み込みに失敗しました。", itemsLoadFailed: "パック画像の読み込みに失敗しました。", saveFailed: "参照パックの保存に失敗しました。", saved: "参照パックを保存しました。", deleteFailed: "参照パックの削除に失敗しました。", deleteConfirm: "この参照パックと画像を削除しますか？", deleted: "参照パックを削除しました。", deleteItemConfirm: "このパック画像を削除しますか？", deleteItemFailed: "パック画像の削除に失敗しました。", uploaded: "パック画像をアップロードしました。", uploadFailed: "一部のパック画像のアップロードに失敗しました。", new: "新規パック", empty: "参照パックはありません。", selectPack: "パックを選択して設定と画像を編集してください。", name: "パック名", industry: "業種（空白＝全体）", industryFilter: "業種で絞り込む", allRoles: "すべての役割", allStatus: "すべての状態", active: "有効", inactive: "無効", global: "全体", mandatory: "必須", optional: "任意", maxImages: "最大画像数", priority: "優先度", chooseImages: "画像を選択", selectedFiles: "{count} 枚選択中", noFiles: "画像未選択", upload: "画像をアップロード", imageCount: "{count} 枚",
+      roles: { brand_identity: "ブランドアイデンティティ", product: "製品", style: "スタイル", composition: "構図", campaign_examples: "キャンペーン例" },
     },
     assets: {
       title: "アセットライブラリ",

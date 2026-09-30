@@ -932,6 +932,38 @@ export type ReviewItem = {
   source_provenance?: GenerationSourceProvenance[];
 };
 
+export type ReferencePackRole = "brand_identity" | "product" | "style" | "composition" | "campaign_examples";
+export type ReferencePackSelectionMode = "mandatory" | "optional";
+
+export type ReferencePackRecord = {
+  pack_id: string;
+  name: string;
+  role: ReferencePackRole;
+  scope: "platform";
+  industry: string | null;
+  selection_mode: ReferencePackSelectionMode;
+  max_images: number;
+  priority: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReferencePackItemRecord = {
+  item_id: string;
+  pack_id: string;
+  reference_pack_id: string;
+  title: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  content_url: string;
+  created_at: string;
+};
+
+type ReferencePackListResponse = { items: ReferencePackRecord[]; total: number };
+type ReferencePackItemListResponse = { items: ReferencePackItemRecord[]; total: number };
+
 export type FolderRecord = {
   folder_id: string;
   scope: "platform" | "company";
@@ -1219,6 +1251,82 @@ export async function updateCampaignReference(
 export async function listKnowledgeItems(): Promise<KnowledgeItemRecord[]> {
   const data = await request<KnowledgeItemListResponse>("/api/v1/knowledge-items");
   return data.items;
+}
+
+export async function listReferencePacks(params?: {
+  role?: ReferencePackRole;
+  industry?: string;
+  isActive?: boolean;
+}): Promise<ReferencePackRecord[]> {
+  const query = new URLSearchParams();
+  if (params?.role) query.set("role", params.role);
+  if (params?.industry?.trim()) query.set("industry", params.industry.trim());
+  if (params?.isActive !== undefined) query.set("is_active", String(params.isActive));
+  const suffix = query.toString();
+  const data = await request<ReferencePackListResponse>(`/api/v1/reference-packs${suffix ? `?${suffix}` : ""}`);
+  return data.items;
+}
+
+export async function createReferencePack(payload: {
+  name: string;
+  role: ReferencePackRole;
+  industry?: string | null;
+  selection_mode?: ReferencePackSelectionMode;
+  max_images?: number;
+  priority?: number;
+  is_active?: boolean;
+}): Promise<ReferencePackRecord> {
+  return request<ReferencePackRecord>("/api/v1/reference-packs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateReferencePack(packId: string, payload: Partial<{
+  name: string;
+  role: ReferencePackRole;
+  industry: string | null;
+  selection_mode: ReferencePackSelectionMode;
+  max_images: number;
+  priority: number;
+  is_active: boolean;
+}>): Promise<ReferencePackRecord> {
+  return request<ReferencePackRecord>(`/api/v1/reference-packs/${packId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteReferencePack(packId: string): Promise<{ pack_id: string; deleted: boolean }> {
+  return request<{ pack_id: string; deleted: boolean }>(`/api/v1/reference-packs/${packId}`, { method: "DELETE" });
+}
+
+export async function listReferencePackItems(packId: string): Promise<ReferencePackItemRecord[]> {
+  const data = await request<ReferencePackItemListResponse>(`/api/v1/reference-packs/${packId}/items`);
+  return data.items;
+}
+
+export async function uploadReferencePackItem(packId: string, file: File, title = file.name): Promise<ReferencePackItemRecord> {
+  const formData = new FormData();
+  formData.append("title", title.trim() || file.name);
+  formData.append("file", file);
+  return request<ReferencePackItemRecord>(`/api/v1/reference-packs/${packId}/items/upload`, {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function uploadReferencePackItems(
+  packId: string,
+  files: BatchUploadFileState<File>[],
+  concurrency = 3,
+  onStateChange?: (states: BatchUploadFileState<File>[]) => void,
+): Promise<BatchUploadFileState<File>[]> {
+  return uploadBatchItems(files, (file) => uploadReferencePackItem(packId, file).then((item) => ({ referenceId: item.item_id })), concurrency, onStateChange);
+}
+
+export async function deleteReferencePackItem(packId: string, itemId: string): Promise<{ item_id: string; deleted: boolean }> {
+  return request<{ item_id: string; deleted: boolean }>(`/api/v1/reference-packs/${packId}/items/${itemId}`, { method: "DELETE" });
 }
 
 export async function uploadKnowledgeItem(
