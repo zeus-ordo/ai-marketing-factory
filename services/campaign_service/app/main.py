@@ -6019,6 +6019,14 @@ def _get_pack_or_404(pack_id: str) -> ReferencePackRecord:
     raise HTTPException(status_code=404, detail="Reference pack not found")
 
 
+def _public_knowledge_item(row: dict[str, Any]) -> dict[str, Any]:
+    public = dict(row)
+    metadata = public.get("metadata")
+    if isinstance(metadata, dict):
+        public["metadata"] = {key: value for key, value in metadata.items() if key != "stored_path"}
+    return public
+
+
 @app.get("/api/v1/reference-packs", response_model=ReferencePackListResponse)
 def list_reference_packs(req: Request, role: ReferencePackRole | None = None, industry: str | None = None, is_active: bool | None = None, limit: int = 100) -> ReferencePackListResponse:
     _require_platform_admin(req)
@@ -6059,6 +6067,8 @@ def update_reference_pack(req: Request, pack_id: str, payload: ReferencePackUpda
     updates = payload.model_dump(exclude_unset=True)
     if "name" in updates:
         updates["name"] = updates["name"].strip()
+        if not updates["name"]:
+            raise HTTPException(status_code=400, detail="name is required")
     if "industry" in updates:
         updates["industry"] = updates["industry"].strip().lower() if updates["industry"] else None
     if persistence is not None and callable(getattr(persistence, "update_reference_pack", None)):
@@ -6073,10 +6083,15 @@ def update_reference_pack(req: Request, pack_id: str, payload: ReferencePackUpda
 def delete_reference_pack(req: Request, pack_id: str) -> ReferencePackDeleteResponse:
     _require_platform_admin(req)
     _get_pack_or_404(pack_id)
+    rows = persistence.list_reference_pack_items(pack_id) if persistence is not None and callable(getattr(persistence, "list_reference_pack_items", None)) else [item.model_dump(mode="python") for item in knowledge_items.get("platform", []) if item.reference_pack_id == pack_id]
+    stored_paths = [row.get("metadata", {}).get("stored_path") for row in rows if isinstance(row.get("metadata"), dict)]
     if persistence is not None and callable(getattr(persistence, "delete_reference_pack", None)):
         deleted = persistence.delete_reference_pack(pack_id)
     else:
         deleted = reference_packs.pop(pack_id, None) is not None
+    for stored_path in stored_paths:
+        if isinstance(stored_path, str):
+            cleanup_reference_upload(stored_path)
     return ReferencePackDeleteResponse(pack_id=pack_id, deleted=deleted)
 
 
@@ -6109,17 +6124,33 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
     stored_path = os.path.abspath(os.path.join(target_dir, f"{item_id}_{safe_name}"))
     if not stored_path.startswith(target_dir):
         raise HTTPException(status_code=400, detail="Invalid file name")
+    validate_reference_upload(original_name, file_type, 0)
     size = 0
-    with open(stored_path, "wb") as output:
-        while True:
-            chunk = file.file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > REFERENCE_MAX_SIZE_BYTES:
-                cleanup_reference_upload(stored_path)
-                raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
-            output.write(chunk)
+    try:
+        deadline = time.monotonic() + REFERENCE_UPLOAD_TIMEOUT_SECONDS
+        with open(stored_path, "wb") as output:
+            while True:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                chunk = file.file.read(1024 * 1024)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > REFERENCE_MAX_SIZE_BYTES:
+                    raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+                output.write(chunk)
+        validate_reference_upload(original_name, file_type, size)
+    except HTTPException:
+        cleanup_reference_upload(stored_path)
+        raise
+    except TimeoutError as exc:
+        cleanup_reference_upload(stored_path)
+        raise HTTPException(status_code=504, detail="UPLOAD_TIMEOUT") from exc
+    except Exception as exc:
+        cleanup_reference_upload(stored_path)
+        raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
     item = {"item_id": item_id, "company_id": "platform", "title": title.strip(), "source": "manual", "description": "", "content_url": f"/api/v1/knowledge-items/{item_id}/download/{parse.quote(safe_name)}", "metadata": {"file_name": safe_name, "file_type": file_type, "file_size": size, "stored_path": stored_path, "reference_pack_id": pack_id}, "created_at": now_utc(), "folder_id": None, "reference_pack_id": pack_id}
     if persistence is not None and callable(getattr(persistence, "create_knowledge_item", None)):
         try:
@@ -6139,7 +6170,7 @@ def delete_reference_pack_item(req: Request, pack_id: str, item_id: str) -> Refe
     if persistence is not None and callable(getattr(persistence, "delete_reference_pack_item", None)):
         deleted = bool(persistence.delete_reference_pack_item(pack_id, item_id))
     elif persistence is not None:
-        deleted = bool(persistence.soft_delete_knowledge_item("platform", item_id))
+        deleted = False
     else:
         before = len(knowledge_items.get("platform", []))
         knowledge_items["platform"] = [item for item in knowledge_items.get("platform", []) if item.item_id != item_id or item.reference_pack_id != pack_id]
@@ -6164,11 +6195,11 @@ def list_knowledge_items(req: Request, company_id: str | None = None) -> Knowled
         list_persisted_folders = getattr(persistence, "list_folders", lambda _company_id: [])
         visible_folders = list_persisted_folders(target_company_id) if target_company_id != "platform" else list_persisted_folders("")
         rows = [apply_legacy_folder_association(row, visible_folders) for row in rows]
-        items = [KnowledgeItemRecord(**row) for row in rows]
+        items = [KnowledgeItemRecord(**_public_knowledge_item(row)) for row in rows]
     else:
         items = knowledge_items.get(target_company_id, []) if is_platform_admin_request(req) else [*knowledge_items.get("platform", []), *knowledge_items.get(target_company_id, [])]
         visible_folders = [folder for folder in folders_cache.values() if folder["scope"] == "platform" or folder.get("company_id") == target_company_id]
-        items = [KnowledgeItemRecord(**apply_legacy_folder_association(item.model_dump(mode="python"), visible_folders)) for item in items]
+        items = [KnowledgeItemRecord(**_public_knowledge_item(apply_legacy_folder_association(item.model_dump(mode="python"), visible_folders))) for item in items]
     return KnowledgeItemListResponse(items=items, total=len(items))
 
 
