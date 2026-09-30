@@ -6088,6 +6088,7 @@ def delete_reference_pack(req: Request, pack_id: str) -> ReferencePackDeleteResp
     if persistence is not None and callable(getattr(persistence, "delete_reference_pack", None)):
         deleted = persistence.delete_reference_pack(pack_id)
     else:
+        knowledge_items["platform"] = [item for item in knowledge_items.get("platform", []) if item.reference_pack_id != pack_id]
         deleted = reference_packs.pop(pack_id, None) is not None
     for stored_path in stored_paths:
         if isinstance(stored_path, str):

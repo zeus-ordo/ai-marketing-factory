@@ -229,3 +229,21 @@ def test_pack_item_delete_removes_matching_in_memory_knowledge_item(monkeypatch)
     result = main.delete_reference_pack_item(req(), "pack-a", "item-a")
     assert result.deleted is True
     assert main.knowledge_items["platform"] == []
+
+
+def test_in_memory_pack_delete_removes_linked_items_from_platform_listing(monkeypatch):
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
+    main.reference_packs.clear()
+    main.knowledge_items.clear()
+    now = datetime.utcnow()
+    main.reference_packs["pack-a"] = main.ReferencePackRecord(pack_id="pack-a", name="pack-a", role="style", created_at=now, updated_at=now)
+    main.knowledge_items["platform"] = [
+        main.KnowledgeItemRecord(item_id="item-a", company_id="platform", title="A", source="manual", created_at=now, reference_pack_id="pack-a"),
+        main.KnowledgeItemRecord(item_id="item-b", company_id="platform", title="B", source="manual", created_at=now, reference_pack_id="pack-a"),
+    ]
+    result = main.delete_reference_pack(req(), "pack-a")
+    listed = main.list_knowledge_items(req())
+    assert result.deleted is True
+    assert listed.total == 0
+    assert listed.items == []
