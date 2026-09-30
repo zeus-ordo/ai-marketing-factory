@@ -315,6 +315,23 @@ class PostgresPersistence:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS reference_packs (
+                        pack_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        role TEXT NOT NULL CHECK (role IN ('brand_identity', 'product', 'style', 'composition', 'campaign_examples')),
+                        scope TEXT NOT NULL CHECK (scope = 'platform'),
+                        industry TEXT,
+                        selection_mode TEXT NOT NULL CHECK (selection_mode IN ('mandatory', 'optional')),
+                        max_images INTEGER NOT NULL CHECK (max_images > 0),
+                        priority INTEGER NOT NULL DEFAULT 0,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS folders (
                         folder_id TEXT PRIMARY KEY,
                         scope TEXT NOT NULL CHECK (scope IN ('platform', 'company')),
@@ -348,6 +365,7 @@ class PostgresPersistence:
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb;")
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;")
                 cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT;")
+                cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS reference_pack_id TEXT;")
                 cur.execute("ALTER TABLE campaign_references ADD COLUMN IF NOT EXISTS folder_id TEXT;")
                 cur.execute(
                     """
@@ -2934,7 +2952,7 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id
+                    SELECT item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id, reference_pack_id
                     FROM knowledge_items
                     WHERE company_id = %s AND deleted_at IS NULL
                     ORDER BY created_at DESC;
@@ -2953,6 +2971,7 @@ class PostgresPersistence:
                 "metadata": dict(row[6] or {}),
                 "created_at": row[7],
                 "folder_id": row[8],
+                "reference_pack_id": row[9] if len(row) > 9 else None,
             }
             for row in rows
         ]
@@ -2963,8 +2982,8 @@ class PostgresPersistence:
                 cur.execute(
                     """
                     INSERT INTO knowledge_items
-                        (item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                        (item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id, reference_pack_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
                     ON CONFLICT (item_id) DO UPDATE SET
                         title = EXCLUDED.title,
                         source = EXCLUDED.source,
@@ -2972,6 +2991,7 @@ class PostgresPersistence:
                         content_url = EXCLUDED.content_url,
                         metadata_json = EXCLUDED.metadata_json,
                         folder_id = EXCLUDED.folder_id,
+                        reference_pack_id = EXCLUDED.reference_pack_id,
                         deleted_at = NULL;
                     """,
                     (
@@ -2984,6 +3004,7 @@ class PostgresPersistence:
                         json.dumps(item.get("metadata", {})),
                         item["created_at"],
                         item.get("folder_id"),
+                        item.get("reference_pack_id"),
                     ),
                 )
             conn.commit()
@@ -3012,11 +3033,12 @@ class PostgresPersistence:
                         description = %s,
                         content_url = %s,
                         metadata_json = %s::jsonb,
-                        folder_id = %s
+                        folder_id = %s,
+                        reference_pack_id = %s
                     WHERE company_id = %s AND item_id = %s AND deleted_at IS NULL
-                    RETURNING item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id;
+                    RETURNING item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id, reference_pack_id;
                     """,
-                    (title, description, content_url, json.dumps(metadata), folder_id, company_id, item_id),
+                    (title, description, content_url, json.dumps(metadata), folder_id, updates.get("reference_pack_id", current.get("reference_pack_id")), company_id, item_id),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -3032,6 +3054,7 @@ class PostgresPersistence:
             "metadata": dict(row[6] or {}),
             "created_at": row[7],
             "folder_id": row[8],
+            "reference_pack_id": row[9] if len(row) > 9 else None,
         }
 
     def soft_delete_knowledge_item(self, company_id: str, item_id: str) -> bool:
@@ -3045,6 +3068,70 @@ class PostgresPersistence:
                     """,
                     (datetime.utcnow(), company_id, item_id),
                 )
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
+
+    @staticmethod
+    def _reference_pack_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {"pack_id": row[0], "name": row[1], "role": row[2], "scope": row[3], "industry": row[4], "selection_mode": row[5], "max_images": int(row[6]), "priority": int(row[7]), "is_active": bool(row[8]), "created_at": row[9], "updated_at": row[10]}
+
+    def list_reference_packs(self, role: str | None = None, industry: str | None = None, is_active: bool | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        filters: list[str] = []
+        params: list[Any] = []
+        for column, value in (("role", role), ("industry", industry), ("is_active", is_active)):
+            if value is not None:
+                filters.append(f"{column} = %s")
+                params.append(value)
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT pack_id, name, role, scope, industry, selection_mode, max_images, priority, is_active, created_at, updated_at FROM reference_packs {where} ORDER BY priority DESC, created_at DESC LIMIT %s", (*params, limit))
+                rows = cur.fetchall()
+        return [self._reference_pack_dict(row) for row in rows]
+
+    def create_reference_pack(self, pack: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO reference_packs (pack_id, name, role, scope, industry, selection_mode, max_images, priority, is_active, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING pack_id, name, role, scope, industry, selection_mode, max_images, priority, is_active, created_at, updated_at", (pack["pack_id"], pack["name"], pack["role"], pack["scope"], pack.get("industry"), pack["selection_mode"], pack["max_images"], pack["priority"], pack["is_active"], pack["created_at"], pack["updated_at"]))
+                row = cur.fetchone()
+            conn.commit()
+        return self._reference_pack_dict(row)
+
+    def get_reference_pack(self, pack_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pack_id, name, role, scope, industry, selection_mode, max_images, priority, is_active, created_at, updated_at FROM reference_packs WHERE pack_id = %s", (pack_id,))
+                row = cur.fetchone()
+        return self._reference_pack_dict(row) if row is not None else None
+
+    def update_reference_pack(self, pack_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        allowed = {key: value for key, value in updates.items() if key in {"name", "role", "industry", "selection_mode", "max_images", "priority", "is_active"}}
+        assignments = ", ".join(f"{key} = %s" for key in allowed)
+        params = [*allowed.values(), datetime.utcnow(), pack_id]
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE reference_packs SET {assignments + ', ' if assignments else ''}updated_at = %s WHERE pack_id = %s RETURNING pack_id, name, role, scope, industry, selection_mode, max_images, priority, is_active, created_at, updated_at", params)
+                row = cur.fetchone()
+            conn.commit()
+        return self._reference_pack_dict(row) if row is not None else None
+
+    def delete_reference_pack(self, pack_id: str) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE knowledge_items SET deleted_at = %s WHERE reference_pack_id = %s AND deleted_at IS NULL", (datetime.utcnow(), pack_id))
+                cur.execute("DELETE FROM reference_packs WHERE pack_id = %s", (pack_id,))
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
+
+    def list_reference_pack_items(self, pack_id: str) -> list[dict[str, Any]]:
+        return [item for item in self.list_knowledge_items("platform") if item.get("reference_pack_id") == pack_id]
+
+    def delete_reference_pack_item(self, pack_id: str, item_id: str) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE knowledge_items SET deleted_at = %s WHERE company_id = 'platform' AND item_id = %s AND reference_pack_id = %s AND deleted_at IS NULL", (datetime.utcnow(), item_id, pack_id))
                 deleted = cur.rowcount > 0
             conn.commit()
         return deleted

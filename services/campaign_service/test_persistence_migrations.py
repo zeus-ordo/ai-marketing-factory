@@ -51,6 +51,8 @@ def test_initialize_adds_scoped_folder_and_association_columns_to_existing_schem
     assert "CREATE TABLE IF NOT EXISTS folders" in sql
     assert "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id" in sql
     assert "ALTER TABLE campaign_references ADD COLUMN IF NOT EXISTS folder_id" in sql
+    assert "CREATE TABLE IF NOT EXISTS reference_packs" in sql
+    assert "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS reference_pack_id" in sql
 
 
 def test_legacy_text_without_safe_folder_inference_is_explicitly_unfiled():

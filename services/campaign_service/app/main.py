@@ -22,7 +22,7 @@ logger = logging.getLogger("campaign_service")
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .auth import (
     JWTPayload,
@@ -284,6 +284,7 @@ class KnowledgeItemRecord(BaseModel):
     content_url: str | None = None
     metadata: dict[str, Any] = {}
     folder_id: str | None = None
+    reference_pack_id: str | None = None
     created_at: datetime
 
 
@@ -311,6 +312,75 @@ class KnowledgeItemUpdateRequest(BaseModel):
 
 
 class KnowledgeItemDeleteResponse(BaseModel):
+    item_id: str
+    deleted: bool
+
+
+ReferencePackRole = Literal["brand_identity", "product", "style", "composition", "campaign_examples"]
+
+
+class ReferencePackRecord(BaseModel):
+    pack_id: str
+    name: str
+    role: ReferencePackRole
+    scope: Literal["platform"] = "platform"
+    industry: str | None = None
+    selection_mode: Literal["mandatory", "optional"] = "optional"
+    max_images: int = Field(default=1, gt=0)
+    priority: int = 0
+    is_active: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReferencePackCreateRequest(BaseModel):
+    name: str
+    role: ReferencePackRole
+    industry: str | None = None
+    selection_mode: Literal["mandatory", "optional"] = "optional"
+    max_images: int = Field(default=1, gt=0)
+    priority: int = 0
+    is_active: bool = True
+
+
+class ReferencePackUpdateRequest(BaseModel):
+    name: str | None = None
+    role: ReferencePackRole | None = None
+    industry: str | None = None
+    selection_mode: Literal["mandatory", "optional"] | None = None
+    max_images: int | None = Field(default=None, gt=0)
+    priority: int | None = None
+    is_active: bool | None = None
+
+
+class ReferencePackListResponse(BaseModel):
+    items: list[ReferencePackRecord]
+    total: int
+
+
+class ReferencePackItemRecord(BaseModel):
+    item_id: str
+    pack_id: str
+    reference_pack_id: str
+    title: str
+    file_name: str
+    file_type: str
+    file_size: int
+    content_url: str
+    created_at: datetime
+
+
+class ReferencePackItemListResponse(BaseModel):
+    items: list[ReferencePackItemRecord]
+    total: int
+
+
+class ReferencePackDeleteResponse(BaseModel):
+    pack_id: str
+    deleted: bool
+
+
+class ReferencePackItemDeleteResponse(BaseModel):
     item_id: str
     deleted: bool
 
@@ -915,6 +985,7 @@ workflow_template_versions: dict[str, list[WorkflowTemplateVersion]] = {}
 campaign_references: dict[str, list[CampaignReferenceRecord]] = {}
 campaign_reference_files: dict[str, dict[str, str]] = {}
 knowledge_items: dict[str, list[KnowledgeItemRecord]] = {}
+reference_packs: dict[str, ReferencePackRecord] = {}
 folders_cache: dict[str, dict[str, Any]] = {}
 chatbot_audit_logs: list[ChatbotAuditRecord] = []
 campaign_traces: dict[str, CampaignTraceRecord] = {}
@@ -5917,6 +5988,165 @@ def download_generated_asset(req: Request, campaign_id: str, asset_id: str, file
             media_type = metadata.get("content_type") if isinstance(metadata.get("content_type"), str) else None
             return FileResponse(stored_path, media_type=media_type, filename=file_name)
     raise HTTPException(status_code=404, detail="Generated asset file not found")
+
+
+def _require_platform_admin(req: Request) -> None:
+    if not is_platform_admin_request(req):
+        raise HTTPException(status_code=403, detail="PLATFORM_ADMIN_REQUIRED")
+
+
+def _pack_item_response(item: dict[str, Any], pack_id: str) -> ReferencePackItemRecord:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    created_at = item.get("created_at")
+    if isinstance(created_at, str):
+        created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    return ReferencePackItemRecord(
+        item_id=str(item["item_id"]), pack_id=pack_id, reference_pack_id=pack_id, title=str(item.get("title") or ""),
+        file_name=str(metadata.get("file_name") or item.get("title") or "image"),
+        file_type=str(metadata.get("file_type") or "application/octet-stream"),
+        file_size=int(metadata.get("file_size") or 0),
+        content_url=str(item.get("content_url") or ""), created_at=created_at or now_utc(),
+    )
+
+
+def _get_pack_or_404(pack_id: str) -> ReferencePackRecord:
+    if persistence is not None and callable(getattr(persistence, "get_reference_pack", None)):
+        row = persistence.get_reference_pack(pack_id)
+        if row is not None:
+            return ReferencePackRecord(**row)
+    if pack_id in reference_packs:
+        return reference_packs[pack_id]
+    raise HTTPException(status_code=404, detail="Reference pack not found")
+
+
+@app.get("/api/v1/reference-packs", response_model=ReferencePackListResponse)
+def list_reference_packs(req: Request, role: ReferencePackRole | None = None, industry: str | None = None, is_active: bool | None = None, limit: int = 100) -> ReferencePackListResponse:
+    _require_platform_admin(req)
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="invalid limit")
+    if persistence is not None and callable(getattr(persistence, "list_reference_packs", None)):
+        rows = persistence.list_reference_packs(role, industry.strip().lower() if industry else None, is_active, limit)
+        items = [ReferencePackRecord(**row) for row in rows]
+    else:
+        items = list(reference_packs.values())
+        if role:
+            items = [item for item in items if item.role == role]
+        if industry:
+            items = [item for item in items if item.industry == industry.strip().lower()]
+        if is_active is not None:
+            items = [item for item in items if item.is_active == is_active]
+        items = items[:limit]
+    return ReferencePackListResponse(items=items, total=len(items))
+
+
+@app.post("/api/v1/reference-packs", response_model=ReferencePackRecord)
+def create_reference_pack(req: Request, payload: ReferencePackCreateRequest) -> ReferencePackRecord:
+    _require_platform_admin(req)
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="name is required")
+    now = now_utc()
+    pack = ReferencePackRecord(pack_id=f"pack_{uuid4().hex[:12]}", name=payload.name.strip(), role=payload.role, industry=payload.industry.strip().lower() if payload.industry else None, selection_mode=payload.selection_mode, max_images=payload.max_images, priority=payload.priority, is_active=payload.is_active, created_at=now, updated_at=now)
+    if persistence is not None and callable(getattr(persistence, "create_reference_pack", None)):
+        return ReferencePackRecord(**persistence.create_reference_pack(pack.model_dump(mode="python")))
+    reference_packs[pack.pack_id] = pack
+    return pack
+
+
+@app.patch("/api/v1/reference-packs/{pack_id}", response_model=ReferencePackRecord)
+def update_reference_pack(req: Request, pack_id: str, payload: ReferencePackUpdateRequest) -> ReferencePackRecord:
+    _require_platform_admin(req)
+    _get_pack_or_404(pack_id)
+    updates = payload.model_dump(exclude_unset=True)
+    if "name" in updates:
+        updates["name"] = updates["name"].strip()
+    if "industry" in updates:
+        updates["industry"] = updates["industry"].strip().lower() if updates["industry"] else None
+    if persistence is not None and callable(getattr(persistence, "update_reference_pack", None)):
+        updated = persistence.update_reference_pack(pack_id, updates)
+        return ReferencePackRecord(**updated)
+    updated = reference_packs[pack_id].model_copy(update={**updates, "updated_at": now_utc()})
+    reference_packs[pack_id] = updated
+    return updated
+
+
+@app.delete("/api/v1/reference-packs/{pack_id}", response_model=ReferencePackDeleteResponse)
+def delete_reference_pack(req: Request, pack_id: str) -> ReferencePackDeleteResponse:
+    _require_platform_admin(req)
+    _get_pack_or_404(pack_id)
+    if persistence is not None and callable(getattr(persistence, "delete_reference_pack", None)):
+        deleted = persistence.delete_reference_pack(pack_id)
+    else:
+        deleted = reference_packs.pop(pack_id, None) is not None
+    return ReferencePackDeleteResponse(pack_id=pack_id, deleted=deleted)
+
+
+@app.get("/api/v1/reference-packs/{pack_id}/items", response_model=ReferencePackItemListResponse)
+def list_reference_pack_items(req: Request, pack_id: str) -> ReferencePackItemListResponse:
+    _require_platform_admin(req)
+    _get_pack_or_404(pack_id)
+    if persistence is not None and callable(getattr(persistence, "list_reference_pack_items", None)):
+        rows = persistence.list_reference_pack_items(pack_id)
+    else:
+        rows = [item.model_dump(mode="python") for item in knowledge_items.get("platform", []) if item.reference_pack_id == pack_id]
+    items = [_pack_item_response(row, pack_id) for row in rows]
+    return ReferencePackItemListResponse(items=items, total=len(items))
+
+
+@app.post("/api/v1/reference-packs/{pack_id}/items/upload", response_model=ReferencePackItemRecord)
+def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...), file: UploadFile = File(...)) -> ReferencePackItemRecord:
+    _require_platform_admin(req)
+    _get_pack_or_404(pack_id)
+    if not title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+    original_name = os.path.basename(file.filename or "reference.png")
+    file_type = (file.content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+    if not file_type.startswith("image/") or os.path.splitext(original_name)[1].lower() not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
+    item_id = f"kh_{uuid4().hex[:12]}"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", original_name).strip("._") or "reference.png"
+    target_dir = os.path.abspath(os.path.join(KNOWLEDGE_UPLOADS_DIR, "platform"))
+    os.makedirs(target_dir, exist_ok=True)
+    stored_path = os.path.abspath(os.path.join(target_dir, f"{item_id}_{safe_name}"))
+    if not stored_path.startswith(target_dir):
+        raise HTTPException(status_code=400, detail="Invalid file name")
+    size = 0
+    with open(stored_path, "wb") as output:
+        while True:
+            chunk = file.file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > REFERENCE_MAX_SIZE_BYTES:
+                cleanup_reference_upload(stored_path)
+                raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+            output.write(chunk)
+    item = {"item_id": item_id, "company_id": "platform", "title": title.strip(), "source": "manual", "description": "", "content_url": f"/api/v1/knowledge-items/{item_id}/download/{parse.quote(safe_name)}", "metadata": {"file_name": safe_name, "file_type": file_type, "file_size": size, "stored_path": stored_path, "reference_pack_id": pack_id}, "created_at": now_utc(), "folder_id": None, "reference_pack_id": pack_id}
+    if persistence is not None and callable(getattr(persistence, "create_knowledge_item", None)):
+        try:
+            persistence.create_knowledge_item(item)
+        except Exception as exc:
+            cleanup_reference_upload(stored_path)
+            raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
+    else:
+        knowledge_items.setdefault("platform", []).insert(0, KnowledgeItemRecord(**item))
+    return _pack_item_response(item, pack_id)
+
+
+@app.delete("/api/v1/reference-packs/{pack_id}/items/{item_id}", response_model=ReferencePackItemDeleteResponse)
+def delete_reference_pack_item(req: Request, pack_id: str, item_id: str) -> ReferencePackItemDeleteResponse:
+    _require_platform_admin(req)
+    _get_pack_or_404(pack_id)
+    if persistence is not None and callable(getattr(persistence, "delete_reference_pack_item", None)):
+        deleted = bool(persistence.delete_reference_pack_item(pack_id, item_id))
+    elif persistence is not None:
+        deleted = bool(persistence.soft_delete_knowledge_item("platform", item_id))
+    else:
+        before = len(knowledge_items.get("platform", []))
+        knowledge_items["platform"] = [item for item in knowledge_items.get("platform", []) if item.item_id != item_id or item.reference_pack_id != pack_id]
+        deleted = len(knowledge_items.get("platform", [])) < before
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Reference pack item not found")
+    return ReferencePackItemDeleteResponse(item_id=item_id, deleted=True)
 
 
 @app.get("/api/v1/knowledge-items", response_model=KnowledgeItemListResponse)
