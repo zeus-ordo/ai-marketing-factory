@@ -255,6 +255,76 @@ def test_cache_loss_rehydrates_runtime_pack_path_without_persisting_it(monkeypat
     assert payload["reference_images"][0]["data"]
 
 
+def test_cache_loss_rehydrates_nested_industry_knowledge_image_path(monkeypatch, tmp_path):
+    import importlib
+
+    main = importlib.import_module("app.main")
+    image_path = tmp_path / "industry.png"
+    image_path.write_bytes(b"industry-image")
+    source = item(
+        "industry_matched",
+        "knowledge-image",
+        "industry.png",
+        category="Restaurant",
+        file_type="image/png",
+        stored_path=str(image_path),
+    )
+    original = assemble_generation_context(campaign(), [], [source], [], 100)
+    persisted = original.__class__(
+        **{
+            **original.__dict__,
+            "items": tuple(
+                ContextSourceItem(
+                    item.source_type,
+                    item.source_id,
+                    item.label,
+                    item.text,
+                    dict(item.metadata),
+                )
+                for item in original.items
+            ),
+        }
+    )
+
+    class Persistence:
+        def load_generation_context(self, campaign_id, run_id):
+            return persisted
+
+        def list_campaign_references(self, campaign_id):
+            return []
+
+        def list_reference_packs(self, **kwargs):
+            return []
+
+        def list_knowledge_items(self, company_id):
+            return [{
+                "item_id": "knowledge-image",
+                "title": "industry.png",
+                "description": "",
+                "metadata": {
+                    "category": "Restaurant",
+                    "file_type": "image/png",
+                    "stored_path": str(image_path),
+                },
+            }]
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    main.generation_context_cache.clear()
+    main.generation_context_run_cache.clear()
+
+    loaded = main.snapshot_for_campaign(campaign(), "run-industry-restart")
+    assert loaded is not None
+    assert loaded.items[0].transient_stored_path == str(image_path)
+    assert "stored_path" not in loaded.items[0].metadata
+
+    payload = main.build_worker_payload_for_task(
+        campaign(),
+        {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-industry-restart"},
+        loaded,
+    )
+    assert payload["reference_images"][0]["data"]
+
+
 def test_active_pack_loading_surfaces_persistence_errors(monkeypatch):
     import importlib
 

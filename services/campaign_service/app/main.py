@@ -2395,6 +2395,16 @@ def list_campaign_reference_prompt_lines(campaign: CampaignRecord, limit: int = 
     return lines
 
 
+def knowledge_item_stored_path(row: dict[str, Any]) -> str | None:
+    """Read attachment paths from transient rows without changing persisted metadata."""
+    stored_path = row.get("stored_path")
+    if isinstance(stored_path, str) and stored_path:
+        return stored_path
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    nested_path = metadata.get("stored_path")
+    return nested_path if isinstance(nested_path, str) and nested_path else None
+
+
 def list_industry_knowledge_context(campaign: CampaignRecord, limit: int = 8) -> list[dict[str, Any]]:
     industry = (getattr(campaign.brief, "industry_category", "") or "").strip().lower()
     if not industry:
@@ -2428,7 +2438,12 @@ def list_industry_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
     for row in matched[:limit]:
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         folder = str(metadata.get("folder") or metadata.get("folder_name") or metadata.get("category") or "")
-        context.append({**row, "source_type": str(row.get("source_type") or "industry_matched"), "folder": folder})
+        context.append({
+            **row,
+            "source_type": str(row.get("source_type") or "industry_matched"),
+            "stored_path": knowledge_item_stored_path(row),
+            "folder": folder,
+        })
     return context
 
 
@@ -2544,7 +2559,11 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
         industry.append(ContextSourceItem(
             str(row.get("source_type") or "industry_matched"), item_id,
             str(row.get("title") or row.get("file_name") or "knowledge item"),
-            str(row.get("description") or ""), {**metadata, "folder": row.get("folder")},
+            str(row.get("description") or ""), {
+                **metadata,
+                "stored_path": knowledge_item_stored_path(row),
+                "folder": row.get("folder"),
+            },
         ))
     external: list[ContextSourceItem] = []
     search_status = "not_configured" if external_search_provider is None else "available"
@@ -2586,7 +2605,7 @@ def rehydrate_generation_context_runtime_paths(
         for row in rows:
             row_source_type = str(row.get("source_type") or source_type or "")
             source_id = str(row.get("reference_id") or row.get("item_id") or "")
-            stored_path = row.get("stored_path")
+            stored_path = knowledge_item_stored_path(row)
             if row_source_type and source_id and isinstance(stored_path, str) and stored_path:
                 paths[(row_source_type, source_id)] = stored_path
 

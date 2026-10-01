@@ -28,3 +28,13 @@ The regression persists a sanitized context, clears the in-memory caches, loads 
 ## Compatibility And Privacy
 
 Selection ordering and Pack limits remain unchanged. Runtime attachment still reads the transient path before it is discarded from persistence. No image bytes or local filesystem paths are included in generation-context metadata or Context Viewer responses.
+
+## Final Industry Knowledge Cache-Loss Fix
+
+- Knowledge context normalization now accepts `stored_path` at either the row level or under `row["metadata"]`.
+- Generation-context creation and cache-miss rehydration keep the path only in `ContextSourceItem.transient_stored_path`; persisted metadata and Context Viewer responses remain path-free.
+- Added a restart/cache-loss regression for an industry-matched knowledge image and verified its image bytes are attached after rehydration.
+
+## Final Verification
+
+- Campaign-service suite: 198 passed, 2 skipped, 4 existing deprecation warnings.
