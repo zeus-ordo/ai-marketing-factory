@@ -322,6 +322,33 @@ test("reference audit renders success, legacy, and failure states without image 
   assert.doesNotMatch(JSON.stringify(auditFixture), /base64|image bytes/);
 });
 
+test("reference audit normalizes and renders Pack provenance without image bytes", async () => {
+  const audit = normalizeReferenceAudit({
+    candidate_count: 3,
+    selected_count: 2,
+    attached_count: 2,
+    multimodal: true,
+    failures: [{ reference_id: "ref-3", category: "missing_file", reference_pack_id: "pack-style", pack_name: "Style Pack", pack_role: "style", selection_mode: "optional", selection_reason: "optional_pack", priority: 4, source_type: "industry_default" }],
+    references: [{ reference_id: "ref-1", file_name: "brand.png", mime_type: "image/png", folder: "Brand", sha256: "abc123", reference_pack_id: "pack-brand", pack_name: "Brand Pack", pack_role: "brand_identity", selection_mode: "mandatory", selection_reason: "mandatory_pack", priority: 1, source_type: "platform_default", data: "image-bytes" }],
+  });
+
+  assert.deepEqual(audit, {
+    candidateCount: 3,
+    selectedCount: 2,
+    attachedCount: 2,
+    multimodal: true,
+    failures: [{ referenceId: "ref-3", category: "missing_file", packId: "pack-style", packName: "Style Pack", packRole: "style", selectionMode: "optional", selectionReason: "optional_pack", priority: 4, sourceType: "industry_default" }],
+    references: [{ referenceId: "ref-1", fileName: "brand.png", mimeType: "image/png", folder: "Brand", sha256: "abc123", packId: "pack-brand", packName: "Brand Pack", packRole: "brand_identity", selectionMode: "mandatory", selectionReason: "mandatory_pack", priority: 1, sourceType: "platform_default" }],
+  });
+
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const label of ["Pack ID", "Pack name", "Pack role", "Source", "Mode", "Selection reason", "Priority", "Candidates:", "Selected:"]) {
+    assert.match(page, new RegExp(label.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")));
+  }
+  assert.doesNotMatch(page, /<img/);
+  assert.doesNotMatch(JSON.stringify(audit), /image-bytes|base64|reference_images/);
+});
+
 test("historical records explain when the exact instruction was not captured", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /exact instruction was not captured/);
