@@ -27,9 +27,19 @@ class ContextSourceItem:
     label: str
     text: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    transient_stored_path: str | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "metadata", _freeze(dict(self.metadata)))
+        metadata = dict(self.metadata)
+        stored_path = metadata.pop("stored_path", None)
+        if self.transient_stored_path is None and isinstance(stored_path, str):
+            object.__setattr__(self, "transient_stored_path", stored_path)
+        object.__setattr__(self, "metadata", _freeze(metadata))
+
+
+def sanitize_context_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Keep persisted/displayable context metadata free of local file paths."""
+    return {key: value for key, value in metadata.items() if key != "stored_path"}
 
 
 @dataclass(frozen=True)

@@ -221,6 +221,26 @@ test("detail API never returns legacy binary image fields from context JSON", as
   }
 });
 
+test("detail API removes Pack storage paths from legacy context items", async () => {
+  process.env.SESSION_SECRET = "test-secret";
+  const fixture = {
+    generation_context_id: "context-path",
+    items: [{ metadata_json: { stored_path: "C:/private/pack.png", file_name: "pack.png" } }],
+  };
+  const pool = { query: async () => ({ rows: [fixture] }) };
+  const originalGetPool = contextDetailDeps.getPool;
+  contextDetailDeps.getPool = () => pool as never;
+  try {
+    const response = await detail(new Request("http://localhost/api/contexts/context-path", {
+      headers: { cookie: `context_viewer_session=${signSession("admin", "test-secret")}` },
+    }), { params: Promise.resolve({ generationContextId: "context-path" }) });
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(JSON.stringify(await response.json()), /stored_path|C:\\private\\pack\.png/);
+  } finally {
+    contextDetailDeps.getPool = originalGetPool;
+  }
+});
+
 test("detail query returns generation context metadata and the UI renders a metadata panel", async () => {
   const query = buildContextDetailQuery("context-1");
   for (const field of ["campaign_id", "run_id", "generation_context_id", "internal_token_count", "external_token_count", "internal_ratio", "external_ratio", "external_source_urls_json", "external_search_status", "external_search_error", "task_id", "selected_reference_ids_json", "matched_folder_names_json"]) {

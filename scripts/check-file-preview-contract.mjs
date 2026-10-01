@@ -16,5 +16,8 @@ if (!contentStudio.includes("<FilePreviewModal")) throw new Error("Content libra
 if (!contentStudio.includes("item.description")) throw new Error("Content library must expose text-only knowledge items for preview/download.");
 if (!contentStudio.includes("new File([item.description")) throw new Error("Content library must preview text-only knowledge items.");
 if (!contentStudio.includes("t(\"campaigns.knowledge.download\")")) throw new Error("Content library must expose a download action.");
+if (!contentStudio.includes("<FilePreviewModal")) throw new Error("Reference Pack previews must use FilePreviewModal.");
+if (/<img[^>]+src=\{[^}]*content_url/.test(contentStudio)) throw new Error("Reference Pack previews must not bind protected content_url directly to img src.");
+if (!preview.includes("fetchCampaignContent(sourceUrl)")) throw new Error("FilePreviewModal must authenticate protected content before rendering it.");
 
 console.log("File preview contract passed.");

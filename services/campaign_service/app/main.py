@@ -2778,12 +2778,14 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         metadata = item.metadata
         reference_id = item.source_id
         is_pack = item.source_type in {"platform_default", "industry_default"}
-        stored_path = str(metadata.get("stored_path") or "")
+        stored_path = str(item.transient_stored_path or "")
         failure_metadata = {
             "reference_pack_id": metadata.get("pack_id"),
+            "pack_name": metadata.get("pack_name"),
             "pack_role": metadata.get("pack_role"),
             "selection_mode": metadata.get("selection_mode"),
             "priority": metadata.get("priority"),
+            "source_type": item.source_type,
             "file_name": item.label,
             "mime_type": metadata.get("mime_type") or metadata.get("file_type"),
             "selection_reason": "mandatory_pack" if metadata.get("selection_mode") == "mandatory" else "optional_pack",

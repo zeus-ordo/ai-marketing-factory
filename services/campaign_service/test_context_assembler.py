@@ -179,6 +179,23 @@ def test_active_pack_loading_preserves_persisted_item_metadata(monkeypatch):
     assert loaded[0]["stored_path"] == "/private/style.png"
 
 
+def test_generation_context_sanitizes_pack_path_but_keeps_runtime_attachment_path(tmp_path):
+    image_path = tmp_path / "pack.png"
+    image_path.write_bytes(b"pack-image")
+
+    snapshot = assemble_generation_context(
+        campaign(),
+        [item("platform_default", "pack-item", "", pack_id="pack-1", stored_path=str(image_path), file_type="image/png")],
+        [],
+        [],
+        100,
+    )
+
+    source = snapshot.items[0]
+    assert "stored_path" not in source.metadata
+    assert source.transient_stored_path == str(image_path)
+
+
 def test_active_pack_loading_surfaces_persistence_errors(monkeypatch):
     import importlib
 

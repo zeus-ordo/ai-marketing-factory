@@ -21,7 +21,7 @@ function provenance(value: Record<string, unknown>) {
 export function removeBinaryData(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(removeBinaryData);
   if (!isRecord(value)) return value;
-  const binaryKeys = new Set(["data", "image_data", "base64"]);
+  const binaryKeys = new Set(["data", "image_data", "base64", "stored_path"]);
   return Object.fromEntries(Object.entries(value).filter(([key]) => !binaryKeys.has(key.toLowerCase())).map(([key, entry]) => [key, removeBinaryData(entry)]));
 }
 

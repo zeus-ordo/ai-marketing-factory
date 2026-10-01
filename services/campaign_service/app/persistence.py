@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord, ValidationResult
-from .context_assembler import GenerationContextSnapshot
+from .context_assembler import GenerationContextSnapshot, sanitize_context_metadata
 
 
 def legacy_folder_id(label: str | None, folders: list[dict[str, Any]]) -> str | None:
@@ -671,7 +671,7 @@ class PostgresPersistence:
                      json.dumps(snapshot.selected_reference_ids), json.dumps(snapshot.matched_folder_names)),
                 )
                 for position, item in enumerate(snapshot.items):
-                    metadata = dict(item.metadata) if isinstance(item.metadata, Mapping) else {}
+                    metadata = sanitize_context_metadata(dict(item.metadata)) if isinstance(item.metadata, Mapping) else {}
                     cur.execute(
                         """
                         INSERT INTO generation_context_items

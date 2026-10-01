@@ -21,7 +21,7 @@ def pack_snapshot(tmp_path, selection_mode):
     )
     item = ContextSourceItem(
         "platform_default", "pack-item", "pack.png", "",
-        {"stored_path": str(tmp_path / "missing.png"), "file_type": "image/png", "pack_id": "pack-1",
+        {"stored_path": str(tmp_path / "missing.png"), "file_type": "image/png", "pack_id": "pack-1", "pack_name": "Brand Pack",
          "pack_role": "brand_identity", "selection_mode": selection_mode, "max_images": 1, "priority": 10},
     )
     return campaign, assemble_generation_context(campaign, [item], [], [], 100)
@@ -40,6 +40,12 @@ def test_optional_pack_missing_file_is_audited_without_blocking_generation(tmp_p
     assert failure["category"] == "missing_file"
     assert failure["mandatory"] is False
     assert failure["reference_pack_id"] == "pack-1"
+    assert failure["pack_name"] == "Brand Pack"
+    assert failure["source_type"] == "platform_default"
+    assert failure["pack_role"] == "brand_identity"
+    assert failure["selection_mode"] == "optional"
+    assert failure["selection_reason"] == "optional_pack"
+    assert failure["priority"] == 10
 
 
 def test_mandatory_pack_missing_file_returns_structured_422(tmp_path):
