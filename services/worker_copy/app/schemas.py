@@ -8,6 +8,8 @@ class CopyRunRequest(BaseModel):
     prompt: str
     brand_context: dict[str, object] = Field(default_factory=dict)
     variants: int = 3
+    provider: str | None = None
+    model: str | None = None
 
     @field_validator("variants")
     @classmethod
@@ -40,6 +42,8 @@ class RevisionRequest(BaseModel):
     reject_reason: str
     brand_context: dict[str, object] = Field(default_factory=dict)
     variants: int = 3
+    provider: str | None = None
+    model: str | None = None
 
     @field_validator("variants")
     @classmethod

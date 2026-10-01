@@ -43,11 +43,20 @@ def decode_jwt(token: str) -> JWTPayload:
 
 
 def is_platform_admin_request(req: Request) -> bool:
-    """Check if request carries a valid platform admin key."""
-    if not PLATFORM_ADMIN_KEY:
+    """Check the platform key or an authenticated platform-admin JWT."""
+    if PLATFORM_ADMIN_KEY:
+        key = req.headers.get("x-platform-key", "")
+        if key and key == PLATFORM_ADMIN_KEY:
+            return True
+
+    token = get_token_from_request(req)
+    if not token or not JWT_SECRET:
         return False
-    key = req.headers.get("x-platform-key", "")
-    return bool(key) and key == PLATFORM_ADMIN_KEY
+    try:
+        payload = decode_jwt(token)
+    except HTTPException:
+        return False
+    return "platform:admin" in payload.permissions
 
 
 # --- FastAPI Dependencies ---

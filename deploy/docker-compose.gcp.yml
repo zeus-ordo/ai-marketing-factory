@@ -34,13 +34,28 @@ services:
       - MEMBERSHIP_API_BASE=http://membership-service:8095
     restart: unless-stopped
 
+  context-viewer:
+    build:
+      context: ../context-viewer
+      dockerfile: Dockerfile
+    env_file:
+      - /opt/ai-marketing-factory/.env.context-viewer
+    ports:
+      - "3010:3000"
+    restart: unless-stopped
+
   campaign-service:
     build: ../services/campaign_service
     env_file:
       - ../.env.local
+    environment:
+      - EXTERNAL_SEARCH_PROVIDER=${EXTERNAL_SEARCH_PROVIDER:-disabled}
+      - EXTERNAL_SEARCH_API_KEY=${EXTERNAL_SEARCH_API_KEY:-}
+      - EXTERNAL_SEARCH_ENGINE_ID=${EXTERNAL_SEARCH_ENGINE_ID:-}
     volumes:
       - campaign_references:/app/campaign_references
       - generated_assets:/app/generated_assets
+      - knowledge_uploads:/app/knowledge_uploads
     restart: unless-stopped
     depends_on:
       decision-service:
@@ -99,3 +114,4 @@ volumes:
   caddy_data:
   campaign_references:
   generated_assets:
+  knowledge_uploads:

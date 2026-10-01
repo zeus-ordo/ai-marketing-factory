@@ -3,31 +3,13 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from app.schemas import RoleCreate, RoleUpdate, RoleResponse
 from app.middleware import require_auth
 from app.repositories.role import RoleRepository
+from app.permissions import require_permission, validate_permissions
 
 router = APIRouter()
 role_repo = RoleRepository()
 
-ALLOWED_ROLE_PERMISSIONS = {
-    "campaign:create",
-    "campaign:edit",
-    "campaign:delete",
-    "campaign:read",
-    "asset:create",
-    "asset:edit",
-    "asset:delete",
-    "asset:read",
-    "review:approve",
-    "review:reject",
-    "review:revision",
-    "publish:execute",
-    "member:manage",
-    "role:manage",
-}
-
-
 def check_permission(payload: dict, permission: str) -> None:
-    if permission not in (payload.get("permissions") or []):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    require_permission(payload, permission)
 
 
 def normalize_role_name(name: str) -> str:
@@ -42,10 +24,7 @@ def validate_role_request(name: str | None, permissions: list[str] | None) -> tu
         raise HTTPException(status_code=422, detail="Role name is too long")
     if permissions is None:
         return normalized_name, None
-    deduped_permissions = list(dict.fromkeys(permissions))
-    if any(permission not in ALLOWED_ROLE_PERMISSIONS for permission in deduped_permissions):
-        raise HTTPException(status_code=422, detail="Invalid permissions")
-    return normalized_name, deduped_permissions
+    return normalized_name, validate_permissions(permissions)
 
 
 @router.get("/roles", response_model=list[RoleResponse])

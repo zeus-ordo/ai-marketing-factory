@@ -1,5 +1,8 @@
 "use client";
 
+/* The legacy campaign edit modal is being migrated incrementally. */
+/* eslint-disable no-restricted-syntax */
+
 import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   attachKnowledgeItemToCampaign,
@@ -11,24 +14,38 @@ import {
   deleteCampaignReference,
   listCampaigns,
   listKnowledgeItems,
+  listFolders,
   listCampaignReferences,
   listReviewQueue,
   regenerateAsset,
+  retryCampaignTask,
   runCampaign,
   updateCampaign,
   updateCampaignReference,
   updateKnowledgeItem,
-  uploadCampaignReference,
+  getCampaignUploadPolicy,
+  isCampaignStartEnabled,
+  canStartAfterUploadRemoval,
+  preflightCampaignReferenceFiles,
+  uploadCampaignReferences,
+  uploadBatchItems,
+  mergeBatchUploadStates,
   uploadKnowledgeItem,
   type CampaignBrief,
   type CampaignReferenceRecord,
+  type BatchUploadFileState,
   type KnowledgeItemRecord,
   type CampaignRecord,
   type CampaignStatus,
+  type FolderRecord,
   type ReviewItem,
   type ReviewStatus,
+  ApiRequestError,
 } from "@/lib/api/campaigns";
 import { ReviewAssetPreviewModal } from "@/components/review/review-asset-preview-modal";
+import { FilePreviewModal } from "@/components/files/file-preview-modal";
+import { ProvenanceList } from "@/components/diagnostics/provenance-list";
+import { canRetryTask, sanitizeDiagnosticText } from "@/lib/campaign-diagnostics";
 import { useI18n } from "@/lib/i18n/context";
 import { formatCurrencyUSD, formatDateTime } from "@/lib/i18n/format";
 import type { TranslationKey } from "@/lib/i18n/translations";
@@ -96,8 +113,10 @@ type CreateCampaignDraft = {
   referenceFiles: File[];
   knowledgeItemIds: string[];
 };
+type KnowledgeUploadState = { file: KnowledgeItemRecord; status: "pending" | "uploading" | "success" | "failed"; errorCode?: string };
 
 const IMMEDIATE_UPLOAD_FOLDER = "即時上傳";
+const MAX_BATCH_UPLOAD_FILES = 20;
 
 const fallbackCampaigns: UiCampaign[] = [
   {
@@ -174,6 +193,48 @@ function getBriefString(brief: CampaignBrief, snakeKey: keyof CampaignBrief, cam
   return typeof value === "string" ? value : "";
 }
 
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div><p className="text-slate-500">{label}</p><p className="break-words font-medium text-slate-800 dark:text-slate-100">{value}</p></div>;
+}
+
+function diagnosticTaskTypeLabel(taskType: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (taskType === "copywriting") return t("review.diagnostics.copywriting");
+  if (taskType === "image_generation") return t("review.diagnostics.imageGeneration");
+  if (taskType === "video_generation") return t("review.diagnostics.videoGeneration");
+  if (taskType === "ads_strategy") return t("review.diagnostics.adsStrategy");
+  return taskType;
+}
+
+function diagnosticTaskStatusLabel(status: string, t: ReturnType<typeof useI18n>["t"]) {
+  if (status === "pending") return t("status.pending");
+  if (status === "planned") return t("status.planned");
+  if (status === "running") return t("status.running");
+  if (status === "validating") return t("status.validating");
+  if (status === "passed") return t("status.passed");
+  if (status === "retrying") return t("status.retrying");
+  if (status === "failed") return t("status.failed");
+  if (status === "blocked") return t("status.blocked");
+  return t("common.notAvailable");
+}
+
+function formatCampaignApiError(error: unknown, fallback: string): string {
+  if (!(error instanceof ApiRequestError)) return error instanceof Error ? error.message : fallback;
+  if (Array.isArray(error.detail)) {
+    return error.detail.map((entry) => {
+      if (!entry || typeof entry !== "object") return String(entry);
+      const item = entry as { loc?: unknown[]; msg?: unknown };
+      const location = Array.isArray(item.loc) ? item.loc.join(".") : "request";
+      return `${location}: ${typeof item.msg === "string" ? item.msg : JSON.stringify(item.msg)}`;
+    }).join("\n");
+  }
+  if (error.detail && typeof error.detail === "object" && !Array.isArray(error.detail)) {
+    return Object.entries(error.detail as Record<string, unknown>)
+      .map(([field, detail]) => `${field}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`)
+      .join("\n");
+  }
+  return error.message || fallback;
+}
+
 export default function CampaignCenterPage() {
   const { t, locale } = useI18n();
   const actorToken = typeof document === "undefined" ? "" : getCookieValue("chat_actor_token");
@@ -220,24 +281,30 @@ export default function CampaignCenterPage() {
     adsStrategy: false,
   });
   const [createReferenceFiles, setCreateReferenceFiles] = useState<File[]>([]);
+  const [createReferenceUploadStates, setCreateReferenceUploadStates] = useState<BatchUploadFileState[]>([]);
+  const [knowledgeUploadStates, setKnowledgeUploadStates] = useState<KnowledgeUploadState[]>([]);
+  const [createdCampaignForUpload, setCreatedCampaignForUpload] = useState<string | null>(null);
   const [createReferenceInputKey, setCreateReferenceInputKey] = useState(0);
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeItemRecord[]>([]);
   const [selectedKnowledgeItemIds, setSelectedKnowledgeItemIds] = useState<string[]>([]);
   const [selectedKnowledgeFolderNames, setSelectedKnowledgeFolderNames] = useState<string[]>([]);
   const [expandedKnowledgeFolderNames, setExpandedKnowledgeFolderNames] = useState<string[]>([]);
   const [expandedKnowledgeListFolderNames, setExpandedKnowledgeListFolderNames] = useState<string[]>([]);
-  const [knowledgeFile, setKnowledgeFile] = useState<File | null>(null);
+  const [knowledgeFiles, setKnowledgeFiles] = useState<File[]>([]);
+  const [knowledgeLibraryUploadStates, setKnowledgeLibraryUploadStates] = useState<BatchUploadFileState<File>[]>([]);
   const [knowledgeTitle, setKnowledgeTitle] = useState("");
   const [knowledgeDescription, setKnowledgeDescription] = useState("");
-  const [knowledgeCategory, setKnowledgeCategory] = useState("General");
+  const [knowledgeCategory, setKnowledgeCategory] = useState("");
   const [knowledgeSearchDraft, setKnowledgeSearchDraft] = useState("");
   const [knowledgeCategoryDraft, setKnowledgeCategoryDraft] = useState("");
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
   const [knowledgeCategoryFilter, setKnowledgeCategoryFilter] = useState("");
   const [knowledgeBusy, setKnowledgeBusy] = useState(false);
   const [knowledgeMessage, setKnowledgeMessage] = useState<string | null>(null);
+  const [filePreview, setFilePreview] = useState<{ source: File | string; fileName: string } | null>(null);
   const [knowledgeInputKey, setKnowledgeInputKey] = useState(0);
   const [folders, setFolders] = useState<string[]>([]);
+  const [folderRecords, setFolderRecords] = useState<FolderRecord[]>([]);
   const [campaignForm, setCampaignForm] = useState({
     campaignName: "",
     productName: "",
@@ -258,6 +325,8 @@ export default function CampaignCenterPage() {
   const [manualAssetPrompt, setManualAssetPrompt] = useState("");
   const [references, setReferences] = useState<CampaignReferenceRecord[]>([]);
   const [referencesLoading, setReferencesLoading] = useState(false);
+  const [editReferences, setEditReferences] = useState<CampaignReferenceRecord[]>([]);
+  const [editReferencesLoading, setEditReferencesLoading] = useState(false);
   const [referencesBusy, setReferencesBusy] = useState(false);
   const [referencesMessage, setReferencesMessage] = useState<string | null>(null);
   const [expandedReferenceFolderNames, setExpandedReferenceFolderNames] = useState<string[]>([]);
@@ -265,6 +334,7 @@ export default function CampaignCenterPage() {
   const [creatingCampaign, setCreatingCampaign] = useState(false);
   const [pendingRunWorkOrder, setPendingRunWorkOrder] = useState<PendingRunWorkOrder | null>(null);
   const [runningCampaign, setRunningCampaign] = useState(false);
+  const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!editTarget) return;
@@ -342,10 +412,10 @@ export default function CampaignCenterPage() {
 
     async function loadFolders() {
       try {
-        const res = await fetch("/api/folders");
-        if (res.ok) {
-          const data = (await res.json()) as { items: { name: string }[] };
-          if (mounted) setFolders(Array.from(new Set([...data.items.map((f) => f.name), IMMEDIATE_UPLOAD_FOLDER])));
+        const data = await listFolders();
+        if (mounted) {
+          setFolderRecords(data);
+          setFolders(Array.from(new Set([...data.map((f) => f.name), IMMEDIATE_UPLOAD_FOLDER])));
         }
       } catch {
         // folders not critical
@@ -389,23 +459,21 @@ export default function CampaignCenterPage() {
     }
     return realCampaigns[0].id;
   }, [realCampaigns, selectedReferenceCampaignId]);
-
-  const knowledgeCategories = useMemo(() => {
-    const categories = knowledgeItems.map((item) => getKnowledgeFolder(item)).filter(Boolean);
-    return Array.from(new Set([...folders, ...categories, IMMEDIATE_UPLOAD_FOLDER])).sort((a, b) => a.localeCompare(b));
-  }, [folders, knowledgeItems]);
+  const activeCampaignRecord = campaignRecords.find((record) => record.campaign_id === activeCampaignId) ?? null;
 
   function getKnowledgeFolderLabel(folderName: string): string {
-    return folderName === IMMEDIATE_UPLOAD_FOLDER
+    const folder = folderRecords.find((candidate) => candidate.folder_id === folderName || folderScopeKey(candidate) === folderName);
+    const label = folderName === IMMEDIATE_UPLOAD_FOLDER
       ? t("campaigns.knowledge.immediateUploadFolder")
-      : folderName;
+      : ((folder?.name ?? folderName.replace(/^legacy:/, "")) || "General");
+    return folder?.scope === "platform" ? `${label} · read-only` : label;
   }
 
   const filteredKnowledgeItems = useMemo(() => {
     const query = knowledgeSearch.trim().toLowerCase();
     return knowledgeItems.filter((item) => {
       const category = getKnowledgeFolder(item);
-      if (knowledgeCategoryFilter && category !== knowledgeCategoryFilter) return false;
+      if (knowledgeCategoryFilter && item.folder_id !== knowledgeCategoryFilter) return false;
       if (!query) return true;
       const fileName = String(item.metadata.file_name ?? "");
       return `${item.title} ${item.description} ${fileName} ${category}`.toLowerCase().includes(query);
@@ -414,8 +482,8 @@ export default function CampaignCenterPage() {
 
   const groupedKnowledgeItems = useMemo(() => {
     const folderNames = new Set([
-      ...folders,
-      ...knowledgeCategories,
+      ...folderRecords.map((folder) => folderScopeKey(folder)),
+      ...knowledgeItems.map((item) => getKnowledgeFolderKey(item, folderRecords)),
       IMMEDIATE_UPLOAD_FOLDER,
     ]);
     const groups = Array.from(folderNames).reduce<Record<string, KnowledgeItemRecord[]>>((result, folderName) => {
@@ -423,11 +491,11 @@ export default function CampaignCenterPage() {
       return result;
     }, {});
     return filteredKnowledgeItems.reduce<Record<string, KnowledgeItemRecord[]>>((groups, item) => {
-      const category = getKnowledgeFolder(item);
-      groups[category] = [...(groups[category] ?? []), item];
+      const folderKey = getKnowledgeFolderKey(item, folderRecords);
+      groups[folderKey] = [...(groups[folderKey] ?? []), item];
       return groups;
     }, groups);
-  }, [filteredKnowledgeItems, folders, knowledgeCategories]);
+  }, [filteredKnowledgeItems, folderRecords, knowledgeItems]);
 
   const selectedReferenceItemIds = useMemo(() => {
     const ids = new Set(selectedKnowledgeItemIds.filter((itemId) => {
@@ -435,20 +503,20 @@ export default function CampaignCenterPage() {
       return item ? isKnowledgeItemAttachable(item) : false;
     }));
     for (const item of knowledgeItems) {
-      if (isKnowledgeItemAttachable(item) && selectedKnowledgeFolderNames.includes(getKnowledgeFolder(item))) {
+      if (isKnowledgeItemAttachable(item) && selectedKnowledgeFolderNames.includes(getKnowledgeFolderKey(item, folderRecords))) {
         ids.add(item.item_id);
       }
     }
     return Array.from(ids);
-  }, [knowledgeItems, selectedKnowledgeFolderNames, selectedKnowledgeItemIds]);
+  }, [folderRecords, knowledgeItems, selectedKnowledgeFolderNames, selectedKnowledgeItemIds]);
 
   const groupedReferences = useMemo(() => {
     return references.reduce<Record<string, CampaignReferenceRecord[]>>((groups, item) => {
-      const folder = getReferenceFolder(item);
-      groups[folder] = [...(groups[folder] ?? []), item];
+      const folderKey = getReferenceFolderKey(item, folderRecords);
+      groups[folderKey] = [...(groups[folderKey] ?? []), item];
       return groups;
     }, {});
-  }, [references]);
+  }, [folderRecords, references]);
 
   useEffect(() => {
     let mounted = true;
@@ -511,8 +579,8 @@ export default function CampaignCenterPage() {
       setCampaignRecords(rows);
       setCampaigns(rows.map(toUiCampaign));
       setApiMode(true);
-    } catch {
-      setMessage(t("campaigns.createFailed"));
+    } catch (error) {
+      setMessage(formatCampaignApiError(error, t("campaigns.createFailed")));
     }
   }
 
@@ -551,6 +619,21 @@ export default function CampaignCenterPage() {
       return;
     }
 
+    let uploadPolicy;
+    try {
+      uploadPolicy = await getCampaignUploadPolicy();
+    } catch {
+      setMessage(t("campaigns.form.uploadPolicyFailed"));
+      return;
+    }
+    const preflightStates = preflightCampaignReferenceFiles(createReferenceFiles, uploadPolicy);
+    setCreateReferenceUploadStates(preflightStates);
+    setKnowledgeUploadStates(knowledgeItems.filter((item) => selectedReferenceItemIds.includes(item.item_id)).map((item) => ({ file: item, status: "pending" })));
+    if (preflightStates.some((item) => item.status === "failed")) {
+      setMessage(t("campaigns.form.partialUploadFailure"));
+      return;
+    }
+
     setPendingCreateDraft({
       campaignName,
       productName,
@@ -577,6 +660,10 @@ export default function CampaignCenterPage() {
     if (!pendingCreateDraft) return;
 
     const draft = pendingCreateDraft;
+    if (createdCampaignForUpload) {
+      await retryFailedCampaignUploads(createdCampaignForUpload);
+      return;
+    }
     setCreatingCampaign(true);
     try {
       const created = await createCampaign({
@@ -609,11 +696,23 @@ export default function CampaignCenterPage() {
 
       const selectedKnowledgeItems = knowledgeItems.filter((item) => draft.knowledgeItemIds.includes(item.item_id));
       if (draft.referenceFiles.length > 0 || selectedKnowledgeItems.length > 0) {
+        const knowledgeResultPromise = uploadBatchItems(knowledgeUploadStates, (item) => attachKnowledgeItemToCampaign(created.campaign_id, item).then((reference) => ({ referenceId: reference.reference_id, folderId: reference.folder_id })), 3, (updates) => setKnowledgeUploadStates((current) => mergeBatchUploadStates(current, updates)));
         const uploadResults = await Promise.allSettled([
-          ...selectedKnowledgeItems.map((item) => attachKnowledgeItemToCampaign(created.campaign_id, item)),
-          ...draft.referenceFiles.map((file) => uploadCampaignReference(created.campaign_id, file, "admin")),
+          knowledgeResultPromise,
+          uploadCampaignReferences(created.campaign_id, createReferenceUploadStates, "admin", knowledgeCategoryFilter || null, 3, (updates) => setCreateReferenceUploadStates((current) => mergeBatchUploadStates(current, updates))),
         ]);
-        
+        const knowledgeResult = uploadResults[0];
+        const knowledgeStates = knowledgeResult?.status === "fulfilled" ? knowledgeResult.value : knowledgeUploadStates.map((item) => ({ ...item, status: "failed" as const, errorCode: "UPLOAD_FAILED" }));
+        setKnowledgeUploadStates(knowledgeStates);
+        const fileResult = uploadResults[1];
+        const fileStates = fileResult?.status === "fulfilled" && Array.isArray(fileResult.value) ? fileResult.value : createReferenceUploadStates.map((item) => ({ ...item, status: "failed" as const, errorCode: "UPLOAD_FAILED" }));
+        setCreateReferenceUploadStates(fileStates);
+        const hasUploadFailure = uploadResults.some((result) => result.status === "rejected") || (knowledgeStates.length > 0 && !isCampaignStartEnabled(knowledgeStates)) || (fileStates.length > 0 && !isCampaignStartEnabled(fileStates));
+        if (hasUploadFailure) {
+          setCreatedCampaignForUpload(created.campaign_id);
+          setMessage(t("campaigns.form.campaignStartBlocked"));
+          return;
+        }
       }
 
       await runCampaign(created.campaign_id);
@@ -622,6 +721,9 @@ export default function CampaignCenterPage() {
       setCampaignForm((prev) => ({ ...prev, campaignName: "", productName: "", industryCategory: "", projectDescription: "", audiencePersona: "", budget: "", brandTone: "", copyVariants: "", imageAssets: "", shortVideoAssets: "" }));
       setSelectedDeliverables([]);
       setCreateReferenceFiles([]);
+      setCreateReferenceUploadStates([]);
+      setKnowledgeUploadStates([]);
+      setCreatedCampaignForUpload(null);
       setSelectedKnowledgeItemIds([]);
       setSelectedKnowledgeFolderNames([]);
       setExpandedKnowledgeFolderNames([]);
@@ -642,8 +744,8 @@ export default function CampaignCenterPage() {
         }
       }
       setMessage(createdMessage);
-    } catch {
-      setMessage(t("campaigns.createFailed"));
+    } catch (error) {
+      setMessage(formatCampaignApiError(error, t("campaigns.createFailed")));
     } finally {
       setCreatingCampaign(false);
     }
@@ -711,6 +813,84 @@ export default function CampaignCenterPage() {
     }
   }
 
+  async function retryFailedCampaignUploads(campaignId: string) {
+    const failedFiles = createReferenceUploadStates.filter((item) => item.status === "failed");
+    const failedKnowledge = knowledgeUploadStates.filter((item) => item.status === "failed");
+    if (failedFiles.length === 0 && failedKnowledge.length === 0) return;
+    setCreatingCampaign(true);
+    try {
+      const [retried, retriedKnowledge] = await Promise.all([
+        uploadCampaignReferences(campaignId, failedFiles.map((item) => ({ ...item, status: "pending" as const, errorCode: undefined })), "admin", knowledgeCategoryFilter || null, 3, (updates) => setCreateReferenceUploadStates((current) => mergeBatchUploadStates(current, updates))),
+        uploadBatchItems(failedKnowledge.map((item) => ({ ...item, status: "pending" as const, errorCode: undefined })), (item) => attachKnowledgeItemToCampaign(campaignId, item).then((reference) => ({ referenceId: reference.reference_id, folderId: reference.folder_id })), 3, (updates) => setKnowledgeUploadStates((current) => mergeBatchUploadStates(current, updates))),
+      ]);
+      const retryByFile = new Map(retried.map((item) => [item.file, item]));
+      const merged = createReferenceUploadStates.map((item) => retryByFile.get(item.file) ?? item);
+      setCreateReferenceUploadStates(merged);
+      const knowledgeByItem = new Map(retriedKnowledge.map((item) => [item.file, item]));
+      const mergedKnowledge = knowledgeUploadStates.map((item) => knowledgeByItem.get(item.file) ?? item);
+      setKnowledgeUploadStates(mergedKnowledge);
+      if (merged.some((item) => item.status === "failed" || item.status === "uploading") || mergedKnowledge.some((item) => item.status === "failed" || item.status === "uploading")) {
+        setMessage(t("campaigns.form.campaignStartBlocked"));
+        return;
+      }
+      await runCampaign(campaignId);
+      setPendingCreateDraft(null);
+      setCreatedCampaignForUpload(null);
+      setMessage(`${t("campaigns.created", { id: campaignId })} ${t("campaigns.started", { id: campaignId })}`);
+    } catch {
+      setMessage(t("campaigns.form.campaignStartBlocked"));
+    } finally {
+      setCreatingCampaign(false);
+    }
+  }
+
+  function removeCreateReference(file: File) {
+    setCreateReferenceFiles((files) => files.filter((item) => item !== file));
+    const remaining = createReferenceUploadStates.filter((item) => item.file !== file);
+    setCreateReferenceUploadStates(remaining);
+    if (createdCampaignForUpload && canStartAfterUploadRemoval(remaining, knowledgeUploadStates)) {
+      void startCampaignAfterUploads(createdCampaignForUpload);
+    }
+  }
+
+  function removeKnowledgeUpload(item: KnowledgeItemRecord) {
+    const remaining = knowledgeUploadStates.filter((entry) => entry.file !== item);
+    setKnowledgeUploadStates(remaining);
+    setSelectedKnowledgeItemIds((items) => items.filter((id) => id !== item.item_id));
+    if (createdCampaignForUpload && canStartAfterUploadRemoval(createReferenceUploadStates, remaining)) {
+      void startCampaignAfterUploads(createdCampaignForUpload);
+    }
+  }
+
+  async function startCampaignAfterUploads(campaignId: string) {
+    setCreatingCampaign(true);
+    try {
+      await runCampaign(campaignId);
+      setPendingCreateDraft(null);
+      setCreatedCampaignForUpload(null);
+      setMessage(`${t("campaigns.created", { id: campaignId })} ${t("campaigns.started", { id: campaignId })}`);
+    } catch {
+      setMessage(t("campaigns.form.campaignStartBlocked"));
+    } finally {
+      setCreatingCampaign(false);
+    }
+  }
+
+  async function handleRetryTask(campaignId: string, taskId: string) {
+    setRetryingTaskId(taskId);
+    try {
+      const result = await retryCampaignTask(campaignId, taskId);
+      setMessage(`${t("review.diagnostics.retry")}: ${result.status}`);
+      const rows = await listCampaigns();
+      setCampaignRecords(rows);
+      setCampaigns(rows.map(toUiCampaign));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : t("review.diagnostics.retryFailed"));
+    } finally {
+      setRetryingTaskId(null);
+    }
+  }
+
   async function handleConfirmRunWorkOrder() {
     if (!pendingRunWorkOrder) return;
     const order = pendingRunWorkOrder;
@@ -770,6 +950,19 @@ export default function CampaignCenterPage() {
       adsStrategy: Boolean(record.brief.deliverables.ads_strategy),
     });
     void loadEditAssets(campaignId);
+    void loadEditReferences(campaignId);
+  }
+
+  async function loadEditReferences(campaignId: string) {
+    setEditReferences([]);
+    setEditReferencesLoading(true);
+    try {
+      setEditReferences(await listCampaignReferences(campaignId));
+    } catch {
+      setEditReferences([]);
+    } finally {
+      setEditReferencesLoading(false);
+    }
   }
 
   async function loadEditAssets(campaignId: string) {
@@ -928,20 +1121,23 @@ export default function CampaignCenterPage() {
   }
 
   async function handleUploadKnowledgeItem() {
-    if (!knowledgeFile) {
+    if (knowledgeFiles.length === 0) {
       setKnowledgeMessage(t("campaigns.knowledge.selectFileFirst"));
       return;
     }
 
     setKnowledgeBusy(true);
     try {
-      await uploadKnowledgeItem(knowledgeFile, knowledgeTitle || knowledgeFile.name, knowledgeDescription, IMMEDIATE_UPLOAD_FOLDER);
+      const initialStates = knowledgeFiles.map((file) => ({ file, status: "pending" as const }));
+      setKnowledgeLibraryUploadStates(initialStates);
+      const targetFolder = folderRecords.find((folder) => folder.folder_id === knowledgeCategory);
+      await uploadBatchItems(initialStates, (file) => uploadKnowledgeItem(file, knowledgeTitle.trim() || file.name, knowledgeDescription, targetFolder?.name || IMMEDIATE_UPLOAD_FOLDER, undefined, targetFolder?.folder_id).then((item) => ({ referenceId: item.item_id, folderId: item.folder_id })), 3, (updates) => setKnowledgeLibraryUploadStates((current) => mergeBatchUploadStates(current, updates)));
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
-      setKnowledgeFile(null);
+      setKnowledgeFiles([]);
       setKnowledgeTitle("");
       setKnowledgeDescription("");
-      setKnowledgeCategory("General");
+      setKnowledgeCategory("");
       setKnowledgeInputKey((prev) => prev + 1);
       setKnowledgeMessage(t("campaigns.knowledge.uploadSuccess"));
     } catch {
@@ -969,7 +1165,9 @@ export default function CampaignCenterPage() {
   async function handleMoveKnowledgeItem(itemId: string, newFolder: string) {
     setKnowledgeBusy(true);
     try {
-      await updateKnowledgeItem(itemId, { category: newFolder });
+      const targetFolder = folderRecords.find((folder) => folder.folder_id === newFolder);
+      if (!targetFolder || targetFolder.scope === "platform") return;
+      await updateKnowledgeItem(itemId, { category: targetFolder.name, folder_id: targetFolder.folder_id });
       const rows = await listKnowledgeItems();
       setKnowledgeItems(rows);
       setKnowledgeMessage(t("knowledge.moveSuccess"));
@@ -989,7 +1187,7 @@ export default function CampaignCenterPage() {
   }
 
   function toggleKnowledgeFolder(folderName: string) {
-    const folderItemIds = new Set(knowledgeItems.filter((item) => getKnowledgeFolder(item) === folderName && isKnowledgeItemAttachable(item)).map((item) => item.item_id));
+    const folderItemIds = new Set(knowledgeItems.filter((item) => getKnowledgeFolderKey(item, folderRecords) === folderName && isKnowledgeItemAttachable(item)).map((item) => item.item_id));
     if (folderItemIds.size === 0) return;
     setSelectedKnowledgeFolderNames((prev) => (
       prev.includes(folderName) ? prev.filter((name) => name !== folderName) : [...prev, folderName]
@@ -1041,7 +1239,9 @@ export default function CampaignCenterPage() {
 
     setReferencesBusy(true);
     try {
-      await updateCampaignReference(activeCampaignId, referenceId, { folder: newFolder });
+      const targetFolder = folderRecords.find((folder) => folder.folder_id === newFolder);
+      if (!targetFolder || targetFolder.scope === "platform") return;
+      await updateCampaignReference(activeCampaignId, referenceId, { folder: targetFolder.name, folder_id: targetFolder.folder_id });
       const rows = await listCampaignReferences(activeCampaignId);
       setReferences(rows);
       setReferencesMessage(t("campaigns.references.moveSuccess"));
@@ -1060,9 +1260,38 @@ export default function CampaignCenterPage() {
       </header>
 
       {message ? (
-        <p className={`rounded-xl px-3 py-2 text-sm ${isFallback ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}>
+        <p role="alert" className={`whitespace-pre-line rounded-xl px-3 py-2 text-sm ${isFallback ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}>
           {message}
         </p>
+      ) : null}
+
+      {activeCampaignRecord?.source_summary ? (
+        <section aria-label={t("review.diagnostics.title")} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold">{t("review.diagnostics.title")}</h2>
+            <code className="break-all text-xs text-slate-500">{activeCampaignRecord.source_summary.generation_context_id}</code>
+          </div>
+          <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+            <Metric label={t("review.diagnostics.internalSources")} value={`${activeCampaignRecord.source_summary.internal_source_count} · ${activeCampaignRecord.source_summary.internal_token_count} ${t("review.diagnostics.tokens")}`} />
+            <Metric label={t("review.diagnostics.externalSources")} value={`${activeCampaignRecord.source_summary.external_source_count} · ${activeCampaignRecord.source_summary.external_token_count} ${t("review.diagnostics.tokens")}`} />
+            <Metric label={t("review.diagnostics.ratios")} value={`${(activeCampaignRecord.source_summary.internal_ratio * 100).toFixed(1)}% / ${(activeCampaignRecord.source_summary.external_ratio * 100).toFixed(1)}%`} />
+            <Metric label={t("review.diagnostics.selectedReferences")} value={activeCampaignRecord.source_summary.selected_reference_ids.join(", ") || t("common.notAvailable")} />
+          </div>
+          <div className="flex flex-wrap gap-2 text-xs text-slate-500">
+            <ProvenanceList sources={activeCampaignRecord.source_summary.provenance} />
+          </div>
+          {activeCampaignRecord.tasks?.length ? (
+            <div className="grid gap-2 lg:grid-cols-2">
+              {activeCampaignRecord.tasks.map((task) => (
+                <div key={task.task_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800">
+                  <span><strong>{diagnosticTaskTypeLabel(task.task_type, t)}</strong> <span className="text-slate-500">{diagnosticTaskStatusLabel(task.status, t)}</span></span>
+                  <span className="text-xs text-slate-500">{task.provider || t("common.notAvailable")}/{task.model || t("common.notAvailable")} · {sanitizeDiagnosticText(task.error_detail || task.error_class || task.blocked_reason)} · {t("review.diagnostics.retryable")}: {task.retryable === true ? t("common.yes") : t("common.no")} {task.retry_count ? `· ${t("review.diagnostics.attempts")}: ${task.retry_count}` : ""} {task.next_retry_at ? `· ${task.next_retry_at}` : ""}</span>
+                  {canRetryTask(task) ? <button type="button" onClick={() => handleRetryTask(activeCampaignRecord.campaign_id, task.task_id)} disabled={retryingTaskId !== null} className="rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50">{retryingTaskId === task.task_id ? t("review.diagnostics.retrying") : t("review.diagnostics.retry")}</button> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       <form id="create-campaign" onSubmit={handleCreateFromForm} noValidate className="scroll-mt-24 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -1094,27 +1323,27 @@ export default function CampaignCenterPage() {
             required
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
-            <option value="awareness">品牌曝光</option>
-            <option value="engagement">互動</option>
-            <option value="conversion">導購</option>
+            <option value="awareness">{t("campaigns.objectives.awareness")}</option>
+            <option value="engagement">{t("campaigns.objectives.engagement")}</option>
+            <option value="conversion">{t("campaigns.objectives.conversion")}</option>
           </select>
           <input
             value={campaignForm.industryCategory}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, industryCategory: event.target.value }))}
-            aria-label="industryCategory"
-            placeholder="產業別"
+            aria-label={t("campaigns.form.industryCategory")}
+            placeholder={t("campaigns.form.industryCategory")}
             required
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           />
           <select
             value={campaignForm.platforms}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, platforms: event.target.value }))}
-            aria-label={t("campaigns.form.platforms")}
+            aria-label={t("campaigns.form.platformsSelect")}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
-            <option value="社群平台">社群平台</option>
-            <option value="廣告素材">廣告素材</option>
-            <option value="網站版位">網站版位</option>
+            <option value="社群平台">{t("campaigns.form.platformSocial")}</option>
+            <option value="廣告素材">{t("campaigns.form.platformAds")}</option>
+            <option value="網站版位">{t("campaigns.form.platformWeb")}</option>
           </select>
           <input
             value={campaignForm.brandTone}
@@ -1123,14 +1352,14 @@ export default function CampaignCenterPage() {
             placeholder={t("campaigns.form.brandTone")}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
           />
-          <input type="number" min={0} max={7} value={campaignForm.copyVariants} onChange={(event) => setCampaignForm((prev) => ({ ...prev, copyVariants: event.target.value }))} aria-label="文案數量" placeholder="文案數量" className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
-          <input type="number" min={0} max={5} value={campaignForm.imageAssets} onChange={(event) => setCampaignForm((prev) => ({ ...prev, imageAssets: event.target.value }))} aria-label="圖檔數量" placeholder="圖檔數量" className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
-          <input type="number" min={0} max={3} value={campaignForm.shortVideoAssets} onChange={(event) => setCampaignForm((prev) => ({ ...prev, shortVideoAssets: event.target.value }))} aria-label="影片數量" placeholder="影片數量" className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+          <input type="number" min={0} max={7} value={campaignForm.copyVariants} onChange={(event) => setCampaignForm((prev) => ({ ...prev, copyVariants: event.target.value }))} aria-label={t("campaigns.form.copyVariants")} placeholder={t("campaigns.form.copyVariants")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+          <input type="number" min={0} max={5} value={campaignForm.imageAssets} onChange={(event) => setCampaignForm((prev) => ({ ...prev, imageAssets: event.target.value }))} aria-label={t("campaigns.form.imageAssets")} placeholder={t("campaigns.form.imageAssets")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
+          <input type="number" min={0} max={3} value={campaignForm.shortVideoAssets} onChange={(event) => setCampaignForm((prev) => ({ ...prev, shortVideoAssets: event.target.value }))} aria-label={t("campaigns.form.shortVideoAssets")} placeholder={t("campaigns.form.shortVideoAssets")} className="rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100" />
           <input
             value={campaignForm.budget}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, budget: formatNumberInput(event.target.value) }))}
             aria-label={t("campaigns.form.budget")}
-            placeholder="美金預算（勾選投廣策略時必填）"
+            placeholder={t("campaigns.form.budget")}
             required={selectedDeliverables.includes("ads")}
             inputMode="numeric"
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
@@ -1141,21 +1370,21 @@ export default function CampaignCenterPage() {
               checked={selectedDeliverables.includes("ads")}
               onChange={() => setSelectedDeliverables((prev) => prev.includes("ads") ? prev.filter((v) => v !== "ads") : [...prev, "ads"])}
             />
-            投廣策略
+            {t("campaigns.deliverables.ads")}
           </label>
           <div className="hidden xl:block" aria-hidden />
           <input
             value={campaignForm.audiencePersona}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, audiencePersona: event.target.value }))}
             aria-label={t("campaigns.form.audience")}
-            placeholder="受眾目標"
+            placeholder={t("campaigns.form.audience")}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 md:col-span-2"
           />
           <textarea
             value={campaignForm.projectDescription}
             onChange={(event) => setCampaignForm((prev) => ({ ...prev, projectDescription: event.target.value }))}
-            aria-label="projectDescription"
-            placeholder="專案需求描述"
+            aria-label={t("campaigns.form.subtitle")}
+            placeholder={t("campaigns.form.subtitle")}
             required
             rows={2}
             className="rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950 md:col-span-2"
@@ -1169,7 +1398,11 @@ export default function CampaignCenterPage() {
               id="create-reference-files"
               type="file"
               multiple
-              onChange={(event) => setCreateReferenceFiles(Array.from(event.target.files ?? []))}
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                setCreateReferenceFiles(files);
+                setCreateReferenceUploadStates(files.map((file) => ({ file, status: "pending" as const })));
+              }}
               aria-label={t("campaigns.form.referenceFiles")}
               className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
             />
@@ -1178,6 +1411,34 @@ export default function CampaignCenterPage() {
                 ? t("campaigns.form.referenceFilesSelected", { count: createReferenceFiles.length })
                 : t("campaigns.form.referenceFilesHelp")}
             </p>
+            {createReferenceUploadStates.length > 0 ? (
+              <ul className="space-y-1 text-xs" aria-label={t("campaigns.form.uploadStatus")}>
+                {createReferenceUploadStates.map((item) => (
+                  <li key={`${item.file.name}-${item.file.lastModified}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
+                    <span className="min-w-0 truncate">{item.file.name}</span>
+                    <span className={item.status === "failed" ? "text-red-600" : item.status === "success" ? "text-emerald-600" : "text-slate-500"}>
+                      {item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : item.errorCode === "FILE_TOO_LARGE" ? t("campaigns.form.invalidFileSize") : item.errorCode === "UNSUPPORTED_FILE_TYPE" ? t("campaigns.form.invalidFileType") : t("campaigns.form.uploadFailed")}
+                    </span>
+                    <button type="button" onClick={() => setFilePreview({ source: item.file, fileName: item.file.name })} className="font-medium text-blue-600">{t("campaigns.knowledge.preview")}</button>
+                    {item.status === "failed" && createdCampaignForUpload ? <button type="button" onClick={() => { void handleConfirmCreateCampaign(); }} className="font-medium text-blue-600">{t("campaigns.form.retryUpload")}</button> : null}
+                    <button type="button" onClick={() => removeCreateReference(item.file)} disabled={creatingCampaign} className="font-medium text-slate-600">{t("campaigns.form.removeUpload")}</button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {knowledgeUploadStates.length > 0 ? (
+              <ul className="space-y-1 text-xs" aria-label={t("campaigns.form.uploadStatus")}>
+                {knowledgeUploadStates.map((entry) => (
+                  <li key={entry.file.item_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 px-2 py-1 dark:border-slate-700">
+                    <span className="min-w-0 truncate">{entry.file.title}</span>
+                    <span>{entry.status === "uploading" ? t("campaigns.form.uploading") : entry.status === "success" ? t("campaigns.form.uploadSuccess") : entry.status === "failed" ? t("campaigns.form.uploadFailed") : t("campaigns.form.uploadPending")}</span>
+                    {entry.file.content_url ? <button type="button" onClick={() => setFilePreview({ source: entry.file.content_url!, fileName: String(entry.file.metadata.file_name ?? entry.file.title) })} className="font-medium text-blue-600">{t("campaigns.knowledge.preview")}</button> : null}
+                    {entry.status === "failed" && createdCampaignForUpload ? <button type="button" onClick={() => { void handleConfirmCreateCampaign(); }} className="font-medium text-blue-600">{t("campaigns.form.retryUpload")}</button> : null}
+                    {entry.status === "failed" ? <button type="button" onClick={() => removeKnowledgeUpload(entry.file)} disabled={creatingCampaign} className="font-medium text-slate-600">{t("campaigns.form.removeUpload")}</button> : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
           <div className="space-y-2 xl:col-span-3">
             <div className="flex items-center justify-between gap-3">
@@ -1188,10 +1449,10 @@ export default function CampaignCenterPage() {
                 {t("campaigns.form.referenceLibrarySelected", { count: selectedReferenceItemIds.length })}
               </span>
             </div>
-            <p className="text-xs text-slate-500">先勾選資料夾可套用該資料夾內全部素材；展開資料夾可改選特定檔案。</p>
+            <p className="text-xs text-slate-500">{t("campaigns.form.referenceLibrary")}</p>
             <div className="max-h-64 overflow-y-auto rounded-xl border border-slate-200 p-2 dark:border-slate-700">
               {Object.entries(groupedKnowledgeItems).length === 0 ? (
-                <p className="px-2 py-3 text-xs text-slate-500">沒有符合篩選的內容資料庫素材。</p>
+                <p className="px-2 py-3 text-xs text-slate-500">{t("campaigns.form.referenceLibraryEmpty")}</p>
               ) : Object.entries(groupedKnowledgeItems).map(([folderName, items]) => {
                 const folderSelected = selectedKnowledgeFolderNames.includes(folderName);
                 const expanded = expandedKnowledgeFolderNames.includes(folderName);
@@ -1220,10 +1481,10 @@ export default function CampaignCenterPage() {
                           onChange={() => toggleKnowledgeFolder(folderName)}
                         />
                         <span className="truncate font-semibold text-slate-800 dark:text-slate-100">📁 {getKnowledgeFolderLabel(folderName)}</span>
-                        <span className="shrink-0 text-slate-500">{items.length} 個檔案{attachableItems.length < items.length ? `，${t("campaigns.form.attachableCount", { count: attachableItems.length })}` : ""}{selectedFileCount > 0 && !folderSelected ? `，已選 ${selectedFileCount}` : ""}</span>
+                        <span className="shrink-0 text-slate-500">{t("campaigns.form.referenceFilesSelected", { count: items.length })}{attachableItems.length < items.length ? `，${t("campaigns.form.attachableCount", { count: attachableItems.length })}` : ""}{selectedFileCount > 0 && !folderSelected ? `，${t("campaigns.form.referenceLibrarySelected", { count: selectedFileCount })}` : ""}</span>
                       </label>
                       <span className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium dark:border-slate-700">
-                        {expanded ? "收合" : "展開"}
+                        {expanded ? t("common.cancel") : t("common.edit")}
                       </span>
                     </div>
                     {expanded ? (
@@ -1261,7 +1522,7 @@ export default function CampaignCenterPage() {
           <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-5 shadow-2xl dark:bg-slate-900">
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-3 dark:border-slate-800">
               <div>
-                <h2 className="text-lg font-semibold">建立活動工單確認</h2>
+                <h2 className="text-lg font-semibold">{t("campaigns.editTitle")}</h2>
               </div>
               <button
                 type="button"
@@ -1269,36 +1530,36 @@ export default function CampaignCenterPage() {
                 disabled={creatingCampaign}
                 className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-slate-700"
               >
-                關閉
+                {t("common.cancel")}
               </button>
             </div>
 
             <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
-              <ReviewField label="活動名稱" value={pendingCreateDraft.campaignName} />
-              <ReviewField label="產品名稱" value={pendingCreateDraft.productName} />
+              <ReviewField label={t("campaigns.form.campaignName")} value={pendingCreateDraft.campaignName} />
+              <ReviewField label={t("campaigns.form.productName")} value={pendingCreateDraft.productName} />
               <ReviewField
-                label="活動目標"
-                value={pendingCreateDraft.objective === "conversion" ? "導購" : pendingCreateDraft.objective === "engagement" ? "互動" : "品牌曝光"}
+                label={t("campaigns.form.objective")}
+                value={t(`campaigns.objectives.${pendingCreateDraft.objective === "conversion" ? "conversion" : pendingCreateDraft.objective === "engagement" ? "engagement" : "awareness"}` as "campaigns.objectives.conversion" | "campaigns.objectives.engagement" | "campaigns.objectives.awareness")}
               />
-              <ReviewField label="投放平台" value={pendingCreateDraft.platforms.join(", ")} />
-              <ReviewField label="產業類別" value={pendingCreateDraft.industryCategory} />
-              <ReviewField label="目標受眾" value={pendingCreateDraft.audiencePersona} />
-              <ReviewField label="品牌語氣" value={pendingCreateDraft.brandTone.length > 0 ? pendingCreateDraft.brandTone.join(", ") : "—"} />
-              <ReviewField label="預算" value={pendingCreateDraft.budget > 0 ? formatCurrencyUSD(locale, pendingCreateDraft.budget) : "—"} />
-              <ReviewField label="文案數量" value={String(pendingCreateDraft.deliverables.copyVariants)} />
-              <ReviewField label="圖片數量" value={String(pendingCreateDraft.deliverables.imageAssets)} />
-              <ReviewField label="影片數量" value={String(pendingCreateDraft.deliverables.shortVideoAssets)} />
-              <ReviewField label="投廣策略" value={pendingCreateDraft.deliverables.adsStrategy > 0 ? "是" : "否"} />
-              <ReviewField label="期限" value={formatDateTime(locale, pendingCreateDraft.deadline)} />
-              <ReviewField label="上傳參考素材" value={pendingCreateDraft.referenceFiles.length > 0 ? `${pendingCreateDraft.referenceFiles.length} 個檔案` : "—"} />
+              <ReviewField label={t("campaigns.form.platforms")} value={pendingCreateDraft.platforms.join(", ")} />
+              <ReviewField label={t("campaigns.form.industryCategory")} value={pendingCreateDraft.industryCategory} />
+              <ReviewField label={t("campaigns.form.audience")} value={pendingCreateDraft.audiencePersona} />
+              <ReviewField label={t("campaigns.form.brandTone")} value={pendingCreateDraft.brandTone.length > 0 ? pendingCreateDraft.brandTone.join(", ") : "—"} />
+              <ReviewField label={t("campaigns.form.budget")} value={pendingCreateDraft.budget > 0 ? formatCurrencyUSD(locale, pendingCreateDraft.budget) : "—"} />
+              <ReviewField label={t("campaigns.form.copyVariants")} value={String(pendingCreateDraft.deliverables.copyVariants)} />
+              <ReviewField label={t("campaigns.form.imageAssets")} value={String(pendingCreateDraft.deliverables.imageAssets)} />
+              <ReviewField label={t("campaigns.form.shortVideoAssets")} value={String(pendingCreateDraft.deliverables.shortVideoAssets)} />
+              <ReviewField label={t("campaigns.deliverables.ads")} value={pendingCreateDraft.deliverables.adsStrategy > 0 ? t("common.yes") : t("common.no")} />
+              <ReviewField label={t("campaigns.form.deadline")} value={formatDateTime(locale, pendingCreateDraft.deadline)} />
+              <ReviewField label={t("campaigns.form.referenceFiles")} value={pendingCreateDraft.referenceFiles.length > 0 ? t("campaigns.form.referenceFilesSelected", { count: pendingCreateDraft.referenceFiles.length }) : "—"} />
               <div className="md:col-span-2">
-                <p className="text-xs font-medium text-slate-500">專案需求描述</p>
+                <p className="text-xs font-medium text-slate-500">{t("campaigns.form.subtitle")}</p>
                 <p className="mt-1 whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
                   {pendingCreateDraft.projectDescription}
                 </p>
               </div>
               <div className="md:col-span-2">
-                <p className="text-xs font-medium text-slate-500">內容資料庫</p>
+                <p className="text-xs font-medium text-slate-500">{t("campaigns.form.referenceLibrary")}</p>
                 <p className="mt-1 rounded-xl bg-slate-50 p-3 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
                   {pendingCreateDraft.knowledgeItemIds.length > 0
                     ? knowledgeItems
@@ -1317,7 +1578,7 @@ export default function CampaignCenterPage() {
                 disabled={creatingCampaign}
                 className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium disabled:opacity-50 dark:border-slate-700"
               >
-                返回修改
+                {t("common.cancel")}
               </button>
               <button
                 type="button"
@@ -1325,7 +1586,7 @@ export default function CampaignCenterPage() {
                 disabled={creatingCampaign}
                 className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700"
               >
-                {creatingCampaign ? "建立中..." : "確認工單內容"}
+                {creatingCampaign ? t("common.loading") : createdCampaignForUpload ? t("campaigns.form.retryUpload") : t("campaigns.form.submit")}
               </button>
             </div>
           </div>
@@ -1422,28 +1683,54 @@ export default function CampaignCenterPage() {
             placeholder={t("campaigns.knowledge.description")}
             className="h-9 rounded-xl border border-slate-200 px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-950"
           />
-          <input
+          <select
             value={knowledgeCategory}
             onChange={(event) => setKnowledgeCategory(event.target.value)}
             aria-label={t("campaigns.knowledge.category")}
-            placeholder={t("campaigns.knowledge.category")}
             className="h-9 rounded-xl border border-slate-200 px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-950"
-          />
+          >
+            <option value="">{t("campaigns.knowledge.immediateUploadFolder")}</option>
+            {folderRecords.filter((folder) => folder.scope !== "platform").map((folder) => (
+              <option key={folder.folder_id} value={folder.folder_id}>{folder.name}</option>
+            ))}
+          </select>
           <input
             key={knowledgeInputKey}
             type="file"
-            onChange={(event) => setKnowledgeFile(event.target.files?.[0] ?? null)}
+            multiple
+            onChange={(event) => {
+              const files = Array.from(event.target.files ?? []);
+              if (files.length > MAX_BATCH_UPLOAD_FILES) {
+                setKnowledgeMessage(t("campaigns.form.maxBatchFiles", { count: MAX_BATCH_UPLOAD_FILES }));
+                setKnowledgeFiles([]);
+                setKnowledgeLibraryUploadStates([]);
+                return;
+              }
+              setKnowledgeFiles(files);
+              setKnowledgeLibraryUploadStates(files.map((file) => ({ file, status: "pending" as const })));
+            }}
             aria-label={t("campaigns.knowledge.chooseFile")}
             className="h-9 rounded-xl border border-slate-200 px-3 py-1 text-sm file:mr-2 file:rounded-md file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-xs file:font-medium dark:border-slate-700 dark:bg-slate-950 dark:file:bg-slate-800"
           />
           <button
             type="button"
             onClick={handleUploadKnowledgeItem}
-            disabled={knowledgeBusy || !knowledgeFile}
+            disabled={knowledgeBusy || knowledgeFiles.length === 0}
             className="h-9 whitespace-nowrap rounded-xl bg-slate-900 px-3 py-1 text-sm font-medium text-white disabled:opacity-50 dark:bg-slate-700"
           >
             {t("campaigns.knowledge.upload")}
           </button>
+          {knowledgeLibraryUploadStates.length > 0 ? (
+            <ul className="space-y-1 text-xs md:col-span-2" aria-label={t("campaigns.form.uploadStatus")}>
+              {knowledgeLibraryUploadStates.map((item) => (
+                <li key={`${item.file.name}-${item.file.lastModified}`} className="flex items-center justify-between gap-2">
+                  <span className="truncate">{item.file.name}</span>
+                  <button type="button" onClick={() => setFilePreview({ source: item.file, fileName: item.file.name })} className="font-medium text-blue-600">{t("campaigns.knowledge.download")}</button>
+                  <span>{item.status === "pending" ? t("campaigns.form.uploadPending") : item.status === "uploading" ? t("campaigns.form.uploading") : item.status === "success" ? t("campaigns.form.uploadSuccess") : t("campaigns.form.uploadFailed")}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
 
         <div className="grid items-center gap-2 md:grid-cols-[minmax(150px,1fr)_minmax(140px,0.8fr)_auto]">
@@ -1461,8 +1748,8 @@ export default function CampaignCenterPage() {
             className="h-9 rounded-xl border border-slate-200 px-3 py-1 text-sm dark:border-slate-700 dark:bg-slate-950"
           >
             <option value="">{t("campaigns.knowledge.allCategories")}</option>
-            {knowledgeCategories.map((category) => (
-              <option key={category} value={category}>{getKnowledgeFolderLabel(category)}</option>
+            {folderRecords.map((folder) => (
+              <option key={folder.folder_id} value={folder.folder_id}>{getKnowledgeFolderLabel(folder.folder_id)}</option>
             ))}
           </select>
           <button
@@ -1519,11 +1806,14 @@ export default function CampaignCenterPage() {
                       <td className="px-3 py-2">
                         <div className="flex gap-2">
                           {item.content_url ? (
+                            <button type="button" onClick={() => setFilePreview({ source: item.content_url!, fileName: String(item.metadata.file_name ?? item.title) })} className="rounded-md border border-blue-600 px-2 py-1 font-medium text-blue-600">{t("campaigns.knowledge.preview")}</button>
+                          ) : null}
+                          {item.content_url ? (
                             <a href={item.content_url} target="_blank" rel="noreferrer" className="rounded-md bg-blue-600 px-2 py-1 font-medium text-white">
                               {t("campaigns.knowledge.download")}
                             </a>
                           ) : null}
-                          {category !== IMMEDIATE_UPLOAD_FOLDER ? (
+                          {item.folder_id ? (
                             <select
                               value={category}
                               onChange={(e) => {
@@ -1535,10 +1825,10 @@ export default function CampaignCenterPage() {
                               className="rounded-md border border-slate-200 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950"
                             >
                               <option value="">{t("knowledge.moveTo")}</option>
-                              {folders
-                                .filter((f) => f !== category && f !== IMMEDIATE_UPLOAD_FOLDER)
+                              {folderRecords
+                                .filter((folder) => folder.name !== category && folder.scope !== "platform")
                                 .map((folder) => (
-                                  <option key={folder} value={folder}>{getKnowledgeFolderLabel(folder)}</option>
+                                  <option key={folder.folder_id} value={folder.folder_id}>{folder.name}</option>
                                 ))}
                             </select>
                           ) : null}
@@ -1714,10 +2004,20 @@ export default function CampaignCenterPage() {
           </button>
         </div>
 
+        <div className="space-y-2 rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+          {Object.entries(groupedReferences).map(([folderKey, folderReferences]) => (
+            <div key={folderKey} className="flex items-center justify-between text-xs">
+              <span className="font-medium">{getKnowledgeFolderLabel(folderKey)}</span>
+              <span className="text-slate-500">{folderReferences.map((item) => item.file_name).join(", ")}</span>
+            </div>
+          ))}
+          {Object.keys(groupedReferences).length === 0 ? <span className="text-xs text-slate-500">No references</span> : null}
+        </div>
+
       </section>
 
       {editTarget ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4">
           <div className="flex h-[90vh] w-full max-w-4xl flex-col rounded-2xl bg-white p-5 shadow-xl dark:bg-slate-900">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-200 pb-3 dark:border-slate-800">
               <h2 className="text-lg font-semibold">{t("campaigns.editTitle")}</h2>
@@ -1889,12 +2189,14 @@ export default function CampaignCenterPage() {
           </div>
         </div>
       ) : null}
+      {editTarget ? <div className="fixed right-8 top-24 z-[100] max-h-[60vh] w-96 overflow-y-auto rounded-xl border border-blue-300 bg-white p-4 text-xs shadow-2xl dark:border-blue-800 dark:bg-slate-900"><div className="flex items-center justify-between font-semibold"><span>本活動已保存的 Reference</span><span>{editReferences.length} 個</span></div>{editReferencesLoading ? <p className="mt-2 text-slate-500">載入中...</p> : editReferences.length === 0 ? <p className="mt-2 text-slate-500">沒有已保存的 Reference。</p> : <div className="mt-2 space-y-2">{editReferences.map((reference) => <div key={reference.reference_id} className="rounded-lg border border-slate-200 p-2 dark:border-slate-700"><div className="font-medium">{reference.file_name}</div><div className="mt-1 text-slate-500">{reference.file_type} · 資料夾：{reference.folder || reference.folder_id || "未分類"}</div><div className="mt-1 font-mono text-[10px] text-slate-400">{reference.reference_id}</div></div>)}</div>}</div> : null}
       <ReviewAssetPreviewModal
         assetId={previewAssetId}
         open={Boolean(previewAssetId)}
         onClose={() => setPreviewAssetId(null)}
         showRegenerate={false}
       />
+      <FilePreviewModal source={filePreview?.source ?? null} fileName={filePreview?.fileName ?? ""} open={Boolean(filePreview)} onClose={() => setFilePreview(null)} />
     </section>
   );
 }
@@ -1922,6 +2224,22 @@ function getReferenceFolder(item: CampaignReferenceRecord): string {
 function getKnowledgeFolder(item: KnowledgeItemRecord): string {
   const folder = item.metadata?.folder ?? item.metadata?.category;
   return typeof folder === "string" && folder.trim() ? folder : "General";
+}
+
+function getReferenceFolderKey(item: CampaignReferenceRecord, folderRecords: FolderRecord[]): string {
+  if (!item.folder_id) return `legacy:${getReferenceFolder(item)}`;
+  const folder = folderRecords.find((candidate) => candidate.folder_id === item.folder_id);
+  return folder ? folderScopeKey(folder) : item.folder_id;
+}
+
+function getKnowledgeFolderKey(item: KnowledgeItemRecord, folderRecords: FolderRecord[]): string {
+  if (!item.folder_id) return `legacy:${getKnowledgeFolder(item)}`;
+  const folder = folderRecords.find((candidate) => candidate.folder_id === item.folder_id);
+  return folder ? folderScopeKey(folder) : item.folder_id;
+}
+
+function folderScopeKey(folder: Pick<FolderRecord, "folder_id" | "scope" | "company_id">): string {
+  return `${folder.scope}:${folder.company_id ?? "platform"}:${folder.folder_id}`;
 }
 
 function isKnowledgeItemAttachable(item: KnowledgeItemRecord): boolean {

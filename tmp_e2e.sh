@@ -3,7 +3,8 @@ set -e
 
 WORKER_COPY="http://localhost:8091"
 CAMPAIGN="http://localhost:8080"
-KEY="change_me_internal_key"
+: "${CHATBOT_INTERNAL_API_KEY:?CHATBOT_INTERNAL_API_KEY must be set}"
+KEY="$CHATBOT_INTERNAL_API_KEY"
 COMPANY_ID="00000000-0000-0000-0000-000000000001"
 
 echo "=== Step 1: Call copy worker ==="

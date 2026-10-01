@@ -42,6 +42,9 @@ class CampaignRecord(BaseModel):
     created_at: datetime
     brief: CampaignBrief
     deleted_at: datetime | None = None
+    generation_context_id: str | None = None
+    source_summary: dict[str, Any] | None = None
+    tasks: list["TaskRecord"] | None = None
 
 
 class TaskRecord(BaseModel):
@@ -49,10 +52,21 @@ class TaskRecord(BaseModel):
     task_id: str
     campaign_id: str
     task_type: Literal["copywriting", "image_generation", "video_generation", "ads_strategy"]
-    status: Literal["pending", "planned", "running", "validating", "passed", "failed", "retrying"]
+    status: Literal["pending", "planned", "running", "validating", "passed", "failed", "blocked", "retrying"]
     priority: int
     depends_on: list[str] = []
     acceptance: list[str] = []
+    retry_count: int = 0
+    error_class: str | None = None
+    error_detail: str | None = None
+    blocked_by_task_id: str | None = None
+    blocked_reason: str | None = None
+    next_retry_at: datetime | None = None
+    generation_context_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    retryable: bool | None = None
+    run_id: str | None = None
 
 
 class CampaignCreatedResponse(BaseModel):
@@ -235,6 +249,7 @@ class WorkerCopyResult(BaseModel):
     campaign_id: str
     company_id: str
     run_id: str
+    generation_context_id: str | None = None
     variants: list[dict[str, Any]]  # [{title, body, cta}]
 
 
@@ -243,6 +258,7 @@ class WorkerImageResult(BaseModel):
     campaign_id: str
     company_id: str
     run_id: str
+    generation_context_id: str | None = None
     image_assets: list[dict[str, Any]]  # [{url, size}]
 
 
@@ -251,6 +267,7 @@ class WorkerVideoResult(BaseModel):
     campaign_id: str
     company_id: str
     run_id: str
+    generation_context_id: str | None = None
     video_url: str
     thumbnail_url: str
     provider: str = "MiniMax"
@@ -264,6 +281,7 @@ class WorkerAdsResult(BaseModel):
     campaign_id: str
     company_id: str
     run_id: str
+    generation_context_id: str | None = None
     ads_plan: dict[str, Any]
 
 

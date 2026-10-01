@@ -1,0 +1,153 @@
+import os
+import sys
+import pytest
+from pathlib import Path
+
+os.environ.setdefault("CAMPAIGN_REQUIRE_POSTGRES", "false")
+os.environ.setdefault("CHATBOT_INTERNAL_API_KEY", "test-key")
+
+# Both services use an ``app`` package; make combined pytest invocation load this service.
+loaded_app_main = sys.modules.get("app.main")
+if loaded_app_main is None or "campaign_service" not in str(getattr(loaded_app_main, "__file__", "")):
+    for module_name in list(sys.modules):
+        if module_name == "app" or module_name.startswith("app."):
+            del sys.modules[module_name]
+sys.path.insert(0, str(Path(__file__).parent))
+
+from app.main import apply_worker_result_state, classify_worker_error, generation_diagnostics, manual_retry_allowed, normalize_task_payload, sanitize_worker_error_detail
+from app.context_assembler import ContextSourceItem, GenerationContextSnapshot
+from app.schemas import CampaignBrief, CampaignRecord
+from datetime import datetime
+from app.schemas import TaskRecord
+
+
+def task(task_id, task_type, depends_on=(), status="pending"):
+    return TaskRecord(
+        company_id="co-1", task_id=task_id, campaign_id="camp-1", task_type=task_type,
+        status=status, priority=1, depends_on=list(depends_on), acceptance=[]
+    )
+
+
+def test_worker_failure_sets_blocked_reason_without_blocking_unrelated_tasks():
+    tasks = [task("image", "image_generation", status="running"), task("video", "video_generation", ["image"]), task("copy", "copywriting")]
+    updated = apply_worker_result_state(tasks, "image", {"status": "failed", "error": "quota exceeded"})
+    by_id = {item.task_id: item for item in updated}
+    assert by_id["image"].status == "failed"
+    assert by_id["video"].status == "blocked"
+    assert by_id["video"].blocked_reason == "blocked by failed task image"
+    assert by_id["copy"].status == "pending"
+
+
+def test_single_task_retry_resets_failed_task_and_blocked_descendants():
+    tasks = [task("image", "image_generation", status="failed"), task("video", "video_generation", ["image"], "blocked"), task("copy", "copywriting", status="passed")]
+    updated = apply_worker_result_state(tasks, "image", {"status": "retrying"})
+    by_id = {item.task_id: item for item in updated}
+    assert by_id["image"].status == "retrying"
+    assert by_id["video"].status == "pending"
+    assert by_id["copy"].status == "passed"
+
+
+def test_error_detail_redacts_secrets():
+    detail = sanitize_worker_error_detail("https://worker/run?api_key=secret-token password=hunter2")
+    assert "secret-token" not in detail
+    assert "hunter2" not in detail
+    assert classify_worker_error(RuntimeError("HTTP 429 quota exceeded")) == "quota"
+
+
+def test_normalize_preserves_blocked_task_diagnostics():
+    normalized = normalize_task_payload({
+        "task_id": "video", "task_type": "video_generation", "status": "blocked",
+        "blocked_by_task_id": "image", "blocked_reason": "blocked by failed task image",
+    }, "camp-1")
+    assert normalized.status == "blocked"
+    assert normalized.blocked_by_task_id == "image"
+    assert normalized.blocked_reason == "blocked by failed task image"
+
+
+def test_retry_success_returns_passed_persisted_state():
+    tasks = [task("image", "image_generation", status="retrying")]
+    updated = apply_worker_result_state(tasks, "image", {
+        "status": "passed",
+        "image_assets": [{"url": "https://example.com/image.png"}],
+    })
+    assert updated[0].status == "passed"
+
+
+def test_retry_dispatch_failure_is_terminal_but_retryable():
+    failed = apply_worker_result_state(
+        [task("image", "image_generation", status="retrying"), task("video", "video_generation", ["image"], "pending")],
+        "image", {"status": "failed", "error": "provider secret=do-not-leak"}
+    )
+    assert failed[0].status == "failed"
+    assert failed[1].status == "blocked"
+    retried = apply_worker_result_state(failed, "image", {"status": "retrying"})
+    assert retried[0].status == "retrying"
+    assert retried[1].status == "pending"
+
+
+def test_structured_secret_fields_are_redacted():
+    detail = sanitize_worker_error_detail("{'api_key':'provider-key', 'credentials':{'token':'abc', 'password':'pw'}, 'authorization':'Bearer supersecret'}")
+    assert "provider-key" not in detail
+    assert "abc" not in detail
+    assert "pw" not in detail
+    assert "supersecret" not in detail
+    assert "Bearer supersecret" not in detail
+
+
+def test_generation_diagnostics_serializes_counts_and_provenance_without_content():
+    campaign = CampaignRecord(
+        company_id="co-1", campaign_id="camp-1", created_at=datetime.utcnow(),
+        brief=CampaignBrief(
+            campaign_name="Campaign", product_name="Product", objective="awareness",
+            target_audience={"age_range": "all", "gender": "all", "persona": "all"},
+            platforms=["social"], budget=1, brand_tone=[], deliverables={}, deadline=datetime.utcnow(),
+            industry_category="food", project_description="brief",
+        ),
+    )
+    from app import main
+    main.generation_context_cache["gctx_test"] = GenerationContextSnapshot(
+        generation_context_id="gctx_test", campaign_id="camp-1", internal_token_count=3,
+        external_token_count=2, internal_ratio=.6, external_ratio=.4,
+        items=(ContextSourceItem("user_selected", "ref-1", "Brand guide", "secret content", {"folder": "Brand"}),
+               ContextSourceItem("external_web", "web-1", "Article", "external content", {"url": "https://example.com"})),
+        external_source_urls=("https://example.com",),
+    )
+    diagnostics = generation_diagnostics(campaign)
+    assert diagnostics["internal_source_count"] == 1
+    assert diagnostics["external_source_count"] == 1
+    assert diagnostics["provenance"][0]["label"] == "Brand guide"
+    assert "text" not in diagnostics["provenance"][0]
+
+
+def test_manual_retry_rejects_non_retryable_or_exhausted_tasks():
+    assert manual_retry_allowed(task("failed", "image_generation", status="failed"), max_attempts=3)
+    assert not manual_retry_allowed(task("blocked", "video_generation", status="blocked"), max_attempts=3)
+    exhausted = task("exhausted", "image_generation", status="failed").model_copy(update={"retry_count": 3})
+    assert not manual_retry_allowed(exhausted, max_attempts=3)
+
+
+def test_worker_result_preserves_provider_and_model_diagnostics():
+    updated = apply_worker_result_state([task("image", "image_generation", status="running")], "image", {
+        "status": "passed", "provider": "vertex", "model_name": "imagen-3",
+    })
+    assert updated[0].provider == "vertex"
+    assert updated[0].model == "imagen-3"
+
+
+@pytest.mark.parametrize("task_type,result", [
+    ("copywriting", {"status": "passed", "variants": []}),
+    ("image_generation", {"status": "passed", "image_assets": []}),
+    ("video_generation", {"status": "passed", "video_url": ""}),
+    ("ads_strategy", {"status": "passed", "ads_plan": {}}),
+    ("image_generation", {"status": "passed"}),
+    ("image_generation", {"status": "passed", "displayable_asset_count": 1, "image_assets": []}),
+])
+def test_empty_worker_result_fails_without_unblocking_descendants(task_type, result):
+    updated = apply_worker_result_state([
+        task("selected", task_type, status="running"),
+        task("dependent", "video_generation", ["selected"], status="pending"),
+    ], "selected", result)
+    assert updated[0].status == "failed"
+    assert updated[0].retryable is not False
+    assert "no displayable assets" in (updated[0].error_detail or "")
+    assert updated[1].status == "blocked"
