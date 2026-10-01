@@ -110,6 +110,30 @@ def test_optional_pack_failure_audit_includes_selection_reason(tmp_path):
     assert failure["selection_reason"] == "optional_pack"
 
 
+def test_pack_audit_filters_default_sources_without_pack_id(tmp_path):
+    campaign = CampaignRecord(
+        company_id="company", campaign_id="campaign", created_at=datetime.utcnow(),
+        brief=CampaignBrief(campaign_name="Campaign", product_name="Product", objective="awareness",
+            target_audience={"age_range": "all", "gender": "all", "persona": "all"}, platforms=["social"],
+            budget=1, brand_tone=[], deliverables=Deliverables(image_assets=1), deadline=datetime.utcnow()),
+    )
+    invalid_path = tmp_path / "invalid.png"
+    invalid_path.write_bytes(b"invalid-pack-source")
+    valid_path = tmp_path / "valid.png"
+    valid_path.write_bytes(b"valid-pack-source")
+    snapshot = assemble_generation_context(campaign, [
+        ContextSourceItem("platform_default", "invalid", "invalid.png", "", {"stored_path": str(invalid_path), "file_type": "image/png"}),
+        ContextSourceItem("platform_default", "valid", "valid.png", "", {"stored_path": str(valid_path), "file_type": "image/png", "pack_id": "pack-1", "pack_role": "style", "selection_mode": "optional", "max_images": 1}),
+    ], [], [], 100)
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    assert payload["reference_audit"]["candidate_count"] == 1
+    assert all(reference["reference_id"] != "invalid" for reference in payload["reference_audit"]["references"])
+
+
 def image_result(image_assets):
     return {
         "task_id": "image-task",

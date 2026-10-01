@@ -2839,6 +2839,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
     pack_candidate_count = sum(
         1 for item in snapshot.items
         if item.source_type in {"platform_default", "industry_default"}
+        and str(item.metadata.get("pack_id") or "").strip()
         and str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "").lower().startswith("image/")
     )
     pack_selected = pack_candidate_count > 0

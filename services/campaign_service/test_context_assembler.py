@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,30 @@ def test_reference_pack_selection_deduplicates_before_filling_cap():
 
     assert len(selected) == 6
     assert len({item.metadata["sha256"] for item in selected}) == 6
+
+
+def test_reference_pack_selection_deduplicates_across_pack_groups_before_limits(tmp_path):
+    duplicate = b"same-file-bytes"
+    duplicate_path = tmp_path / "duplicate.png"
+    duplicate_path.write_bytes(duplicate)
+    duplicate_sha = hashlib.sha256(duplicate).hexdigest()
+    unique_path = tmp_path / "unique.png"
+    unique_path.write_bytes(b"unique-file-bytes")
+    unique_sha = hashlib.sha256(unique_path.read_bytes()).hexdigest()
+    duplicate_id, unique_id = "product-duplicate", "product-unique"
+    duplicate_rotation = hashlib.sha256(f"camp-1:run-1:product:{duplicate_id}".encode()).hexdigest()
+    unique_rotation = hashlib.sha256(f"camp-1:run-1:product:{unique_id}".encode()).hexdigest()
+    if duplicate_rotation > unique_rotation:
+        duplicate_id, unique_id = unique_id, duplicate_id
+    sources = [
+        pack_item("brand", "brand_identity", "brand-duplicate", selection_mode="mandatory", max_images="1", sha256=duplicate_sha, stored_path=str(duplicate_path)),
+        pack_item("product", "product", duplicate_id, selection_mode="mandatory", max_images="1", sha256=duplicate_sha, stored_path=str(duplicate_path)),
+        pack_item("product", "product", unique_id, selection_mode="mandatory", max_images="1", sha256=unique_sha, stored_path=str(unique_path)),
+    ]
+
+    selected = select_reference_pack_items(sources, "camp-1", "run-1")
+
+    assert [item.source_id for item in selected] == ["brand-duplicate", unique_id]
 
 
 def test_active_pack_loading_preserves_persisted_item_metadata(monkeypatch):

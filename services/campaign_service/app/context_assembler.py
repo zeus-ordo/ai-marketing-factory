@@ -124,14 +124,27 @@ def select_reference_pack_items(
     packs: dict[str, list[ContextSourceItem]] = {}
     for candidate in pack_items:
         packs.setdefault(str(candidate.metadata["pack_id"]), []).append(candidate)
+    ordered_packs = sorted(packs.values(), key=lambda group: pack_rank(group[0]))
+    global_hashes: set[str] = set()
+    unique_packs: dict[str, list[ContextSourceItem]] = {}
+    for group in ordered_packs:
+        unique_group: list[ContextSourceItem] = []
+        for candidate in sorted(group, key=lambda item: (rotation(item), item.source_id)):
+            sha = str(candidate.metadata.get("sha256") or "")
+            if sha and sha in global_hashes:
+                continue
+            if sha:
+                global_hashes.add(sha)
+            unique_group.append(candidate)
+        if unique_group:
+            unique_packs[str(unique_group[0].metadata["pack_id"])] = unique_group
+    packs = unique_packs
+    pack_items = [candidate for group in packs.values() for candidate in group]
     pack_limits = {
         pack_id: max(0, int(group[0].metadata.get("max_images") or len(group)))
         for pack_id, group in packs.items()
     }
-    ordered_packs = sorted(
-        packs.values(),
-        key=lambda group: pack_rank(group[0]),
-    )
+    ordered_packs = sorted(packs.values(), key=lambda group: pack_rank(group[0]))
     for group in ordered_packs:
         if group[0].metadata.get("selection_mode") != "mandatory":
             continue
