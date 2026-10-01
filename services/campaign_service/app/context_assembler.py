@@ -73,9 +73,12 @@ def select_reference_pack_items(
     total_limit: int = 6,
 ) -> tuple[ContextSourceItem, ...]:
     """Select Pack and campaign image sources with deterministic bounded priority."""
+    def pack_id(item: ContextSourceItem) -> str:
+        return str(item.metadata.get("pack_id") or "").strip()
+
     pack_items = [
         item for item in items
-        if item.source_type in {"platform_default", "industry_default"} and item.metadata.get("pack_id")
+        if item.source_type in {"platform_default", "industry_default"} and pack_id(item)
     ]
     manual_types = {"campaign_reference", "user_selected", "immediate_upload"}
     manual = [item for item in items if item.source_type in manual_types]
@@ -90,7 +93,7 @@ def select_reference_pack_items(
     company = [item for item in company if image(item)]
 
     def rotation(item: ContextSourceItem) -> str:
-        key = f"{campaign_id}:{run_id}:{item.metadata.get('pack_id', '')}:{item.source_id}"
+        key = f"{campaign_id}:{run_id}:{pack_id(item)}:{item.source_id}"
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
     def pack_rank(item: ContextSourceItem) -> tuple[int, int, int, int, str, str]:
@@ -107,23 +110,23 @@ def select_reference_pack_items(
     def add(item: ContextSourceItem) -> bool:
         if len(selected) >= max(0, total_limit) or item.source_id in seen_ids:
             return False
-        pack_id = str(item.metadata.get("pack_id") or "")
-        if pack_id and pack_counts.get(pack_id, 0) >= pack_limits.get(pack_id, total_limit):
+        item_pack_id = pack_id(item)
+        if item_pack_id and pack_counts.get(item_pack_id, 0) >= pack_limits.get(item_pack_id, total_limit):
             return False
         sha = str(item.metadata.get("sha256") or "")
         if sha and sha in seen_hashes:
             return False
         selected.append(item)
         seen_ids.add(item.source_id)
-        if pack_id:
-            pack_counts[pack_id] = pack_counts.get(pack_id, 0) + 1
+        if item_pack_id:
+            pack_counts[item_pack_id] = pack_counts.get(item_pack_id, 0) + 1
         if sha:
             seen_hashes.add(sha)
         return True
 
     packs: dict[str, list[ContextSourceItem]] = {}
     for candidate in pack_items:
-        packs.setdefault(str(candidate.metadata["pack_id"]), []).append(candidate)
+        packs.setdefault(pack_id(candidate), []).append(candidate)
     ordered_packs = sorted(packs.values(), key=lambda group: pack_rank(group[0]))
     global_hashes: set[str] = set()
     unique_packs: dict[str, list[ContextSourceItem]] = {}
@@ -137,7 +140,7 @@ def select_reference_pack_items(
                 global_hashes.add(sha)
             unique_group.append(candidate)
         if unique_group:
-            unique_packs[str(unique_group[0].metadata["pack_id"])] = unique_group
+            unique_packs[pack_id(unique_group[0])] = unique_group
     packs = unique_packs
     pack_items = [candidate for group in packs.values() for candidate in group]
     pack_limits = {
@@ -173,8 +176,8 @@ def select_reference_pack_items(
         if len(selected) >= total_limit:
             break
         if candidate.metadata.get("selection_mode") == "optional":
-            pack_id = str(candidate.metadata.get("pack_id") or "")
-            if pack_id and pack_counts.get(pack_id, 0) >= pack_limits.get(pack_id, total_limit):
+            candidate_pack_id = pack_id(candidate)
+            if candidate_pack_id and pack_counts.get(candidate_pack_id, 0) >= pack_limits.get(candidate_pack_id, total_limit):
                 continue
             add(candidate)
     for candidate in company:

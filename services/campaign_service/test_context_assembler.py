@@ -141,6 +141,16 @@ def test_reference_pack_selection_deduplicates_across_pack_groups_before_limits(
     assert [item.source_id for item in selected] == ["brand-duplicate", unique_id]
 
 
+def test_reference_pack_selection_ignores_whitespace_only_pack_id():
+    selected = select_reference_pack_items(
+        [pack_item("   ", "style", "whitespace-pack", selection_mode="optional")],
+        "camp-1",
+        "run-1",
+    )
+
+    assert selected == ()
+
+
 def test_active_pack_loading_preserves_persisted_item_metadata(monkeypatch):
     import importlib
 
