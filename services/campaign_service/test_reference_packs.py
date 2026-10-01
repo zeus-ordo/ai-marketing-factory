@@ -1,4 +1,5 @@
 import io
+import hashlib
 import os
 import sys
 from datetime import datetime
@@ -185,6 +186,24 @@ def test_reference_pack_upload_links_image_knowledge_without_exposing_path(confi
     assert result.file_type == "image/png"
     assert "stored_path" not in result.model_dump()
     assert persistence.items[-1]["reference_pack_id"] == pack.pack_id
+
+
+def test_reference_pack_upload_persists_sha256_without_image_bytes(configured):
+    persistence = configured
+    pack = main.ReferencePackRecord(
+        pack_id="pack-sha", name="Style", role="style", scope="platform", industry=None,
+        selection_mode="optional", max_images=2, priority=1, is_active=True,
+        created_at=datetime.utcnow(), updated_at=datetime.utcnow(),
+    )
+    persistence.packs[pack.pack_id] = pack.model_dump(mode="python")
+    content = b"stable-image-bytes"
+
+    main.upload_reference_pack_item(req(), pack.pack_id, title="Example", file=upload(content=content))
+
+    metadata = persistence.items[-1]["metadata"]
+    assert metadata["sha256"] == hashlib.sha256(content).hexdigest()
+    assert "data" not in metadata
+    assert "bytes" not in metadata
 
 
 def test_generic_knowledge_list_does_not_expose_pack_stored_path(configured):

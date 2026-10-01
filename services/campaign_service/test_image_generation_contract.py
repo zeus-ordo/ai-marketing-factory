@@ -62,6 +62,54 @@ def test_mandatory_pack_missing_file_returns_structured_422(tmp_path):
         raise AssertionError("mandatory Pack attachment failure must return 422")
 
 
+def test_pack_audit_counts_pack_candidates_and_preserves_mixed_manual_provenance(tmp_path):
+    campaign = CampaignRecord(
+        company_id="company", campaign_id="campaign", created_at=datetime.utcnow(),
+        brief=CampaignBrief(campaign_name="Campaign", product_name="Product", objective="awareness",
+            target_audience={"age_range": "all", "gender": "all", "persona": "all"}, platforms=["social"],
+            budget=1, brand_tone=[], deliverables=Deliverables(image_assets=1), deadline=datetime.utcnow()),
+    )
+    pack_items = []
+    for index in range(7):
+        path = tmp_path / f"pack-{index}.png"
+        path.write_bytes(f"pack-{index}".encode())
+        pack_items.append(ContextSourceItem(
+            "platform_default", f"pack-{index}", f"pack-{index}.png", "",
+            {"stored_path": str(path), "file_type": "image/png", "pack_id": "pack-1", "pack_name": "Style",
+             "pack_role": "style", "selection_mode": "optional", "max_images": 10, "priority": 1},
+        ))
+    manual_path = tmp_path / "manual.png"
+    manual_path.write_bytes(b"manual")
+    manual = ContextSourceItem(
+        "campaign_reference", "manual-1", "manual.png", "",
+        {"stored_path": str(manual_path), "file_type": "image/png", "folder": "General"},
+    )
+    snapshot = assemble_generation_context(campaign, [manual, *pack_items], [], [], 100)
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    audit = payload["reference_audit"]
+    assert audit["candidate_count"] == 7
+    assert audit["selected_count"] == 6
+    assert audit["attached_count"] == 6
+    assert audit["references"][0]["reference_id"] == "manual-1"
+    assert audit["references"][1]["reference_pack_id"] == "pack-1"
+    assert audit["references"][1]["selection_reason"] == "optional_pack"
+
+
+def test_optional_pack_failure_audit_includes_selection_reason(tmp_path):
+    campaign, snapshot = pack_snapshot(tmp_path, "optional")
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    failure = payload["reference_audit"]["failures"][0]
+    assert failure["selection_reason"] == "optional_pack"
+
+
 def image_result(image_assets):
     return {
         "task_id": "image-task",

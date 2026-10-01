@@ -2462,7 +2462,7 @@ def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]
                 for pack in packs
             }
         except Exception:
-            packs, rows_by_pack = [], {}
+            raise RuntimeError("Unable to load active reference packs")
     else:
         packs = [pack.model_dump(mode="python") for pack in reference_packs.values() if pack.is_active]
         rows_by_pack = {
@@ -2497,6 +2497,7 @@ def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]
                 "max_images": pack.get("max_images") or 1,
                 "priority": pack.get("priority") or 0,
                 "industry": pack.get("industry"),
+                "sha256": metadata.get("sha256"),
             })
     return context
 
@@ -2785,6 +2786,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
             "priority": metadata.get("priority"),
             "file_name": item.label,
             "mime_type": metadata.get("mime_type") or metadata.get("file_type"),
+            "selection_reason": "mandatory_pack" if metadata.get("selection_mode") == "mandatory" else "optional_pack",
         }
         if not stored_path or not os.path.isfile(stored_path):
             failure = {"reference_id": reference_id, "category": "missing_file"}
@@ -2834,7 +2836,12 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
                 failure.update({key: value for key, value in failure_metadata.items() if value is not None})
                 failure["mandatory"] = str(metadata.get("selection_mode")) == "mandatory"
             failures.append(failure)
-    pack_selected = any(item.source_type in {"platform_default", "industry_default"} for item in selected)
+    pack_candidate_count = sum(
+        1 for item in snapshot.items
+        if item.source_type in {"platform_default", "industry_default"}
+        and str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "").lower().startswith("image/")
+    )
+    pack_selected = pack_candidate_count > 0
     audit_references = [
         {key: reference[key] for key in (("reference_id", "reference_pack_id", "pack_name", "pack_role", "selection_mode", "selection_reason", "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256") if pack_selected else ("reference_id", "file_name", "mime_type", "folder", "sha256")) if reference.get(key) is not None}
         for reference in references
@@ -2847,7 +2854,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "references": audit_references,
     }
     if pack_selected:
-        audit.update({"policy_version": "reference-pack-v1", "candidate_count": len(selected)})
+        audit.update({"policy_version": "reference-pack-v1", "candidate_count": pack_candidate_count})
     return references, audit
 
 
@@ -6229,6 +6236,7 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
     if not stored_path.startswith(target_dir):
         raise HTTPException(status_code=400, detail="Invalid file name")
     size = 0
+    sha256 = hashlib.sha256()
     try:
         validate_reference_upload(original_name, file_type, 0)
         deadline = time.monotonic() + REFERENCE_UPLOAD_TIMEOUT_SECONDS
@@ -6245,6 +6253,7 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
                 if size > REFERENCE_MAX_SIZE_BYTES:
                     raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
                 output.write(chunk)
+                sha256.update(chunk)
         validate_reference_upload(original_name, file_type, size)
     except HTTPException:
         cleanup_reference_upload(stored_path)
@@ -6255,7 +6264,7 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
     except Exception as exc:
         cleanup_reference_upload(stored_path)
         raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
-    item = {"item_id": item_id, "company_id": "platform", "title": title.strip(), "source": "manual", "description": "", "content_url": f"/api/v1/knowledge-items/{item_id}/download/{parse.quote(safe_name)}", "metadata": {"file_name": safe_name, "file_type": file_type, "file_size": size, "stored_path": stored_path, "reference_pack_id": pack_id}, "created_at": now_utc(), "folder_id": None, "reference_pack_id": pack_id}
+    item = {"item_id": item_id, "company_id": "platform", "title": title.strip(), "source": "manual", "description": "", "content_url": f"/api/v1/knowledge-items/{item_id}/download/{parse.quote(safe_name)}", "metadata": {"file_name": safe_name, "file_type": file_type, "file_size": size, "stored_path": stored_path, "sha256": sha256.hexdigest(), "reference_pack_id": pack_id}, "created_at": now_utc(), "folder_id": None, "reference_pack_id": pack_id}
     if persistence is not None and callable(getattr(persistence, "create_knowledge_item", None)):
         try:
             persistence.create_knowledge_item(item)

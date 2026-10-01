@@ -103,6 +103,62 @@ def test_reference_pack_selection_rotates_stably_and_deduplicates_sha256():
     assert [item.source_id for item in first] != [item.source_id for item in rotated]
 
 
+def test_reference_pack_selection_deduplicates_before_filling_cap():
+    sources = [
+        pack_item("style", "style", "duplicate-a", max_images="10", sha256="same"),
+        pack_item("style", "style", "duplicate-b", max_images="10", sha256="same"),
+        *[pack_item("style", "style", f"unique-{index}", max_images="10", sha256=f"unique-{index}") for index in range(6)],
+    ]
+
+    selected = select_reference_pack_items(sources, "camp-1", "run-1")
+
+    assert len(selected) == 6
+    assert len({item.metadata["sha256"] for item in selected}) == 6
+
+
+def test_active_pack_loading_preserves_persisted_item_metadata(monkeypatch):
+    import importlib
+
+    main = importlib.import_module("app.main")
+    pack = {
+        "pack_id": "pack-style", "name": "Style", "role": "style", "scope": "platform",
+        "industry": None, "selection_mode": "optional", "max_images": 2, "priority": 1,
+        "is_active": True,
+    }
+    row = {
+        "item_id": "item-1", "title": "Style image", "description": "",
+        "metadata": {"stored_path": "/private/style.png", "file_name": "style.png", "file_type": "image/png", "sha256": "persisted-sha"},
+    }
+
+    class Persistence:
+        def list_reference_packs(self, **kwargs):
+            return [pack]
+
+        def list_reference_pack_items(self, pack_id):
+            return [row]
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    loaded = main.list_reference_pack_context(campaign())
+
+    assert loaded[0]["sha256"] == "persisted-sha"
+    assert loaded[0]["stored_path"] == "/private/style.png"
+
+
+def test_active_pack_loading_surfaces_persistence_errors(monkeypatch):
+    import importlib
+
+    main = importlib.import_module("app.main")
+
+    class Persistence:
+        def list_reference_packs(self, **kwargs):
+            raise OSError("database unavailable")
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+
+    with pytest.raises(RuntimeError, match="Unable to load active reference packs"):
+        main.list_reference_pack_context(campaign())
+
+
 def test_allocates_floor_75_25_budgets_and_records_ratios():
     snapshot = assemble_generation_context(
         campaign(),

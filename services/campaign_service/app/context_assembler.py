@@ -136,10 +136,19 @@ def select_reference_pack_items(
         if group[0].metadata.get("selection_mode") != "mandatory":
             continue
         group = sorted(group, key=lambda candidate: (rotation(candidate), candidate.source_id))
+        unique_group: list[ContextSourceItem] = []
+        group_hashes: set[str] = set()
+        for candidate in group:
+            sha = str(candidate.metadata.get("sha256") or "")
+            if sha and sha in group_hashes:
+                continue
+            if sha:
+                group_hashes.add(sha)
+            unique_group.append(candidate)
         limit = max(0, int(group[0].metadata.get("max_images") or len(group)))
         if group[0].metadata.get("selection_mode") == "mandatory" and group[0].metadata.get("pack_role") in {"brand_identity", "product"}:
             limit = min(limit, 2)
-        for candidate in group[:limit]:
+        for candidate in unique_group[:limit]:
             add(candidate)
 
     # Manual campaign References outrank optional Pack and company images.
@@ -151,6 +160,9 @@ def select_reference_pack_items(
         if len(selected) >= total_limit:
             break
         if candidate.metadata.get("selection_mode") == "optional":
+            pack_id = str(candidate.metadata.get("pack_id") or "")
+            if pack_id and pack_counts.get(pack_id, 0) >= pack_limits.get(pack_id, total_limit):
+                continue
             add(candidate)
     for candidate in company:
         if len(selected) >= total_limit:
