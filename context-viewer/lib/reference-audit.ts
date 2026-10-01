@@ -5,6 +5,7 @@ export type ReferenceAuditFailure = { referenceId: string; category: string; pac
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function displayString(value: unknown, fallback: string) { return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : fallback; }
 function displayOptionalString(value: unknown) { return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : undefined; }
+function validCount(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value >= 0; }
 function displayOptionalNumber(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
 function provenance(value: Record<string, unknown>) {
   const packId = displayOptionalString(value.reference_pack_id);
@@ -25,9 +26,9 @@ export function removeBinaryData(value: unknown): unknown {
 }
 
 export function normalizeReferenceAudit(value: unknown): ReferenceAudit | null {
-  if (!isRecord(value) || typeof value.selected_count !== "number" || !Number.isInteger(value.selected_count) || value.selected_count < 0 || typeof value.attached_count !== "number" || !Number.isInteger(value.attached_count) || value.attached_count < 0 || !Array.isArray(value.failures) || !Array.isArray(value.references)) return null;
+  if (!isRecord(value) || !validCount(value.selected_count) || !validCount(value.attached_count) || !Array.isArray(value.failures) || !Array.isArray(value.references)) return null;
   return {
-    ...(displayOptionalNumber(value.candidate_count) !== undefined ? { candidateCount: displayOptionalNumber(value.candidate_count) } : {}),
+    ...(validCount(value.candidate_count) ? { candidateCount: value.candidate_count } : {}),
     selectedCount: value.selected_count,
     attachedCount: value.attached_count,
     multimodal: value.multimodal === true,

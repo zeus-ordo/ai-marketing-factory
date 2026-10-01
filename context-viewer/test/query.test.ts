@@ -349,6 +349,22 @@ test("reference audit normalizes and renders Pack provenance without image bytes
   assert.doesNotMatch(JSON.stringify(audit), /image-bytes|base64|reference_images/);
 });
 
+test("reference audit rejects malformed candidate counts and preserves partial Pack provenance", async () => {
+  for (const candidateCount of [-1, 1.5, Number.POSITIVE_INFINITY, "3", null]) {
+    const audit = normalizeReferenceAudit({ candidate_count: candidateCount, selected_count: 1, attached_count: 1, failures: [], references: [] });
+    assert.equal(audit?.candidateCount, undefined);
+  }
+  assert.equal(normalizeReferenceAudit({ candidate_count: 0, selected_count: 0, attached_count: 0, failures: [], references: [] })?.candidateCount, 0);
+
+  const partial = normalizeReferenceAudit({ selected_count: 1, attached_count: 1, failures: [], references: [{ reference_id: "ref-1", file_name: "style.png", mime_type: "image/png", folder: "Style", sha256: "abc", pack_name: "Style Pack", pack_role: "style", source_type: "industry_default" }] });
+  assert.deepEqual(partial?.references[0], { referenceId: "ref-1", fileName: "style.png", mimeType: "image/png", folder: "Style", sha256: "abc", packName: "Style Pack", packRole: "style", sourceType: "industry_default" });
+
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const label of ["Pack ID", "Pack name", "Pack role", "Source scope", "Selection mode", "Selection reason", "Priority", "Unavailable (partial provenance)"]) {
+    assert.ok(page.includes(label), `page should render ${label}`);
+  }
+});
+
 test("historical records explain when the exact instruction was not captured", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /exact instruction was not captured/);
