@@ -196,6 +196,65 @@ def test_generation_context_sanitizes_pack_path_but_keeps_runtime_attachment_pat
     assert source.transient_stored_path == str(image_path)
 
 
+def test_cache_loss_rehydrates_runtime_pack_path_without_persisting_it(monkeypatch, tmp_path):
+    import importlib
+
+    main = importlib.import_module("app.main")
+    image_path = tmp_path / "pack.png"
+    image_path.write_bytes(b"reloaded-pack-image")
+    source = item(
+        "platform_default",
+        "pack-item",
+        "pack.png",
+        pack_id="pack-1",
+        pack_name="Brand Pack",
+        pack_role="brand_identity",
+        selection_mode="mandatory",
+        max_images="1",
+        priority="1",
+        file_type="image/png",
+        stored_path=str(image_path),
+    )
+    original = assemble_generation_context(campaign(), [source], [], [], 100)
+    persisted_metadata = [dict(item.metadata) for item in original.items]
+    persisted = original.__class__(
+        **{**original.__dict__, "items": tuple(ContextSourceItem(item.source_type, item.source_id, item.label, item.text, metadata) for item, metadata in zip(original.items, persisted_metadata))},
+    )
+
+    class Persistence:
+        def save_generation_context(self, snapshot, run_id):
+            assert all("stored_path" not in metadata for metadata in persisted_metadata)
+
+        def load_generation_context(self, campaign_id, run_id):
+            return persisted
+
+        def list_campaign_references(self, campaign_id):
+            return []
+
+        def list_reference_packs(self, **kwargs):
+            return [{"pack_id": "pack-1", "name": "Brand Pack", "role": "brand_identity", "industry": None, "selection_mode": "mandatory", "max_images": 1, "priority": 1, "is_active": True}]
+
+        def list_reference_pack_items(self, pack_id):
+            return [{"item_id": "pack-item", "title": "pack.png", "description": "", "metadata": {"stored_path": str(image_path), "file_type": "image/png"}, "reference_pack_id": pack_id}]
+
+        def list_knowledge_items(self, company_id):
+            return []
+
+    persistence = Persistence()
+    persistence.save_generation_context(original, "run-after-restart")
+    monkeypatch.setattr(main, "persistence", persistence)
+    main.generation_context_cache.clear()
+    main.generation_context_run_cache.clear()
+
+    loaded = main.snapshot_for_campaign(campaign(), "run-after-restart")
+    assert loaded is not None
+    assert loaded.items[0].transient_stored_path == str(image_path)
+    assert "stored_path" not in loaded.items[0].metadata
+
+    payload = main.build_worker_payload_for_task(campaign(), {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-after-restart"}, loaded)
+    assert payload["reference_images"][0]["data"]
+
+
 def test_active_pack_loading_surfaces_persistence_errors(monkeypatch):
     import importlib
 

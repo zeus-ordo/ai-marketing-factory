@@ -19,6 +19,12 @@ Date: 2026-10-01
 
 Builds emitted only existing Next.js workspace-root warnings about multiple lockfiles.
 
+## P1 Cache-Loss Follow-Up
+
+Commit `8984dd3` correctly removed local paths from persisted context metadata, but a restart then left hydrated `ContextSourceItem` instances without runtime attachment paths. The follow-up rehydrates paths only after a persistence cache miss by matching each persisted item by `source_type` and `source_id` against current campaign references and active Pack items. The rehydrated path is stored only in the runtime-only field and is never written to `metadata_json` or returned by the Context Viewer.
+
+The regression persists a sanitized context, clears the in-memory caches, loads it through `snapshot_for_campaign`, and verifies image bytes are attached again while `stored_path` remains absent from item metadata.
+
 ## Compatibility And Privacy
 
 Selection ordering and Pack limits remain unchanged. Runtime attachment still reads the transient path before it is discarded from persistence. No image bytes or local filesystem paths are included in generation-context metadata or Context Viewer responses.

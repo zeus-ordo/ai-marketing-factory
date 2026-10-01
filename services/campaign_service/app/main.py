@@ -2575,6 +2575,54 @@ def cache_generation_context(snapshot: GenerationContextSnapshot, run_id: str | 
         generation_context_run_cache[(snapshot.campaign_id, run_id)] = snapshot.generation_context_id
 
 
+def rehydrate_generation_context_runtime_paths(
+    campaign: CampaignRecord,
+    snapshot: GenerationContextSnapshot,
+) -> GenerationContextSnapshot:
+    """Restore attachment paths from current source records without persisting them."""
+    paths: dict[tuple[str, str], str] = {}
+
+    def add_rows(rows: list[dict[str, Any]], source_type: str | None = None) -> None:
+        for row in rows:
+            row_source_type = str(row.get("source_type") or source_type or "")
+            source_id = str(row.get("reference_id") or row.get("item_id") or "")
+            stored_path = row.get("stored_path")
+            if row_source_type and source_id and isinstance(stored_path, str) and stored_path:
+                paths[(row_source_type, source_id)] = stored_path
+
+    if persistence is not None and hasattr(persistence, "list_campaign_references"):
+        try:
+            add_rows(list_campaign_reference_context(campaign, limit=max(100_000, len(snapshot.items))))
+        except Exception:
+            logger.warning("Failed to rehydrate campaign reference paths", exc_info=True)
+    if persistence is not None and hasattr(persistence, "list_reference_packs"):
+        try:
+            add_rows(list_reference_pack_context(campaign))
+        except Exception:
+            logger.warning("Failed to rehydrate reference Pack paths", exc_info=True)
+    if persistence is not None and hasattr(persistence, "list_knowledge_items"):
+        try:
+            add_rows(list_industry_knowledge_context(campaign, limit=max(100_000, len(snapshot.items))))
+        except Exception:
+            logger.warning("Failed to rehydrate industry reference paths", exc_info=True)
+
+    if not paths:
+        return snapshot
+
+    items = tuple(
+        item if item.transient_stored_path else ContextSourceItem(
+            item.source_type,
+            item.source_id,
+            item.label,
+            item.text,
+            dict(item.metadata),
+            paths.get((item.source_type, item.source_id)),
+        )
+        for item in snapshot.items
+    )
+    return GenerationContextSnapshot(**{**snapshot.__dict__, "items": items})
+
+
 def snapshot_for_campaign(campaign: CampaignRecord, run_id: str | None = None) -> GenerationContextSnapshot | None:
     if run_id:
         context_id = generation_context_run_cache.get((campaign.campaign_id, run_id))
@@ -2584,6 +2632,7 @@ def snapshot_for_campaign(campaign: CampaignRecord, run_id: str | None = None) -
         if persistence is not None:
             snapshot = persistence.load_generation_context(campaign.campaign_id, run_id)
             if snapshot is not None:
+                snapshot = rehydrate_generation_context_runtime_paths(campaign, snapshot)
                 cache_generation_context(snapshot, run_id)
             return snapshot
         return None
@@ -2596,6 +2645,7 @@ def snapshot_for_campaign(campaign: CampaignRecord, run_id: str | None = None) -
             for run in runs:
                 snapshot = persistence.load_generation_context(campaign.campaign_id, str(run["run_id"]))
                 if snapshot is not None:
+                    snapshot = rehydrate_generation_context_runtime_paths(campaign, snapshot)
                     cache_generation_context(snapshot, str(run["run_id"]))
                     return snapshot
         except Exception:
