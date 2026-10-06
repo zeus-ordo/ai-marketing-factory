@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from starlette.datastructures import Headers, UploadFile
 
 os.environ.setdefault("CAMPAIGN_REQUIRE_POSTGRES", "false")
@@ -164,3 +165,39 @@ def test_in_memory_reference_pack_upload_caches_pending_analysis(monkeypatch, tm
     cached = main.knowledge_items["platform"][0]
     assert result.analysis.analysis_status == "pending"
     assert cached.analysis.analysis_status == "pending"
+
+
+def test_knowledge_upload_endpoint_json_removes_private_paths(configured, monkeypatch):
+    monkeypatch.setattr(main, "enqueue_image_enrichment", lambda *_args: None)
+
+    response = TestClient(main.app).post(
+        "/api/v1/knowledge-items/upload",
+        data={"title": "New"},
+        files={"file": ("new.png", b"png", "image/png")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "stored_path" not in body
+    assert "path" not in body
+    assert "stored_path" not in body["metadata"]
+
+
+def test_reference_pack_upload_endpoint_json_removes_private_paths(monkeypatch, tmp_path):
+    persistence = Persistence()
+    monkeypatch.setattr(main, "persistence", persistence)
+    monkeypatch.setattr(main, "KNOWLEDGE_UPLOADS_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
+    monkeypatch.setattr(main, "_get_pack_or_404", lambda _pack_id: object())
+    monkeypatch.setattr(main, "enqueue_image_enrichment", lambda *_args: None)
+
+    response = TestClient(main.app).post(
+        "/api/v1/reference-packs/pack-1/items/upload",
+        data={"title": "Reference"},
+        files={"file": ("new.png", b"png", "image/png")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "stored_path" not in body
+    assert "path" not in body

@@ -6623,7 +6623,7 @@ def upload_knowledge_item(
     if analysis is not None:
         item.analysis = _analysis_summary(analysis)
         _enqueue_best_effort(item_id, IMAGE_ANALYSIS_VERSION)
-    return item
+    return KnowledgeItemRecord(**_public_knowledge_item(item.model_dump(mode="python")))
 
 
 @app.get("/api/v1/knowledge-items/{item_id}/download/{file_name}")

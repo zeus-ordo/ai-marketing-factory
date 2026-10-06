@@ -30,3 +30,14 @@ Follow-up verification:
 - Campaign focused, batch-upload, Task 1, and migration tests: 37 passed, 3 skipped.
 - Orchestrator failure-isolation tests: 30 passed.
 - Compile and diff checks passed.
+
+## Final Review Fix
+
+- Knowledge upload success responses now pass through the same recursive public sanitizer as list responses, removing `stored_path` and nested private paths before JSON serialization.
+- Added endpoint-level JSON regression coverage for Knowledge upload and Reference Pack upload responses.
+
+Final verification:
+
+- Campaign focused, batch-upload, Task 1, and migration tests: 39 passed, 3 skipped.
+- Orchestrator failure-isolation tests: 30 passed.
+- Compile and diff checks passed.
