@@ -73,8 +73,6 @@ services:
         condition: service_started
       worker-ads:
         condition: service_started
-      worker-enrichment:
-        condition: service_started
     restart: unless-stopped
 
   decision-service:
@@ -158,6 +156,13 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-embedding-model}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
       - IMAGE_ANALYSIS_VERSION=${IMAGE_ANALYSIS_VERSION:-image-rag-v1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      campaign-service:
+        condition: service_started
     restart: unless-stopped
 
   postgres:
