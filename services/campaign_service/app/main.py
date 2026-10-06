@@ -3008,6 +3008,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
     )
     selected = (*selected_legacy, *selected_anchors)
     references: list[dict[str, Any]] = []
+    audit_references: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     seen_hashes: set[str] = set()
     for item in selected:
@@ -3058,8 +3059,9 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
                 "folder": str(metadata.get("folder") or metadata.get("folder_name") or ""),
                 "sha256": sha256,
             }
+            audit_reference = dict(reference)
             if is_pack:
-                reference.update({
+                audit_reference.update({
                     "reference_pack_id": metadata.get("pack_id"),
                     "pack_name": metadata.get("pack_name"),
                     "pack_role": metadata.get("pack_role"),
@@ -3070,7 +3072,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
                     "file_size": file_size,
                 })
             elif is_enriched:
-                reference.update({
+                audit_reference.update({
                     "source_type": item.source_type,
                     "analysis_version": metadata.get("analysis_version"),
                     "selection_reason": metadata.get("selection_reason") or "visual_anchor",
@@ -3078,6 +3080,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
                     "role": metadata.get("role"),
                 })
             references.append(reference)
+            audit_references.append(audit_reference)
         except OSError:
             failure = {"reference_id": reference_id, "category": "read_error"}
             if is_pack or is_enriched:
@@ -3095,7 +3098,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "reference_id", "reference_pack_id", "pack_name", "pack_role", "selection_mode", "selection_reason",
         "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256",
         "analysis_version", "similarity", "role",
-    ) if reference.get(key) is not None} for reference in references]
+    ) if reference.get(key) is not None} for reference in audit_references]
     audit = {
         "selected_count": len(selected),
         "attached_count": len(references),

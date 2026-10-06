@@ -1,5 +1,6 @@
 import os
 import sys
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from app import main
 from app.context_assembler import ContextSourceItem, assemble_generation_context, build_generation_reference_payload
 from app.schemas import CampaignBrief, CampaignRecord, Deliverables, TaskRecord
+
+
+_WORKER_SCHEMAS_PATH = Path(__file__).parents[1] / "worker_image" / "app" / "schemas.py"
+_WORKER_SCHEMAS_SPEC = importlib.util.spec_from_file_location("worker_image_schemas", _WORKER_SCHEMAS_PATH)
+assert _WORKER_SCHEMAS_SPEC and _WORKER_SCHEMAS_SPEC.loader
+_WORKER_SCHEMAS = importlib.util.module_from_spec(_WORKER_SCHEMAS_SPEC)
+_WORKER_SCHEMAS_SPEC.loader.exec_module(_WORKER_SCHEMAS)
 
 
 def pack_snapshot(tmp_path, selection_mode):
@@ -93,12 +101,18 @@ def test_image_payload_caps_enriched_anchors_and_keeps_pack_precedence(tmp_path)
     worker_payload = main.build_worker_payload_for_task(
         campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
     )
+    _WORKER_SCHEMAS.ImageRunRequest.model_validate(worker_payload)
+    assert all(set(reference) <= {"reference_id", "file_name", "mime_type", "data", "folder", "sha256"}
+               for reference in worker_payload["reference_images"])
     enriched_audit = [
         reference for reference in worker_payload["reference_audit"]["references"]
         if reference.get("source_type") == "industry_attribute_rag"
     ]
     assert enriched_audit
     assert all(reference["role"] == "foodie" for reference in enriched_audit)
+    assert all(reference["analysis_version"] == "image-rag-v1" for reference in enriched_audit)
+    assert all(reference["selection_reason"] == "vector_similarity" for reference in enriched_audit)
+    assert all(reference["similarity"] in {2, 3, 4} for reference in enriched_audit)
 
 
 def test_generation_payload_rejects_nested_unsafe_attributes():
