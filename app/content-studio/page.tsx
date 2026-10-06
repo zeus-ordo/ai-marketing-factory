@@ -463,9 +463,18 @@ function ImageAnalysisSummary({ analysis, onRetry, retrying }: { analysis?: Know
   const { t, locale } = useI18n();
   if (!analysis) return <span className="text-xs text-slate-400">{t("common.notAvailable")}</span>;
   const statusLabel = analysis.analysis_status === "pending" ? t("knowledgeAnalysis.analysisPending") : analysis.analysis_status === "processing" ? t("knowledgeAnalysis.analysisProcessing") : analysis.analysis_status === "ready" ? t("knowledgeAnalysis.analysisReady") : t("knowledgeAnalysis.analysisFailed");
-  const attributes = Object.entries(analysis.attributes).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : value}`).join("; ");
+  const attributes = analysisSafeAttributeKeys.filter((key) => analysisAttributeAllowlist.has(key)).map((key) => {
+    if (analysisPrivateAttributeKeys.has(key)) return null;
+    const value = analysis.attributes[key];
+    if (value === undefined) return null;
+    return `${key}: ${Array.isArray(value) ? value.join(", ") : value}`;
+  }).filter((value): value is string => value !== null).join("; ");
   return <div className="space-y-1 text-xs"><div className="font-medium">{statusLabel}</div><div className="text-slate-500">{t("knowledgeAnalysis.analysisVersion")}: {analysis.analysis_version}</div>{attributes ? <div className="text-slate-500">{t("knowledgeAnalysis.analysisAttributes")}: {attributes}</div> : null}{analysis.analyzed_at ? <div className="text-slate-500">{t("knowledgeAnalysis.analysisAnalyzedAt")}: {formatDateTime(locale, analysis.analyzed_at)}</div> : null}{analysis.analysis_status === "failed" && analysis.retryable ? <button type="button" onClick={onRetry} disabled={retrying} className="font-medium text-blue-600 disabled:opacity-50">{retrying ? t("knowledgeAnalysis.analysisRetrying") : t("knowledgeAnalysis.analysisRetry")}</button> : null}</div>;
 }
+
+const analysisSafeAttributeKeys = ["ocr", "description", "objects", "colors", "composition", "visual_style", "industry", "intended_use", "safety_flags", "brand_elements", "lighting", "subject", "background", "mood"] as const;
+const analysisAttributeAllowlist = new Set<string>(analysisSafeAttributeKeys);
+const analysisPrivateAttributeKeys = new Set(["stored_path", "vector", "base64", "bytes", "provider"]);
 
 const PACK_ROLES: ReferencePackRole[] = ["brand_identity", "product", "style", "composition", "campaign_examples"];
 
@@ -581,7 +590,20 @@ function SystemReferencePacksSection() {
     catch { setMessage(t("referencePacks.deleteItemFailed")); } finally { setBusy(false); }
   }
 
+  async function retryPackItemAnalysis(itemId: string) {
+    setBusy(true);
+    try {
+      await retryKnowledgeItemAnalysis(itemId);
+      if (selectedPackId) await loadItems(selectedPackId);
+    } catch {
+      setMessage(t("knowledgeAnalysis.analysisRetryFailed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return <section className="space-y-4 rounded-2xl border border-indigo-200 bg-indigo-50/40 p-4 dark:border-indigo-900 dark:bg-indigo-950/20">
+    {selectedPackId ? <div data-testid="pack-analysis-items">{items.map((item) => <ImageAnalysisSummary key={item.item_id} analysis={item.analysis} onRetry={() => void retryPackItemAnalysis(item.item_id)} retrying={busy} />)}</div> : null}
     <header><h2 className="text-lg font-semibold">{t("referencePacks.title")}</h2><p className="text-sm text-slate-500">{t("referencePacks.subtitle")}</p></header>
     {message ? <p role="alert" className="rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-700">{message}</p> : null}
     <div className="grid gap-2 md:grid-cols-3">
