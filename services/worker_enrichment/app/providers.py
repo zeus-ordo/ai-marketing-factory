@@ -135,7 +135,27 @@ class GeminiImageAnalysisProvider(ImageAnalysisProvider):
                         ]}],
                         "generationConfig": {
                             "responseMimeType": "application/json",
-                            "responseSchema": {"type": "OBJECT"},
+                            "responseSchema": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "description": {"type": "STRING"},
+                                    "ocr_text": {"type": "STRING"},
+                                    "objects": {"type": "ARRAY", "items": {"type": "STRING"}},
+                                    "colors": {"type": "ARRAY", "items": {"type": "STRING"}},
+                                    "composition": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "layout": {"type": "STRING"},
+                                            "lighting": {"type": "STRING"},
+                                            "camera_angle": {"type": "STRING"},
+                                        },
+                                    },
+                                    "visual_style": {"type": "ARRAY", "items": {"type": "STRING"}},
+                                    "industry": {"type": "STRING"},
+                                    "intended_use": {"type": "STRING"},
+                                    "safety_flags": {"type": "ARRAY", "items": {"type": "STRING"}},
+                                },
+                            },
                         },
                     },
                 )

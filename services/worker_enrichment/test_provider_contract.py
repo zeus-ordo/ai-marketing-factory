@@ -100,6 +100,37 @@ def test_gemini_image_analysis_sends_inline_image_and_parses_fenced_json(monkeyp
     assert kwargs["json"]["generationConfig"]["responseMimeType"] == "application/json"
 
 
+def test_gemini_image_analysis_declares_usable_attribute_schema(monkeypatch, tmp_path):
+    image = tmp_path / "image.png"
+    image.write_bytes(b"png-bytes")
+    FakeClient.calls = []
+    FakeClient.response = FakeResponse({
+        "candidates": [{"content": {"parts": [{"text": '{"description":"A bowl","objects":["bowl"]}'}]}}]
+    })
+    monkeypatch.setattr(providers.httpx, "Client", FakeClient)
+
+    providers.GeminiImageAnalysisProvider("test-key", "gemini-test").analyze(
+        str(image), "image/png", "Lunch", "A bowl on a table"
+    )
+
+    schema = FakeClient.calls[0][1]["json"]["generationConfig"]["responseSchema"]
+    properties = schema["properties"]
+    assert schema["type"] == "OBJECT"
+    assert set(properties) == {
+        "description", "ocr_text", "objects", "colors", "composition",
+        "visual_style", "industry", "intended_use", "safety_flags",
+    }
+    assert properties["description"]["type"] == "STRING"
+    assert properties["ocr_text"]["type"] == "STRING"
+    assert properties["objects"]["type"] == "ARRAY"
+    assert properties["colors"]["type"] == "ARRAY"
+    assert properties["composition"]["type"] == "OBJECT"
+    assert properties["visual_style"]["type"] == "ARRAY"
+    assert properties["industry"]["type"] == "STRING"
+    assert properties["intended_use"]["type"] == "STRING"
+    assert properties["safety_flags"]["type"] == "ARRAY"
+
+
 def test_gemini_image_analysis_accepts_full_model_resource_name(monkeypatch, tmp_path):
     image = tmp_path / "image.png"
     image.write_bytes(b"png-bytes")

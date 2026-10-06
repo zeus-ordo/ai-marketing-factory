@@ -283,6 +283,50 @@ def test_persistence_vector_search_uses_pgvector_and_scope_filters():
     assert cursor.query.index("role") < cursor.query.index("LIMIT")
 
 
+def test_persistence_ready_list_typed_role_predicate_allows_unscoped_uploads():
+    from app.persistence import PostgresPersistence
+
+    class Cursor:
+        def __init__(self):
+            self.query = ""
+            self.params = ()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, query, params=None):
+            self.query = query
+            self.params = params
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self, cursor):
+            self.cursor_value = cursor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return self.cursor_value
+
+    cursor = Cursor()
+    persistence = object.__new__(PostgresPersistence)
+    persistence._connect = lambda: Connection(cursor)
+
+    persistence.list_ready_image_analysis("company-1", "Restaurant", 8, role=None)
+
+    assert "(%s::text IS NULL OR" in cursor.query
+    assert cursor.params[-3:-1] == (None, None)
+
+
 def test_persistence_vector_search_returns_ready_rows():
     from app.persistence import PostgresPersistence
 
@@ -323,6 +367,50 @@ def test_persistence_vector_search_returns_ready_rows():
     assert [item["item_id"] for item in results] == ["item-1"]
     assert results[0]["score"] == 0.91
     assert results[0]["metadata"] == {"category": "Restaurant"}
+
+
+def test_persistence_vector_search_typed_role_predicate_allows_unscoped_uploads():
+    from app.persistence import PostgresPersistence
+
+    class Cursor:
+        def __init__(self):
+            self.query = ""
+            self.params = ()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, query, params=None):
+            self.query = query
+            self.params = params
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self, cursor):
+            self.cursor_value = cursor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return self.cursor_value
+
+    cursor = Cursor()
+    persistence = object.__new__(PostgresPersistence)
+    persistence._connect = lambda: Connection(cursor)
+
+    persistence.search_ready_image_analysis("company-1", "Restaurant", [0.1, 0.2], 8, role=None)
+
+    assert "(%s::text IS NULL OR" in cursor.query
+    assert cursor.params[8:10] == (None, None)
 
 
 def test_complete_image_analysis_fetches_returning_row_before_vector_update():

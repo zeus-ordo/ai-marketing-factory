@@ -3282,7 +3282,7 @@ class PostgresPersistence:
                 """
             )
             params.extend([industry] * 6)
-        filters.append("(%s IS NULL OR LOWER(COALESCE(k.metadata_json->>'role', '')) = LOWER(%s))")
+        filters.append("(%s::text IS NULL OR LOWER(COALESCE(k.metadata_json->>'role', '')) = LOWER(%s::text))")
         params.extend([role, role])
         params.append(limit)
         with self._connect() as conn:
@@ -3356,7 +3356,7 @@ class PostgresPersistence:
                       AND k.deleted_at IS NULL
                       AND COALESCE(k.metadata_json->>'active', 'true') <> 'false'
                       AND {industry_filter}
-                      AND (%s IS NULL OR LOWER(COALESCE(k.metadata_json->>'role', '')) = LOWER(%s))
+                      AND (%s::text IS NULL OR LOWER(COALESCE(k.metadata_json->>'role', '')) = LOWER(%s::text))
                     ORDER BY a.embedding <=> %s::vector, a.item_id
                     LIMIT %s;
                     """,
