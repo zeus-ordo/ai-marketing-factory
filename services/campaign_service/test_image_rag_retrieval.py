@@ -71,6 +71,15 @@ def test_visual_anchor_selection_is_deterministic_and_bounded():
     assert select_visual_anchor_items(list(reversed(items)), limit=3) == selected
 
 
+def test_visual_anchor_selection_enforces_three_item_hard_cap():
+    selected = select_visual_anchor_items(
+        [enriched(f"item-{index}", score=index) for index in range(8)],
+        limit=99,
+    )
+
+    assert len(selected) == 3
+
+
 def test_visual_anchor_selection_ignores_non_enriched_and_non_image_items():
     assert select_visual_anchor_items(
         [
@@ -136,6 +145,78 @@ def test_vector_failure_falls_back_to_deterministic_ready_matching(monkeypatch):
 
     assert [row["item_id"] for row in result] == ["restaurant"]
     assert result[0]["metadata"]["selection_reason"] == "deterministic_industry_match"
+
+
+def test_retrieval_rejects_nested_unsafe_attributes(monkeypatch):
+    import app.main as main
+
+    unsafe = {
+        "item_id": "unsafe",
+        "company_id": "company-1",
+        "title": "Unsafe",
+        "metadata": {"category": "Restaurant"},
+        "analysis_status": "ready",
+        "analysis_version": "v1",
+        "attributes": {"labels": {"stored_path": "/private/image.png"}},
+    }
+
+    class Persistence:
+        def list_ready_image_analysis(self, company_id, industry, limit):
+            return [unsafe]
+
+        def list_knowledge_items(self, company_id):
+            return [unsafe]
+
+        def search_ready_image_analysis(self, *args, **kwargs):
+            raise RuntimeError("vector unavailable")
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+
+    assert main.list_enriched_knowledge_context(campaign()) == []
+
+
+def test_persistence_vector_search_uses_pgvector_and_scope_filters():
+    from app.persistence import PostgresPersistence
+
+    class Cursor:
+        def __init__(self):
+            self.query = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, query, params=None):
+            self.query = query
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self, cursor):
+            self.cursor_value = cursor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return self.cursor_value
+
+    cursor = Cursor()
+    persistence = object.__new__(PostgresPersistence)
+    persistence._connect = lambda: Connection(cursor)
+
+    persistence.search_ready_image_analysis("company-1", "Restaurant", [0.1, 0.2], 8)
+
+    assert "<=>" in cursor.query
+    assert "k.deleted_at IS NULL" in cursor.query
+    assert "metadata_json" in cursor.query
+    assert "a.analysis_status = 'ready'" in cursor.query
 
 
 def test_generation_context_keeps_legacy_and_adds_enriched_sources(monkeypatch):

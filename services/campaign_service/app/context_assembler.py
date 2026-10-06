@@ -83,7 +83,8 @@ def select_visual_anchor_items(
     limit: int = 3,
 ) -> tuple[ContextSourceItem, ...]:
     """Select a stable, bounded set of ready enriched image references."""
-    if limit <= 0:
+    limit = min(3, max(0, limit))
+    if limit == 0:
         return ()
 
     def is_image(item: ContextSourceItem) -> bool:

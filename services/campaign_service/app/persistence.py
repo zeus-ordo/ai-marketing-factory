@@ -3196,6 +3196,21 @@ class PostgresPersistence:
                         analysis_version,
                     ),
                 )
+                if embedding is not None:
+                    cur.execute("SAVEPOINT image_analysis_embedding_vector;")
+                    try:
+                        cur.execute(
+                            """
+                            UPDATE knowledge_item_image_analysis
+                            SET embedding = %s::vector
+                            WHERE item_id = %s AND analysis_version = %s;
+                            """,
+                            ("[" + ",".join(str(float(value)) for value in embedding) + "]", item_id, analysis_version),
+                        )
+                        cur.execute("RELEASE SAVEPOINT image_analysis_embedding_vector;")
+                    except Exception:
+                        cur.execute("ROLLBACK TO SAVEPOINT image_analysis_embedding_vector;")
+                        cur.execute("RELEASE SAVEPOINT image_analysis_embedding_vector;")
                 row = cur.fetchone()
             conn.commit()
         if row is None:
@@ -3275,6 +3290,68 @@ class PostgresPersistence:
                 "description": row[14],
                 "source": row[15],
                 "company_id": company_id,
+            }
+            for row in rows
+        ]
+
+    def search_ready_image_analysis(
+        self,
+        company_id: str,
+        industry: str,
+        query_embedding: list[float] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Search ready analyses with pgvector, raising when vector search is unavailable."""
+        if limit < 1:
+            return []
+        if not query_embedding:
+            raise RuntimeError("image RAG query embedding is unavailable")
+        vector = "[" + ",".join(str(float(value)) for value in query_embedding) + "]"
+        industry_filter = """
+            (
+                LOWER(COALESCE(a.industry, '')) = LOWER(%s)
+                OR LOWER(COALESCE(k.metadata_json->>'industry', '')) = LOWER(%s)
+                OR LOWER(COALESCE(k.metadata_json->>'industry_category', '')) = LOWER(%s)
+                OR LOWER(COALESCE(k.metadata_json->>'category', '')) = LOWER(%s)
+                OR LOWER(COALESCE(k.metadata_json->>'folder', '')) = LOWER(%s)
+                OR LOWER(COALESCE(k.metadata_json->>'folder_name', '')) = LOWER(%s)
+            )
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT a.item_id, a.analysis_version, a.analysis_status, a.attributes_json,
+                           a.embedding_status, a.embedding_model, a.embedding_dimension,
+                           a.error_code, a.error_detail, a.attempt_count, a.retryable,
+                           a.analyzed_at, a.updated_at, k.title, k.description, k.source,
+                           k.company_id, k.metadata_json,
+                           1 - (a.embedding <=> %s::vector) AS score
+                    FROM knowledge_item_image_analysis a
+                    JOIN knowledge_items k ON k.item_id = a.item_id
+                    WHERE a.company_id = %s
+                      AND a.analysis_status = 'ready'
+                      AND a.embedding_status = 'ready'
+                      AND a.embedding IS NOT NULL
+                      AND k.deleted_at IS NULL
+                      AND COALESCE(k.metadata_json->>'active', 'true') <> 'false'
+                      AND {industry_filter}
+                    ORDER BY a.embedding <=> %s::vector, a.item_id
+                    LIMIT %s;
+                    """,
+                    (vector, company_id, industry, industry, industry, industry, industry, industry, vector, limit),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                **self._image_analysis_dict(row[:13]),
+                "title": row[13],
+                "description": row[14],
+                "source": row[15],
+                "company_id": row[16],
+                "metadata": dict(row[17] or {}),
+                "score": float(row[18]),
+                "selection_reason": "vector_similarity",
             }
             for row in rows
         ]

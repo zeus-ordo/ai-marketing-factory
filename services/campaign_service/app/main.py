@@ -64,6 +64,7 @@ from .validation import validate_campaign_brief
 from .industry_matching import match_industry_items
 from .external_search import ExternalSearchResult, build_campaign_search_query, build_search_provider
 from .external_search import ExternalSearchError
+from .image_enrichment import validate_image_attributes
 from .context_assembler import (
     ContextSourceItem,
     GenerationContextSnapshot,
@@ -2474,20 +2475,24 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
         except Exception:
             logger.warning("Failed to load ready image analysis", exc_info=True)
 
-    # Prefer vector-ranked rows when the optional persistence seam is available.
-    vector_rows: list[dict[str, Any]] | None = None
-    search = getattr(persistence, "search_ready_image_analysis", None)
-    if callable(search):
+    vector_rows: list[dict[str, Any]] | None = []
+    query_embedding: list[float] | None = None
+    raw_query_embedding = os.getenv("IMAGE_RAG_QUERY_EMBEDDING", "")
+    if raw_query_embedding:
         try:
-            vector_rows = list(search(
-                campaign.company_id,
-                industry,
-                campaign.brief.product_name,
-                campaign.brief.objective,
-                limit,
-            ))
-        except Exception:
-            logger.info("Vector image retrieval unavailable; using deterministic matching", exc_info=True)
+            candidate_embedding = json.loads(raw_query_embedding)
+            if isinstance(candidate_embedding, list) and candidate_embedding:
+                query_embedding = [float(value) for value in candidate_embedding]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("Ignoring invalid IMAGE_RAG_QUERY_EMBEDDING")
+    try:
+        for scope in (campaign.company_id, "platform"):
+            vector_rows.extend(
+                persistence.search_ready_image_analysis(scope, industry, query_embedding, limit)
+            )
+    except Exception:
+        logger.info("Vector image retrieval unavailable; using deterministic matching", exc_info=True)
+        vector_rows = None
 
     rows_by_id = {str(row.get("item_id")): row for row in ready_rows if row.get("item_id")}
     if vector_rows is not None:
@@ -2515,8 +2520,16 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
         scope = str(merged.get("company_id") or ("platform" if item_id in source_rows and source_rows[item_id].get("company_id") == "platform" else campaign.company_id))
         if scope not in {campaign.company_id, "platform"} or merged.get("deleted_at") is not None or merged.get("is_active") is False:
             continue
-        row_industry = str(metadata.get("industry") or metadata.get("industry_category") or analysis.get("industry") or "")
-        if row_industry and row_industry.casefold() != industry.casefold():
+        row_industry = str(
+            metadata.get("industry")
+            or metadata.get("industry_category")
+            or metadata.get("category")
+            or metadata.get("folder")
+            or metadata.get("folder_name")
+            or analysis.get("industry")
+            or ""
+        )
+        if not row_industry or row_industry.casefold() != industry.casefold():
             continue
         row_role = str(metadata.get("role") or merged.get("role") or analysis.get("role") or "").strip()
         requested_role = str(getattr(campaign.brief.target_audience, "persona", "") or "").strip()
@@ -2543,11 +2556,20 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
         if not isinstance(attributes, dict):
             analysis = row.get("analysis") if isinstance(row.get("analysis"), dict) else {}
             attributes = analysis.get("attributes") if isinstance(analysis.get("attributes"), dict) else {}
+        try:
+            attributes = validate_image_attributes(attributes)
+        except (TypeError, ValueError):
+            logger.warning("Skipping enriched item with unsafe attributes", extra={"item_id": row.get("item_id")})
+            continue
         item_id = str(row.get("item_id") or "")
         stored_path = knowledge_item_stored_path(row)
+        provenance_keys = {
+            "file_name", "file_type", "mime_type", "content_type", "category", "folder",
+            "folder_name", "industry", "industry_category", "role", "scope", "sha256",
+        }
         safe_metadata = {
             key: value for key, value in metadata.items()
-            if key != "stored_path"
+            if key in provenance_keys
         }
         safe_metadata.update({
             "source_type": "industry_attribute_rag",
