@@ -23,6 +23,7 @@
     "check:multi-upload": "node scripts/check-multi-upload-contract.mjs",
     "check:file-preview": "node scripts/check-file-preview-contract.mjs",
     "check:authorized-content": "node scripts/check-authorized-content-contract.mjs",
+    "check:platform-admin-permissions": "node scripts/test-platform-admin-permissions-contract.mjs",
     "dev:up": "node scripts/dev-up.mjs",
     "dev:bootstrap:win": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap-dev.ps1",
     "check:i18n": "node scripts/check-i18n.mjs",

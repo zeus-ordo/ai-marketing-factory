@@ -40,7 +40,7 @@ const assertions = [
   [contentStudio.includes("uploadReferencePackItems") && contentStudio.includes("FilePreviewModal") && contentStudio.includes("item.content_url"), "pack UI must support multi-upload and safe previews"],
   [contentStudio.includes("errorCode") && contentStudio.includes("referencePacks.uploadFailed"), "pack UI must retain stable per-file upload errors"],
   [translations.includes("System Reference Packs") && translations.includes("系統參考素材包") && translations.includes("システム参照パック"), "pack labels are required in all supported locales"],
-  [campaignAuth.includes('get_token_from_request(req)') && campaignAuth.includes('"platform:admin" in payload.permissions'), "Pack routes must accept authenticated platform-admin JWTs without exposing a platform key"],
+  [campaignAuth.includes('get_token_from_request(req)') && campaignAuth.includes('PLATFORM_ADMIN_PERMISSIONS.intersection(payload.permissions)') && ["platform:admin", "admin", "*"].every((permission) => campaignAuth.includes(`"${permission}"`)), "Pack routes must accept canonical platform-admin JWTs without exposing a platform key"],
   [packTests.includes("test_reference_pack_route_accepts_authenticated_platform_admin_jwt") && packTests.includes('"authorization"'), "runtime Pack bearer-auth contract test is required"],
   [contentStudio.includes("isPlatformAdmin(user.permissions)") && contentStudio.includes("canManageReferencePacks") && !contentStudio.includes("hasPermission(user.permissions, \"platform:admin\")"), "Pack UI must require the exact platform-admin permission"],
   [contentStudio.includes("fetchCampaignContent") && !contentStudio.includes("<img src={item.content_url}"), "protected Pack content must not be rendered as unauthenticated thumbnails"],

@@ -96,14 +96,22 @@ def test_reference_pack_routes_return_403_for_non_admin(monkeypatch):
     assert exc.value.status_code == 403
 
 
-def test_reference_pack_route_accepts_authenticated_platform_admin_jwt(monkeypatch):
+def test_platform_key_remains_an_exact_platform_admin_credential(monkeypatch):
+    monkeypatch.setattr(auth, "PLATFORM_ADMIN_KEY", "test-platform-key")
+    monkeypatch.setattr(auth, "JWT_SECRET", "")
+    assert auth.is_platform_admin_request(SimpleNamespace(headers=Headers({"x-platform-key": "test-platform-key"})))
+    assert not auth.is_platform_admin_request(SimpleNamespace(headers=Headers({"x-platform-key": "wrong-key"})))
+
+
+@pytest.mark.parametrize("permission", ["platform:admin", "admin", "*"])
+def test_reference_pack_route_accepts_authenticated_platform_admin_jwt(monkeypatch, permission):
     monkeypatch.setattr(auth, "JWT_SECRET", "test-jwt-secret")
     monkeypatch.setattr(auth, "PLATFORM_ADMIN_KEY", "")
     token = jwt.encode({
         "sub": "platform-admin",
         "company_id": None,
         "email": "platform@example.test",
-        "permissions": ["platform:admin"],
+        "permissions": [permission],
         "iat": 1,
         "exp": 4_000_000_000,
     }, "test-jwt-secret", algorithm="HS256")
@@ -111,21 +119,20 @@ def test_reference_pack_route_accepts_authenticated_platform_admin_jwt(monkeypat
     assert response.total == 0
 
 
-def test_reference_pack_route_rejects_generic_admin_or_wildcard_jwt(monkeypatch):
+def test_reference_pack_route_rejects_company_permission_jwt(monkeypatch):
     monkeypatch.setattr(auth, "JWT_SECRET", "test-jwt-secret")
     monkeypatch.setattr(auth, "PLATFORM_ADMIN_KEY", "")
-    for permission in ("admin", "*"):
-        token = jwt.encode({
-            "sub": "non-platform-admin",
-            "company_id": "company-1",
-            "email": "admin@example.test",
-            "permissions": [permission],
-            "iat": 1,
-            "exp": 4_000_000_000,
-        }, "test-jwt-secret", algorithm="HS256")
-        with pytest.raises(HTTPException) as exc:
-            main.list_reference_packs(SimpleNamespace(headers=Headers({"authorization": f"Bearer {token}"})))
-        assert exc.value.status_code == 403
+    token = jwt.encode({
+        "sub": "company-member",
+        "company_id": "company-1",
+        "email": "member@example.test",
+        "permissions": ["reference:read"],
+        "iat": 1,
+        "exp": 4_000_000_000,
+    }, "test-jwt-secret", algorithm="HS256")
+    with pytest.raises(HTTPException) as exc:
+        main.list_reference_packs(SimpleNamespace(headers=Headers({"authorization": f"Bearer {token}"})))
+    assert exc.value.status_code == 403
 
 
 @pytest.mark.parametrize("operation", ["create", "update", "delete", "list_items", "upload", "delete_item"])

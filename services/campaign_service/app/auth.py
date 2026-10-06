@@ -8,6 +8,7 @@ from pydantic import BaseModel
 PLATFORM_ADMIN_KEY = os.getenv("PLATFORM_ADMIN_KEY", "")
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = "HS256"
+PLATFORM_ADMIN_PERMISSIONS = {"platform:admin", "admin", "*"}
 
 
 class JWTPayload(BaseModel):
@@ -56,7 +57,7 @@ def is_platform_admin_request(req: Request) -> bool:
         payload = decode_jwt(token)
     except HTTPException:
         return False
-    return "platform:admin" in payload.permissions
+    return bool(PLATFORM_ADMIN_PERMISSIONS.intersection(payload.permissions))
 
 
 # --- FastAPI Dependencies ---

@@ -10,7 +10,7 @@ export function hasPermission(permissions: string[], permission: string) {
 }
 
 export function isPlatformAdmin(permissions: string[]) {
-  return permissions.includes("platform:admin");
+  return permissions.some((permission) => ["platform:admin", "admin", "*"].includes(permission));
 }
 
 export function canReview(permissions: string[]) {
