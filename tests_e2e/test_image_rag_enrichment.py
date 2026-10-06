@@ -60,10 +60,9 @@ def _upload() -> UploadFile:
 
 
 class LifecycleStore:
-    def __init__(self, item_path: str | None = None, company_id: str = "company-a"):
+    def __init__(self, company_id: str = "company-a"):
         self.items: dict[str, dict] = {}
         self.analysis: dict[str, dict] = {}
-        self.item_path = item_path
         self.company_id = company_id
         self.fail_next = False
 
@@ -102,9 +101,23 @@ class LifecycleStore:
             "item_id": item_id,
             "title": item["title"],
             "description": item["description"],
-            "stored_path": metadata.get("stored_path") or self.item_path,
+            "stored_path": metadata.get("stored_path"),
             "mime_type": metadata.get("file_type", "image/png"),
         }
+
+    def list_ready_image_analysis(self, company_id, industry, limit, role=None):
+        return [
+            {
+                **analysis,
+                "company_id": item["company_id"],
+                "title": item["title"],
+                "description": item["description"],
+                "metadata": {**item.get("metadata", {}), "industry": industry},
+            }
+            for item_id, item in self.items.items()
+            for analysis in [self.analysis.get(item_id)]
+            if analysis and item["company_id"] == company_id
+        ]
 
     def claim_image_analysis(self, item_id, version):
         value = self.analysis[item_id]
@@ -150,7 +163,7 @@ class FailingAnalysisProvider:
 
 @pytest.fixture
 def campaign_config(monkeypatch, tmp_path):
-    store = LifecycleStore(item_path=str(tmp_path / "valid.png"))
+    store = LifecycleStore()
     monkeypatch.setattr(campaign_main, "persistence", store)
     monkeypatch.setattr(campaign_main, "KNOWLEDGE_UPLOADS_DIR", str(tmp_path))
     monkeypatch.setattr(campaign_main, "is_platform_admin_request", lambda _request: False)
@@ -158,7 +171,6 @@ def campaign_config(monkeypatch, tmp_path):
     monkeypatch.setattr(campaign_main, "resolve_folder_for_actor", lambda *_args: None)
     monkeypatch.setattr(campaign_main, "enqueue_image_enrichment", lambda *_args: None)
     monkeypatch.setattr(worker_main, "persistence", store)
-    (tmp_path / "valid.png").write_bytes(PNG_BYTES)
     return store
 
 
@@ -171,8 +183,14 @@ def _run_worker(monkeypatch, store, provider):
 def test_upload_pending_then_worker_ready(campaign_config, monkeypatch):
     result = campaign_main.upload_knowledge_item(_request(), "One pixel", "", "", None, "", _upload())
     item_id = result.item_id
+    uploaded_path = campaign_config.items[item_id]["metadata"]["stored_path"]
+    assert Path(uploaded_path).read_bytes() == PNG_BYTES
+    assert campaign_config.get_image_item(item_id)["stored_path"] == uploaded_path
     assert result.analysis.analysis_status == "pending"
     assert campaign_config.get_image_analysis(item_id)["analysis_status"] == "pending"
+    response_data = result.model_dump_json()
+    for forbidden in ("stored_path", "private", "base64", "bytes"):
+        assert forbidden not in response_data.lower()
 
     completed = _run_worker(monkeypatch, campaign_config, GoodAnalysisProvider())
     assert completed == {"item_id": item_id, "status": "ready"}
@@ -206,6 +224,31 @@ def test_analysis_api_is_ready_only_and_safe(campaign_config, monkeypatch):
         assert forbidden not in serialized.lower()
 
 
+def test_ready_only_retrieval_excludes_pending_and_failed(campaign_config):
+    campaign = _campaign()
+    for item_id, status in (("pending-item", "pending"), ("failed-item", "failed"), ("ready-item", "ready")):
+        campaign_config.items[item_id] = {
+            "item_id": item_id,
+            "company_id": "company-a",
+            "title": item_id,
+            "description": "Restaurant foodie",
+            "metadata": {"industry": "Restaurant", "role": "foodie", "file_type": "image/png"},
+        }
+        campaign_config.analysis[item_id] = {
+            "item_id": item_id,
+            "company_id": "company-a",
+            "analysis_version": "image-rag-v1",
+            "analysis_status": status,
+            "attributes": {"style": ["warm"]},
+            "retryable": status != "ready",
+            "analyzed_at": None,
+        }
+
+    result = campaign_main.list_enriched_knowledge_context(campaign)
+    assert [row["item_id"] for row in result] == ["ready-item"]
+    assert result[0]["analysis_status"] == "ready"
+
+
 def _campaign() -> CampaignRecord:
     return CampaignRecord(
         company_id="company-a",
@@ -226,15 +269,23 @@ def _campaign() -> CampaignRecord:
     )
 
 
-def test_copy_payload_has_attributes_without_images_and_image_anchors_are_bounded(tmp_path):
+def test_copy_payload_has_attributes_without_images_and_image_anchors_are_bounded(tmp_path, monkeypatch):
     campaign = _campaign()
+    anchor_paths = []
     items = [
         ContextSourceItem(
             "industry_attribute_rag", f"anchor-{index}", f"anchor-{index}.png", "safe visual",
-            {"mime_type": "image/png", "attributes": {"style": ["warm"]}, "score": index, "role": "foodie"},
+            {
+                "mime_type": "image/png", "attributes": {"style": ["warm"]}, "score": index, "role": "foodie",
+                "stored_path": str(tmp_path / f"anchor-{index}.png"),
+            },
         )
         for index in range(6)
     ]
+    for index in range(6):
+        path = tmp_path / f"anchor-{index}.png"
+        path.write_bytes(PNG_BYTES)
+        anchor_paths.append(path)
     snapshot = assemble_generation_context(campaign, items, [], [], 100)
     copy_payload = build_generation_reference_payload(snapshot, "copywriting")
     image_payload = build_generation_reference_payload(snapshot, "image_generation")
@@ -256,6 +307,15 @@ def test_copy_payload_has_attributes_without_images_and_image_anchors_are_bounde
         assert "private" not in serialized
         assert "base64" not in serialized
         assert "bytes" not in serialized
+
+    captured = []
+    capture_store = SimpleNamespace(save_llm_generation_payload=lambda value: captured.append(value))
+    monkeypatch.setattr(campaign_main, "persistence", capture_store)
+    campaign_main._capture_worker_payload(worker_payload, "image_generation", campaign.campaign_id, "task", raise_on_failure=True)
+    persisted_context = captured[0]["context"]
+    assert "reference_images" not in persisted_context
+    for forbidden in ("stored_path", "private", "base64", "bytes"):
+        assert forbidden not in str(persisted_context).lower()
 
 
 def test_pack_six_cap_manual_precedence_and_mandatory_failure_are_asserted(tmp_path):
