@@ -3021,6 +3021,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
             "file_name": item.label,
             "mime_type": metadata.get("mime_type") or metadata.get("file_type"),
             "selection_reason": "visual_anchor" if is_enriched else ("mandatory_pack" if metadata.get("selection_mode") == "mandatory" else "optional_pack"),
+            "role": metadata.get("role"),
         }
         if not stored_path or not os.path.isfile(stored_path):
             failure = {"reference_id": reference_id, "category": "missing_file"}
@@ -3069,6 +3070,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
                     "analysis_version": metadata.get("analysis_version"),
                     "selection_reason": metadata.get("selection_reason") or "visual_anchor",
                     "similarity": metadata.get("score"),
+                    "role": metadata.get("role"),
                 })
             references.append(reference)
         except OSError:
@@ -3097,13 +3099,13 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "references": audit_references,
     }
     attribute_candidate_count = sum(1 for item in snapshot.items if item.source_type == "industry_attribute_rag")
-    if attribute_candidate_count:
-        audit.update({
-            "candidate_count": pack_candidate_count + attribute_candidate_count,
-            "candidate_attribute_count": attribute_candidate_count,
-            "selected_attribute_count": len(selected_anchors),
-            "attached_anchor_count": sum(1 for reference in references if reference.get("source_type") == "industry_attribute_rag"),
-        })
+    audit.update({
+        "candidate_count": pack_candidate_count + attribute_candidate_count,
+        "candidate_attribute_count": attribute_candidate_count,
+        "selected_attribute_count": len(build_generation_reference_payload(snapshot, "copywriting")["attributes"]),
+        "selected_anchor_count": len(selected_anchors),
+        "attached_anchor_count": sum(1 for reference in references if reference.get("source_type") == "industry_attribute_rag"),
+    })
     if pack_selected:
         audit.update({"policy_version": "reference-pack-v1", "candidate_count": pack_candidate_count})
     return references, audit

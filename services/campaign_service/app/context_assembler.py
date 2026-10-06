@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 import hashlib
 import json
 from math import floor
@@ -12,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from .schemas import CampaignRecord
+from .safe_attributes import validate_safe_attributes
 
 
 def _freeze(value: Any) -> Any:
@@ -117,6 +119,23 @@ def build_generation_reference_payload(
     """Build the serializable split between attributes and image references."""
     enriched = [item for item in snapshot.items if item.source_type == "industry_attribute_rag"]
 
+    def safe_attributes(value: Any) -> dict[str, Any] | None:
+        def thaw(value: Any) -> Any:
+            if isinstance(value, Mapping):
+                return {str(key): thaw(child) for key, child in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [thaw(child) for child in value]
+            return value
+
+        value = thaw(value)
+        if not isinstance(value, dict):
+            return None
+        try:
+            validated = validate_safe_attributes(value)
+            return json.loads(json.dumps(validated, ensure_ascii=True, allow_nan=False))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
     def provenance(item: ContextSourceItem) -> dict[str, Any]:
         metadata = dict(item.metadata)
         return {
@@ -132,9 +151,12 @@ def build_generation_reference_payload(
     attributes = []
     for item in enriched:
         metadata = dict(item.metadata)
-        values = metadata.get("attributes")
-        if not isinstance(values, dict):
-            values = {"text": item.text}
+        raw_values = metadata.get("attributes")
+        values = safe_attributes(raw_values)
+        if raw_values is None:
+            values = safe_attributes({"text": item.text})
+        if values is None:
+            continue
         attributes.append({"source_item_id": item.source_id, "attributes": values, "provenance": provenance(item)})
 
     legacy = select_reference_pack_items(list(snapshot.items), snapshot.campaign_id, snapshot.run_id or "")
@@ -159,6 +181,7 @@ def build_generation_reference_payload(
             "similarity": dict(item.metadata).get("score"),
             "selection_reason": dict(item.metadata).get("selection_reason"),
             "sha256": dict(item.metadata).get("sha256"),
+            "role": dict(item.metadata).get("role"),
         }
         for item in anchors
     ]

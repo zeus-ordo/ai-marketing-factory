@@ -79,7 +79,7 @@ def test_image_payload_caps_enriched_anchors_and_keeps_pack_precedence(tmp_path)
         items.append(ContextSourceItem(
             "industry_attribute_rag", f"anchor-{index}", f"anchor-{index}.png", "",
             {"stored_path": str(anchor_path), "file_type": "image/png", "attributes": {"style": ["warm"]},
-             "analysis_version": "image-rag-v1", "score": index, "selection_reason": "vector_similarity"},
+             "analysis_version": "image-rag-v1", "score": index, "selection_reason": "vector_similarity", "role": "foodie"},
         ))
     snapshot = assemble_generation_context(campaign, items, [], [], 100)
 
@@ -87,7 +87,35 @@ def test_image_payload_caps_enriched_anchors_and_keeps_pack_precedence(tmp_path)
 
     assert len(payload["visual_anchors"]) == 3
     assert all("stored_path" not in anchor for anchor in payload["visual_anchors"])
+    assert all(anchor["role"] == "foodie" for anchor in payload["visual_anchors"])
     assert payload["legacy_references"][0]["source_id"] == "pack-item"
+
+
+def test_generation_payload_rejects_nested_unsafe_attributes():
+    campaign, snapshot = pack_snapshot(Path("."), "optional")
+    snapshot = assemble_generation_context(campaign, [ContextSourceItem(
+        "industry_attribute_rag", "unsafe", "unsafe.png", "safe text",
+        {"mime_type": "image/png", "attributes": {"style": {"nested": {"stored_path": "/private/a.png"}}}},
+    )], [], [], 100)
+
+    payload = build_generation_reference_payload(snapshot, "copywriting")
+
+    assert payload["attributes"] == []
+    assert "/private/a.png" not in str(payload)
+
+
+def test_image_audit_has_fixed_counts_and_anchor_role_when_empty():
+    campaign, snapshot = pack_snapshot(Path("."), "optional")
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    audit = payload["reference_audit"]
+    assert audit["candidate_count"] == 1
+    assert audit["selected_attribute_count"] == 0
+    assert audit["selected_anchor_count"] == 0
+    assert audit["attached_anchor_count"] == 0
 
 
 def test_mandatory_pack_missing_file_returns_structured_422(tmp_path):

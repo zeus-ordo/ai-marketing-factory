@@ -32,3 +32,18 @@ Implemented Task 5 only. Text generation now receives structured enriched attrib
 - Existing pytest-asyncio and FastAPI deprecation warnings remain.
 - The pre-existing context-assembler import-path collision occurs when that test is run from the campaign-service directory; the required Task 4 command from the repository root passes.
 - Pre-existing untracked plan files were not staged or modified.
+
+## Findings Remediation
+
+- Reused the Task 1 strict safe-attributes validator plus JSON serialization before generation payload attributes; nested private paths, binary fields, and base64 data are rejected from the payload.
+- Added role to enriched-anchor provenance and fixed candidate/attribute/anchor/attachment audit counts, including zero-candidate audits.
+- Configured `ReferenceImage` with `extra="forbid"` and made worker unsafe-field/value checks recursive across attributes, anchors, and audit payloads.
+- Added regression coverage for nested unsafe attributes, zero counts, anchor role provenance, nested unsafe audit data, and image-part `stored_path` extras.
+
+## Remediation Verification
+
+- `python -m pytest test_image_generation_contract.py test_llm_context_capture.py -q`: PASS, 30 passed, 1 skipped, 2 existing FastAPI deprecation warnings.
+- `python -m pytest services/campaign_service/test_context_assembler.py services/campaign_service/test_image_rag_retrieval.py -q`: PASS, 37 passed, 2 existing FastAPI deprecation warnings.
+- `python -m pytest test_reference_images.py test_prompt.py -q`: PASS, 10 passed.
+- `python -m compileall -q services`: PASS.
+- `git diff --check`: PASS.

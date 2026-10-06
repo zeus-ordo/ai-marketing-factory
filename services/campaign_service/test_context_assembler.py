@@ -465,6 +465,11 @@ def test_image_payload_contains_reference_audit_and_sanitized_persisted_context(
         "attached_count": 1,
         "failures": [],
         "multimodal": True,
+        "candidate_count": 0,
+        "candidate_attribute_count": 0,
+        "selected_attribute_count": 0,
+        "selected_anchor_count": 0,
+        "attached_anchor_count": 0,
         "references": [{
             "reference_id": "ref-1",
             "file_name": "ref-1",

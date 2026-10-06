@@ -1,7 +1,14 @@
-from pydantic import BaseModel, Field, model_validator
+import re
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+_PRIVATE_PATH_VALUE = re.compile(r"^(?:[a-zA-Z]:[\\/]|[\\/]|file:|private:|storage:|\.\.?[\\/])")
 
 
 class ReferenceImage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     reference_id: str
     file_name: str
     mime_type: str
@@ -30,16 +37,23 @@ class ImageRunRequest(BaseModel):
         if len(self.reference_images) > 6:
             raise ValueError("at most six image parts are allowed")
 
-        def contains_private_path(value: object) -> bool:
+        forbidden_parts = ("private", "storage", "path", "base64", "binary", "bytes", "blob")
+
+        def contains_unsafe(value: object) -> bool:
             if isinstance(value, dict):
-                if any(str(key).casefold() in {"stored_path", "storage_key", "private_path"} for key in value):
+                if any(
+                    any(part in "".join(character for character in str(key).casefold() if character.isalnum()) for part in forbidden_parts)
+                    for key in value
+                ):
                     return True
-                return any(contains_private_path(nested) for nested in value.values())
-            if isinstance(value, list):
-                return any(contains_private_path(nested) for nested in value)
+                return any(contains_unsafe(nested) for nested in value.values())
+            if isinstance(value, (list, tuple)):
+                return any(contains_unsafe(nested) for nested in value)
+            if isinstance(value, str):
+                return bool(_PRIVATE_PATH_VALUE.match(value) or (value.casefold().startswith("data:") and ";base64," in value.casefold()))
             return False
 
-        if contains_private_path(self.attributes) or contains_private_path(self.visual_anchors) or contains_private_path(self.reference_audit):
+        if contains_unsafe(self.attributes) or contains_unsafe(self.visual_anchors) or contains_unsafe(self.reference_audit):
             raise ValueError("private path fields are not allowed")
         return self
 

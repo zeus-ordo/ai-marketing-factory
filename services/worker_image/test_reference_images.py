@@ -77,3 +77,21 @@ def test_image_worker_rejects_more_than_six_image_parts():
             task_id="task-1", campaign_id="campaign-1", company_id="company-1",
             prompt="Create a visual", sizes=["1024x1024"], reference_images=references,
         )
+
+
+def test_image_worker_rejects_private_image_part_fields_instead_of_ignoring_them():
+    with pytest.raises(ValueError):
+        ImageRunRequest(
+            task_id="task-1", campaign_id="campaign-1", company_id="company-1",
+            prompt="Create a visual", sizes=["1024x1024"],
+            reference_images=[{"reference_id": "ref-1", "file_name": "x.png", "mime_type": "image/png", "data": "cmVm", "stored_path": "/private/x.png"}],
+        )
+
+
+def test_image_worker_rejects_nested_unsafe_audit_fields():
+    with pytest.raises(ValueError):
+        ImageRunRequest(
+            task_id="task-1", campaign_id="campaign-1", company_id="company-1",
+            prompt="Create a visual", sizes=["1024x1024"],
+            reference_audit={"references": [{"provenance": {"binary_data": "secret"}}]},
+        )
