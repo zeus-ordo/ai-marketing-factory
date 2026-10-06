@@ -196,3 +196,14 @@ def test_provider_selection_prefers_explicit_gemini_and_auto_selects_with_key(mo
 
     assert isinstance(analysis, providers.GeminiImageAnalysisProvider)
     assert isinstance(embedding, providers.GeminiEmbeddingProvider)
+
+
+def test_gemini_defaults_use_production_analysis_model_without_changing_embedding(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "key")
+    monkeypatch.delenv("GEMINI_ANALYSIS_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_EMBEDDING_MODEL", raising=False)
+
+    analysis, embedding = providers.build_providers()
+
+    assert analysis.model == "gemini-3.8-flash"
+    assert embedding.model == "gemini-embedding-001"

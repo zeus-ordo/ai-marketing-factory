@@ -87,7 +87,7 @@ class HttpEmbeddingProvider(EmbeddingProvider):
 
 
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_GEMINI_ANALYSIS_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_ANALYSIS_MODEL = "gemini-3.8-flash"
 DEFAULT_GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
 
 
