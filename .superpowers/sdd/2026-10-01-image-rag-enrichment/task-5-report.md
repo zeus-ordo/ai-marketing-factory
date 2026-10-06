@@ -23,6 +23,19 @@ Implemented Task 5 only. Text generation now receives structured enriched attrib
 - `python -m compileall -q services`: PASS.
 - `git diff --check`: PASS.
 
+## Final Role Audit Remediation
+
+- Added enriched `role` to the sanitized audit-reference projection in `services/campaign_service/app/main.py`.
+- Added a generation-contract regression asserting enriched audit references retain `role`.
+
+## Final Verification
+
+- `python -m pytest test_image_generation_contract.py test_llm_context_capture.py -q`: PASS, 30 passed, 1 skipped, 2 existing FastAPI deprecation warnings.
+- `python -m pytest services/campaign_service/test_context_assembler.py services/campaign_service/test_image_rag_retrieval.py -q`: PASS, 37 passed, 2 existing FastAPI deprecation warnings.
+- `python -m pytest test_reference_images.py test_prompt.py -q`: PASS, 10 passed.
+- `python -m compileall -q services`: PASS.
+- `git diff --check`: PASS.
+
 ## Commit
 
 - `feat: send attributes and bounded visual anchors`

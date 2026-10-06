@@ -90,6 +90,16 @@ def test_image_payload_caps_enriched_anchors_and_keeps_pack_precedence(tmp_path)
     assert all(anchor["role"] == "foodie" for anchor in payload["visual_anchors"])
     assert payload["legacy_references"][0]["source_id"] == "pack-item"
 
+    worker_payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+    enriched_audit = [
+        reference for reference in worker_payload["reference_audit"]["references"]
+        if reference.get("source_type") == "industry_attribute_rag"
+    ]
+    assert enriched_audit
+    assert all(reference["role"] == "foodie" for reference in enriched_audit)
+
 
 def test_generation_payload_rejects_nested_unsafe_attributes():
     campaign, snapshot = pack_snapshot(Path("."), "optional")

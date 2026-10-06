@@ -3089,7 +3089,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
     audit_references = [{key: reference[key] for key in (
         "reference_id", "reference_pack_id", "pack_name", "pack_role", "selection_mode", "selection_reason",
         "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256",
-        "analysis_version", "similarity",
+        "analysis_version", "similarity", "role",
     ) if reference.get(key) is not None} for reference in references]
     audit = {
         "selected_count": len(selected),
