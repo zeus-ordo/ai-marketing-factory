@@ -117,7 +117,10 @@ def test_image_analysis_record_has_internal_fields():
         {"stored_path": "/private/image.png"},
         {"storage_key": "bucket/private/image.png"},
         {"binary_data": "AA=="},
+        {"caption": "AAAA"},
         {"labels": {"path": "C:\\private\\image.png"}},
+        {"caption": "../../secret"},
+        {"caption": "..\\secret"},
         {"labels": {"values": {1, 2}}},
         {"labels": {"created_at": datetime.utcnow()}},
         {"labels": object()},
@@ -138,6 +141,12 @@ def test_public_analysis_schemas_validate_attributes_with_the_same_rules():
             embedding_status="pending",
             updated_at=datetime.utcnow(),
         )
+
+
+def test_natural_language_attributes_are_not_treated_as_paths_or_base64():
+    assert validate_image_attributes({"caption": "Warm tones, use / sparingly."}) == {
+        "caption": "Warm tones, use / sparingly."
+    }
     with pytest.raises((TypeError, ValueError, ValidationError)):
         KnowledgeItemAnalysisSummary(
             analysis_status="ready",

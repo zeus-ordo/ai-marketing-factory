@@ -3020,7 +3020,7 @@ class PostgresPersistence:
                 "metadata": dict(row[6] or {}),
                 "created_at": row[7],
                 "folder_id": row[8],
-                "reference_pack_id": row[9] if len(row) > 9 else None,
+                "reference_pack_id": row[9] if len(row) >= 10 else None,
                 "analysis": (
                     {
                         "analysis_status": row[10],
@@ -3029,7 +3029,7 @@ class PostgresPersistence:
                         "retryable": bool(row[13]),
                         "analyzed_at": row[14],
                     }
-                    if row[10] is not None
+                    if len(row) >= 15 and row[10] is not None
                     else None
                 ),
             }

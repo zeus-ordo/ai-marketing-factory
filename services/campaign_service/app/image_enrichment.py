@@ -34,6 +34,7 @@ def validate_image_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
 
 _FORBIDDEN_FIELD_PARTS = ("private", "storage", "path", "base64", "binary", "bytes", "blob")
 _PATH_VALUE = re.compile(r"^(?:[a-zA-Z]:[\\/]|[\\/]|file:|private:|storage:)")
+_RELATIVE_PATH_VALUE = re.compile(r"^(?:\.\.?[\\/])")
 _BASE64_VALUE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 
 
@@ -52,15 +53,16 @@ def _validate_json_value(value: Any, field_name: str, depth: int) -> None:
     if isinstance(value, str):
         if len(value) > 4096:
             raise ValueError("image attribute strings are too long")
-        if _PATH_VALUE.match(value) or value.startswith("data:") and ";base64," in value.casefold():
+        if _PATH_VALUE.match(value) or _RELATIVE_PATH_VALUE.match(value) or value.startswith("data:") and ";base64," in value.casefold():
             raise ValueError("image attributes cannot contain private paths or base64 data")
-        if len(value) >= 64 and len(value) % 4 == 0 and _BASE64_VALUE.fullmatch(value):
+        if _BASE64_VALUE.fullmatch(value) and ("=" in value or len(value) >= 64 or len(value) == 4 and value.isupper()):
             try:
-                base64.b64decode(value, validate=True)
+                decoded = base64.b64decode(value, validate=True)
             except ValueError:
                 pass
             else:
-                raise ValueError("image attributes cannot contain base64 data")
+                if b"\x00" in decoded or len(value) >= 64:
+                    raise ValueError("image attributes cannot contain base64 data")
         return
     if isinstance(value, dict):
         if len(value) > 64:

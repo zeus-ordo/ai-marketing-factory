@@ -54,3 +54,22 @@ git diff --check
 ```
 
 The three PostgreSQL lifecycle tests remain skipped because `CAMPAIGN_TEST_DATABASE_URL` is not configured; no database success was fabricated.
+
+## Second Review Fix
+
+- Added explicit relative/private path detection and short binary-base64 detection, including `AAAA`, while retaining natural-language values containing ordinary punctuation.
+- Made `list_knowledge_items` tolerate legacy nine-column mock rows by only reading analysis fields when the new columns are present.
+- Added regression coverage for short base64, relative paths, natural language, and legacy knowledge-row round trips.
+
+```text
+python -m pytest services/campaign_service/test_image_enrichment_persistence.py services/campaign_service/test_persistence_migrations.py -q
+16 passed, 3 skipped, 2 warnings in 0.67s
+
+python -m pytest services/campaign_service/test_reference_folder_association.py services/campaign_service/test_llm_context_capture.py services/campaign_service/test_reference_packs.py -q
+31 passed, 2 skipped, 2 warnings in 0.71s
+
+python -m compileall -q services/campaign_service/app services/campaign_service/test_image_enrichment_persistence.py services/campaign_service/test_persistence_migrations.py services/campaign_service/test_reference_folder_association.py
+git diff --check
+```
+
+PostgreSQL-dependent tests remain skipped when `CAMPAIGN_TEST_DATABASE_URL` is unset.
