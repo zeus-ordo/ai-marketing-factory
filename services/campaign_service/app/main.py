@@ -370,6 +370,7 @@ class ReferencePackItemRecord(BaseModel):
     file_size: int
     content_url: str
     created_at: datetime
+    analysis: KnowledgeItemAnalysisSummary | None = None
 
 
 class ReferencePackItemListResponse(BaseModel):
@@ -6190,6 +6191,7 @@ def _pack_item_response(item: dict[str, Any], pack_id: str) -> ReferencePackItem
         file_type=str(metadata.get("file_type") or "application/octet-stream"),
         file_size=int(metadata.get("file_size") or 0),
         content_url=str(item.get("content_url") or ""), created_at=created_at or now_utc(),
+        analysis=_analysis_summary(item.get("analysis")),
     )
 
 
@@ -6209,6 +6211,64 @@ def _public_knowledge_item(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(metadata, dict):
         public["metadata"] = {key: value for key, value in metadata.items() if key != "stored_path"}
     return public
+
+
+IMAGE_ANALYSIS_VERSION = "image-rag-v1"
+
+
+def _analysis_summary(value: dict[str, Any] | None) -> KnowledgeItemAnalysisSummary | None:
+    if not isinstance(value, dict) or value.get("analysis_status") is None:
+        return None
+    return KnowledgeItemAnalysisSummary(
+        analysis_status=value["analysis_status"],
+        analysis_version=value["analysis_version"],
+        attributes=value.get("attributes") or {},
+        retryable=bool(value.get("retryable")),
+        analyzed_at=value.get("analyzed_at"),
+    )
+
+
+def _is_image_upload(file_name: str, content_type: str) -> bool:
+    return content_type.startswith("image/") and os.path.splitext(file_name)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _create_pending_analysis(item: dict[str, Any]) -> dict[str, Any] | None:
+    if not _is_image_upload(str(item.get("metadata", {}).get("file_name", "")), str(item.get("metadata", {}).get("file_type", ""))):
+        return None
+    if persistence is not None and callable(getattr(persistence, "create_image_analysis", None)):
+        analysis = persistence.create_image_analysis(item["item_id"], IMAGE_ANALYSIS_VERSION)
+        item["analysis"] = analysis
+        return analysis
+    pending = {
+        "item_id": item["item_id"], "analysis_version": IMAGE_ANALYSIS_VERSION,
+        "analysis_status": "pending", "attributes": {}, "retryable": True, "analyzed_at": None,
+    }
+    item["analysis"] = pending
+    return pending
+
+
+def _enqueue_best_effort(item_id: str, analysis_version: str) -> None:
+    try:
+        enqueue_image_enrichment(item_id, analysis_version)
+    except Exception:
+        logger.exception("Failed to enqueue image enrichment for %s", item_id)
+
+
+def enqueue_image_enrichment(item_id: str, analysis_version: str) -> None:
+    client = _get_redis_client()
+    if client is None:
+        raise RuntimeError("Redis is unavailable")
+    dedupe_key = f"image-enrichment:enqueue:{item_id}:{analysis_version}"
+    set_method = getattr(client, "set", None)
+    if callable(set_method) and set_method(dedupe_key, "1", nx=True, ex=300) is False:
+        return
+    try:
+        client.xadd("task.image_enrichment", {"task_type": "image_enrichment", "item_id": item_id, "analysis_version": analysis_version})
+    except Exception:
+        delete_method = getattr(client, "delete", None)
+        if callable(delete_method):
+            delete_method(dedupe_key)
+        raise
 
 
 @app.get("/api/v1/reference-packs", response_model=ReferencePackListResponse)
@@ -6347,6 +6407,9 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
             raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
     else:
         knowledge_items.setdefault("platform", []).insert(0, KnowledgeItemRecord(**item))
+    analysis = _create_pending_analysis(item)
+    if analysis is not None:
+        _enqueue_best_effort(item_id, IMAGE_ANALYSIS_VERSION)
     return _pack_item_response(item, pack_id)
 
 
@@ -6430,6 +6493,59 @@ def create_knowledge_item(req: Request, payload: KnowledgeItemCreateRequest) -> 
     return item
 
 
+def _knowledge_item_for_actor(req: Request, item_id: str) -> dict[str, Any] | KnowledgeItemRecord | None:
+    if is_platform_admin_request(req):
+        company_ids = [req.query_params.get("company_id") or "platform"]
+    else:
+        company_ids = [require_jwt(req).company_id or ""]
+    if "platform" not in company_ids:
+        company_ids.append("platform")
+    for company_id in company_ids:
+        if persistence is not None:
+            rows = persistence.list_knowledge_items(company_id)
+            match = next((row for row in rows if row.get("item_id") == item_id), None)
+        else:
+            match = next((row for row in knowledge_items.get(company_id, []) if row.item_id == item_id), None)
+            match = match.model_dump(mode="python") if match else None
+        if match is not None:
+            return match
+    return None
+
+
+@app.get("/api/v1/knowledge-items/{item_id}/analysis", response_model=KnowledgeItemAnalysisSummary)
+def get_knowledge_item_analysis(req: Request, item_id: str) -> KnowledgeItemAnalysisSummary:
+    item = _knowledge_item_for_actor(req, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Knowledge item not found")
+    row = persistence.get_image_analysis(item_id) if persistence is not None and callable(getattr(persistence, "get_image_analysis", None)) else item.get("analysis")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return _analysis_summary(row)  # type: ignore[return-value]
+
+
+@app.post("/api/v1/knowledge-items/{item_id}/analysis/retry", response_model=KnowledgeItemAnalysisSummary)
+def retry_knowledge_item_analysis(req: Request, item_id: str) -> KnowledgeItemAnalysisSummary:
+    item = _knowledge_item_for_actor(req, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Knowledge item not found")
+    current = persistence.get_image_analysis(item_id) if persistence is not None and callable(getattr(persistence, "get_image_analysis", None)) else item.get("analysis")
+    if current is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    if current.get("analysis_status") != "failed" or not current.get("retryable", False):
+        return _analysis_summary(current)  # type: ignore[return-value]
+    if persistence is not None and callable(getattr(persistence, "reset_image_analysis_for_retry", None)):
+        reset = persistence.reset_image_analysis_for_retry(item_id, current["analysis_version"])
+    else:
+        reset = {**current, "analysis_status": "pending", "retryable": True}
+        if isinstance(item, dict):
+            item["analysis"] = reset
+    if reset is None:
+        latest = persistence.get_image_analysis(item_id)
+        return _analysis_summary(latest)  # type: ignore[return-value]
+    _enqueue_best_effort(item_id, reset["analysis_version"])
+    return _analysis_summary(reset)  # type: ignore[return-value]
+
+
 @app.post("/api/v1/knowledge-items/upload", response_model=KnowledgeItemRecord)
 def upload_knowledge_item(
     req: Request,
@@ -6490,6 +6606,11 @@ def upload_knowledge_item(
         persistence.create_knowledge_item(item.model_dump(mode="python"))
     else:
         knowledge_items.setdefault(company_id, []).insert(0, item)
+    item_data = item.model_dump(mode="python")
+    analysis = _create_pending_analysis(item_data)
+    if analysis is not None:
+        item.analysis = _analysis_summary(analysis)
+        _enqueue_best_effort(item_id, IMAGE_ANALYSIS_VERSION)
     return item
 
 

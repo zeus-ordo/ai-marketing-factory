@@ -65,6 +65,24 @@ def test_capture_failure_does_not_prevent_worker_dispatch(monkeypatch):
     assert len(dispatched) == 1
 
 
+def test_image_enrichment_dispatches_to_internal_worker(monkeypatch):
+    dispatched = []
+    monkeypatch.setattr(orchestrator, "post_json", lambda url, payload: dispatched.append((url, payload)) or {"status": "accepted"})
+
+    enrichment = type("EnrichmentTask", (), {
+        "task_type": "image_enrichment",
+        "worker_payload": {"item_id": "kh-1", "analysis_version": "image-rag-v1"},
+    })()
+
+    result = orchestrator.run_worker(enrichment, "")
+
+    assert result == {"status": "accepted"}
+    assert dispatched == [(
+        f"{orchestrator.WORKER_ENRICHMENT_URL}/internal/v1/image-enrichment",
+        {"item_id": "kh-1", "analysis_version": "image-rag-v1"},
+    )]
+
+
 def test_image_failure_blocks_video_but_not_unrelated_copy(monkeypatch):
     campaign_id = "campaign-isolation"
     orchestrator.task_state[campaign_id] = {

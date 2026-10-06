@@ -3118,6 +3118,27 @@ class PostgresPersistence:
             raise ValueError(f"knowledge item not found: {item_id}")
         return self._image_analysis_dict(row)
 
+    def reset_image_analysis_for_retry(self, item_id: str, analysis_version: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE knowledge_item_image_analysis
+                    SET analysis_status = 'pending', embedding_status = 'pending',
+                        error_code = NULL, error_detail = NULL, retryable = TRUE,
+                        updated_at = NOW()
+                    WHERE item_id = %s AND analysis_version = %s
+                      AND analysis_status = 'failed' AND retryable = TRUE
+                    RETURNING item_id, analysis_version, analysis_status, attributes_json,
+                              embedding_status, embedding_model, embedding_dimension,
+                              error_code, error_detail, attempt_count, retryable, analyzed_at, updated_at;
+                    """,
+                    (item_id, analysis_version),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return self._image_analysis_dict(row) if row is not None else None
+
     def claim_image_analysis(self, item_id: str, analysis_version: str) -> bool:
         with self._connect() as conn:
             with conn.cursor() as cur:

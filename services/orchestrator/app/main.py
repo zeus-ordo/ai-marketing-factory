@@ -9,6 +9,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 from urllib import error, request
 
@@ -380,6 +381,7 @@ WORKER_COPY_URL = os.getenv("WORKER_COPY_URL", "http://worker-copy:8091")
 WORKER_IMAGE_URL = os.getenv("WORKER_IMAGE_URL", "http://worker-image:8092")
 WORKER_VIDEO_URL = os.getenv("WORKER_VIDEO_URL", "http://worker-video:8093")
 WORKER_ADS_URL = os.getenv("WORKER_ADS_URL", "http://worker-ads:8094")
+WORKER_ENRICHMENT_URL = os.getenv("WORKER_ENRICHMENT_URL", "http://worker-enrichment:8095")
 WORKER_REQUEST_TIMEOUT_SECONDS = max(15.0, float(os.getenv("WORKER_REQUEST_TIMEOUT_SECONDS", "180")))
 CAMPAIGN_SERVICE_URL = os.getenv("CAMPAIGN_SERVICE_URL", "http://campaign-service:8080").strip()
 INTERNAL_API_KEY = os.getenv("CHATBOT_INTERNAL_API_KEY", "").strip() or os.getenv("INTERNAL_API_KEY", "").strip()
@@ -425,8 +427,9 @@ TASK_TOPIC_MAP: dict[str, str] = {
     "video_generation": "task.video",
     "ads_strategy": "task.ads",
 }
+ENRICHMENT_TOPIC = "task.image_enrichment"
 
-TOPICS = list(TASK_TOPIC_MAP.values())
+TOPICS = [*TASK_TOPIC_MAP.values(), ENRICHMENT_TOPIC]
 DLQ_TOPIC = "task.dlq"
 
 
@@ -710,9 +713,16 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
     Run a worker task and report the result back to campaign_service.
     Returns the worker response for further processing.
     """
+    worker_payload = dict(task.worker_payload or {})
+
+    if task.task_type == "image_enrichment":
+        return post_json(
+            f"{WORKER_ENRICHMENT_URL}/internal/v1/image-enrichment",
+            worker_payload,
+        )
+
     company_id = task.company_id or ""
     run_id = task.run_id or ""
-    worker_payload = dict(task.worker_payload or {})
 
     if task.task_type == "copywriting":
         payload = {
@@ -1007,6 +1017,32 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
             logger.exception("Failed to acquire distributed claim for message %s", message_id)
             return False
     try:
+        if stream_name == ENRICHMENT_TOPIC:
+            item_id = fields.get("item_id")
+            analysis_version = fields.get("analysis_version")
+            if not item_id or not analysis_version:
+                ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
+                acknowledged = ack_result is None or bool(ack_result)
+                return acknowledged
+            enrichment_task = SimpleNamespace(
+                task_id=f"{item_id}:{analysis_version}",
+                task_type="image_enrichment",
+                status="planned",
+                priority=0,
+                worker_payload={"item_id": item_id, "analysis_version": analysis_version},
+            )
+            try:
+                run_worker(enrichment_task, "")
+            except Exception as exc:
+                error_class = classify_worker_error(exc)
+                if error_class in {"quota", "rate_limit", "timeout", "provider_error"}:
+                    logger.warning("image enrichment worker failed (%s); leaving message pending", error_class)
+                else:
+                    logger.error("image enrichment worker failed (%s): %s", error_class, sanitize_error_detail(str(exc)))
+                return False
+            ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
+            acknowledged = ack_result is None or bool(ack_result)
+            return acknowledged
         campaign_id = fields.get("campaign_id")
         task_id = fields.get("task_id")
         if not campaign_id or not task_id:
