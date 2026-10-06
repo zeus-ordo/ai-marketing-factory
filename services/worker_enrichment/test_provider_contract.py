@@ -1,10 +1,10 @@
 import math
 
 import pytest
-from services.shared.image_enrichment import validate_safe_attributes
 
 from app import providers
 from app.providers import EmbeddingProvider, ImageAnalysisProvider, validate_embedding, validate_attributes
+from app.safe_attributes import validate_safe_attributes
 
 
 def test_provider_interfaces_expose_required_methods():

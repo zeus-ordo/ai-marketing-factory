@@ -47,3 +47,22 @@ Fix verification:
 - Task 1 persistence tests: `13 passed, 3 skipped`
 - Compile check: passed
 - Diff check: passed
+
+## Standalone Build Context Fix
+
+The repository's service convention builds each Dockerfile with its own service directory as context and copies local `app` only. The previous repository-level `shared` path was not available in that context and has been removed.
+
+- Added identical strict `app/safe_attributes.py` contract modules to `worker_enrichment` and `campaign_service`.
+- Updated worker and Task 1 imports to use their local contract module.
+- Removed the invalid `COPY shared` instruction.
+- Added a subprocess test that imports the worker from `services/worker_enrichment` without the repository root and rejects private paths, relative paths, and base64 data.
+- Verified the two contract modules have identical SHA-256 content.
+
+Final verification:
+
+- Worker suite: `14 passed`
+- Task 1 persistence tests: `13 passed, 3 skipped`
+- Standalone import and validator hash check: passed
+- Compile check: passed
+- Diff check: passed
+- Docker build was attempted from `services/worker_enrichment` but could not connect because the local Docker daemon is not running.

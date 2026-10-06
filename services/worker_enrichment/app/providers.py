@@ -7,10 +7,7 @@ from typing import Any
 
 import httpx
 
-try:
-    from services.shared.image_enrichment import validate_safe_attributes as _campaign_validate_attributes
-except ImportError:
-    from shared.image_enrichment import validate_safe_attributes as _campaign_validate_attributes
+from .safe_attributes import validate_safe_attributes as _campaign_validate_attributes
 
 
 class ProviderError(RuntimeError):
