@@ -50,6 +50,7 @@ services:
     volumes:
       - ../campaign_references:/app/campaign_references
       - ../generated_assets:/app/generated_assets
+      - ../knowledge_uploads:/app/knowledge_uploads
     env_file:
       - ../.env.example
       - ../.env.local
@@ -72,6 +73,8 @@ services:
         condition: service_started
       worker-ads:
         condition: service_started
+      worker-enrichment:
+        condition: service_started
     restart: unless-stopped
 
   decision-service:
@@ -92,6 +95,8 @@ services:
     env_file:
       - ../.env.example
       - ../.env.local
+    environment:
+      - WORKER_ENRICHMENT_URL=http://worker-enrichment:8093
     depends_on:
       redis:
         condition: service_healthy
@@ -133,6 +138,27 @@ services:
       - "8094"
     env_file:
       - ../.env.example
+
+  worker-enrichment:
+    build: ../services/worker_enrichment
+    expose:
+      - "8093"
+    volumes:
+      - ../knowledge_uploads:/app/knowledge_uploads:ro
+    env_file:
+      - ../.env.example
+      - ../.env.local
+    environment:
+      - CAMPAIGN_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/marketing_ai
+      - CHATBOT_INTERNAL_API_KEY=${CHATBOT_INTERNAL_API_KEY:?CHATBOT_INTERNAL_API_KEY must be set}
+      - IMAGE_ANALYSIS_BASE_URL=${IMAGE_ANALYSIS_BASE_URL:-http://multimodal-provider:8080}
+      - IMAGE_ANALYSIS_MODEL=${IMAGE_ANALYSIS_MODEL:-vision-model}
+      - IMAGE_ANALYSIS_API_KEY=${IMAGE_ANALYSIS_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://embedding-provider:8080}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-embedding-model}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - IMAGE_ANALYSIS_VERSION=${IMAGE_ANALYSIS_VERSION:-image-rag-v1}
+    restart: unless-stopped
 
   postgres:
     image: postgres:16

@@ -70,6 +70,8 @@ services:
         condition: service_started
       worker-ads:
         condition: service_started
+      worker-enrichment:
+        condition: service_started
 
   decision-service:
     build: ../services/decision_service
@@ -81,6 +83,8 @@ services:
     build: ../services/orchestrator
     env_file:
       - ../.env.local
+    environment:
+      - WORKER_ENRICHMENT_URL=http://worker-enrichment:8093
     restart: unless-stopped
 
   worker-copy:
@@ -108,6 +112,26 @@ services:
     build: ../services/worker_ads
     env_file:
       - ../.env.local
+    restart: unless-stopped
+
+  worker-enrichment:
+    build: ../services/worker_enrichment
+    expose:
+      - "8093"
+    volumes:
+      - knowledge_uploads:/app/knowledge_uploads:ro
+    env_file:
+      - ../.env.local
+    environment:
+      - CAMPAIGN_DATABASE_URL=${POSTGRES_DSN:?POSTGRES_DSN must be set}
+      - CHATBOT_INTERNAL_API_KEY=${CHATBOT_INTERNAL_API_KEY:?CHATBOT_INTERNAL_API_KEY must be set}
+      - IMAGE_ANALYSIS_BASE_URL=${IMAGE_ANALYSIS_BASE_URL:-http://multimodal-provider:8080}
+      - IMAGE_ANALYSIS_MODEL=${IMAGE_ANALYSIS_MODEL:-vision-model}
+      - IMAGE_ANALYSIS_API_KEY=${IMAGE_ANALYSIS_API_KEY:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://embedding-provider:8080}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-embedding-model}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - IMAGE_ANALYSIS_VERSION=${IMAGE_ANALYSIS_VERSION:-image-rag-v1}
     restart: unless-stopped
 
 volumes:
