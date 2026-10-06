@@ -1,8 +1,10 @@
+import base64
 import json
 import math
 import os
 import re
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -98,11 +100,12 @@ class HttpImageAnalysisProvider(ImageAnalysisProvider):
 
     def analyze(self, image_path: str, mime_type: str, title: str, description: str) -> dict[str, Any]:
         try:
+            image_data = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
             with httpx.Client(timeout=120.0) as client:
                 response = client.post(
                     f"{self.base_url}/analyze",
                     headers={"Authorization": f"Bearer {self.api_key}"},
-                    json={"model": self.model, "image_path": image_path, "mime_type": mime_type, "title": title, "description": description},
+                    json={"model": self.model, "image_data": image_data, "mime_type": mime_type, "title": title, "description": description},
                 )
                 response.raise_for_status()
                 return validate_attributes(response.json())
