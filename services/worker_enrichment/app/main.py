@@ -7,12 +7,14 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import providers
+from .safe_attributes import validate_safe_attributes
 
 try:
     from services.campaign_service.app.image_enrichment import canonical_attribute_text, redact_provider_error
 except ImportError:
     def canonical_attribute_text(attributes: dict[str, Any]) -> str:
-        return json.dumps(attributes, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
+        safe_attributes = validate_safe_attributes(attributes)
+        return json.dumps(safe_attributes, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
     def redact_provider_error(error: BaseException) -> str:
         return "provider timeout" if isinstance(error, TimeoutError) else "provider request failed"

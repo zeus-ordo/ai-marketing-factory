@@ -66,3 +66,17 @@ Final verification:
 - Compile check: passed
 - Diff check: passed
 - Docker build was attempted from `services/worker_enrichment` but could not connect because the local Docker daemon is not running.
+
+## Third-Round Fix
+
+- Removed the standalone `main.py` raw JSON fallback that accepted unsafe attributes.
+- Standalone canonical attribute text now validates through the service-local strict `app.safe_attributes` module; campaign-service canonicalization remains strict as well.
+- Extended the service-directory subprocess test to exercise `main.canonical_attribute_text` directly, rejecting private paths, relative paths, and base64 while accepting normal attributes.
+
+Final third-round verification:
+
+- Worker tests: `14 passed`
+- Task 1 tests: `13 passed, 3 skipped`
+- Standalone import/canonicalization test: included in worker suite and passed
+- Compile check: passed
+- Diff check: passed
