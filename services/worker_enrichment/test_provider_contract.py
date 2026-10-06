@@ -100,6 +100,23 @@ def test_gemini_image_analysis_sends_inline_image_and_parses_fenced_json(monkeyp
     assert kwargs["json"]["generationConfig"]["responseMimeType"] == "application/json"
 
 
+def test_gemini_image_analysis_accepts_full_model_resource_name(monkeypatch, tmp_path):
+    image = tmp_path / "image.png"
+    image.write_bytes(b"png-bytes")
+    FakeClient.calls = []
+    FakeClient.response = FakeResponse({
+        "candidates": [{"content": {"parts": [{"text": '{"objects":["bowl"]}'}]}}]
+    })
+    monkeypatch.setattr(providers.httpx, "Client", FakeClient)
+
+    providers.GeminiImageAnalysisProvider("test-key", "models/gemini-test").analyze(
+        str(image), "image/png", "Lunch", "A bowl on a table"
+    )
+
+    url, _ = FakeClient.calls[0]
+    assert url.endswith("/v1beta/models/gemini-test:generateContent")
+
+
 def test_gemini_image_analysis_rejects_malformed_json_as_safe_provider_error(monkeypatch, tmp_path):
     image = tmp_path / "image.png"
     image.write_bytes(b"png-bytes")
@@ -128,6 +145,17 @@ def test_gemini_embedding_sends_canonical_text_and_parses_values(monkeypatch):
     assert url.endswith("/v1beta/models/gemini-embedding-test:embedContent")
     assert kwargs["headers"] == {"x-goog-api-key": "secret-key"}
     assert kwargs["json"] == {"content": {"parts": [{"text": '{"objects":["bowl"]}'}]}}
+
+
+def test_gemini_embedding_accepts_full_model_resource_name(monkeypatch):
+    FakeClient.calls = []
+    FakeClient.response = FakeResponse({"embedding": {"values": [0.1, -0.2]}})
+    monkeypatch.setattr(providers.httpx, "Client", FakeClient)
+
+    providers.GeminiEmbeddingProvider("secret-key", "models/gemini-embedding-test").embed("attributes")
+
+    url, _ = FakeClient.calls[0]
+    assert url.endswith("/v1beta/models/gemini-embedding-test:embedContent")
 
 
 def test_gemini_embedding_rejects_malformed_response_as_safe_provider_error(monkeypatch):

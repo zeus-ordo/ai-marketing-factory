@@ -104,6 +104,10 @@ def _parse_json_response(text: str) -> Any:
     return json.loads(fenced.group(1) if fenced else text)
 
 
+def _gemini_model_path(model: str) -> str:
+    return model if model.startswith("models/") else f"models/{model}"
+
+
 class GeminiImageAnalysisProvider(ImageAnalysisProvider):
     def __init__(self, api_key: str, model: str, base_url: str = GEMINI_API_BASE_URL) -> None:
         self.api_key = api_key
@@ -122,7 +126,7 @@ class GeminiImageAnalysisProvider(ImageAnalysisProvider):
             )
             with httpx.Client(timeout=120.0) as client:
                 response = client.post(
-                    f"{self.base_url}/models/{self.model}:generateContent",
+                    f"{self.base_url}/{_gemini_model_path(self.model)}:generateContent",
                     headers={"x-goog-api-key": self.api_key},
                     json={
                         "contents": [{"parts": [
@@ -154,7 +158,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
                 raise ProviderError("EMBEDDING_PROVIDER_ERROR")
             with httpx.Client(timeout=60.0) as client:
                 response = client.post(
-                    f"{self.base_url}/models/{self.model}:embedContent",
+                    f"{self.base_url}/{_gemini_model_path(self.model)}:embedContent",
                     headers={"x-goog-api-key": self.api_key},
                     json={"content": {"parts": [{"text": text}]}},
                 )
