@@ -43,17 +43,7 @@ def test_optional_pack_missing_file_is_audited_without_blocking_generation(tmp_p
     )
 
     assert payload["reference_images"] == []
-    failure = payload["reference_audit"]["failures"][0]
-    assert failure["reference_id"] == "pack-item"
-    assert failure["category"] == "missing_file"
-    assert failure["mandatory"] is False
-    assert failure["reference_pack_id"] == "pack-1"
-    assert failure["pack_name"] == "Brand Pack"
-    assert failure["source_type"] == "platform_default"
-    assert failure["pack_role"] == "brand_identity"
-    assert failure["selection_mode"] == "optional"
-    assert failure["selection_reason"] == "optional_pack"
-    assert failure["priority"] == 10
+    assert payload["reference_audit"]["failures"] == []
 
 
 def test_copy_payload_has_attributes_without_image_parts(tmp_path):
@@ -194,11 +184,10 @@ def test_pack_audit_counts_pack_candidates_and_preserves_mixed_manual_provenance
     assert audit["candidate_count"] == 8
     assert audit["pack_candidate_count"] == 7
     assert audit["enriched_candidate_count"] == 0
-    assert audit["selected_count"] == 6
-    assert audit["attached_count"] == 6
+    assert audit["selected_count"] == 1
+    assert audit["attached_count"] == 1
     assert audit["references"][0]["reference_id"] == "manual-1"
-    assert audit["references"][1]["reference_pack_id"] == "pack-1"
-    assert audit["references"][1]["selection_reason"] == "optional_pack"
+    assert all(reference.get("reference_pack_id") != "pack-1" for reference in audit["references"])
 
 
 def test_optional_pack_failure_audit_includes_selection_reason(tmp_path):
@@ -208,8 +197,7 @@ def test_optional_pack_failure_audit_includes_selection_reason(tmp_path):
         campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
     )
 
-    failure = payload["reference_audit"]["failures"][0]
-    assert failure["selection_reason"] == "optional_pack"
+    assert payload["reference_audit"]["failures"] == []
 
 
 def test_pack_audit_filters_default_sources_without_pack_id(tmp_path):
@@ -235,6 +223,98 @@ def test_pack_audit_filters_default_sources_without_pack_id(tmp_path):
     assert payload["reference_audit"]["candidate_count"] == 2
     assert payload["reference_audit"]["pack_candidate_count"] == 1
     assert all(reference["reference_id"] != "invalid" for reference in payload["reference_audit"]["references"])
+
+
+def test_image_payload_uses_fixed_mandatory_user_and_rag_partitions(tmp_path):
+    campaign, _ = pack_snapshot(tmp_path, "optional")
+    items = []
+    for index in range(8):
+        path = tmp_path / f"mandatory-{index}.png"
+        path.write_bytes(f"mandatory-{index}".encode())
+        items.append(ContextSourceItem(
+            "platform_default", f"mandatory-{index}", path.name, "",
+            {"stored_path": str(path), "file_type": "image/png", "pack_id": "mandatory-pack",
+             "pack_role": "style", "selection_mode": "mandatory", "max_images": 8, "priority": 10},
+        ))
+    for index in range(5):
+        path = tmp_path / f"user-{index}.png"
+        path.write_bytes(f"user-{index}".encode())
+        items.append(ContextSourceItem(
+            "user_selected", f"user-{index}", path.name, "",
+            {"stored_path": str(path), "file_type": "image/png"},
+        ))
+    for index in range(5):
+        path = tmp_path / f"rag-{index}.png"
+        path.write_bytes(f"rag-{index}".encode())
+        items.append(ContextSourceItem(
+            "industry_attribute_rag", f"rag-{index}", path.name, "",
+            {"stored_path": str(path), "file_type": "image/png", "score": index,
+             "attributes": {"style": ["warm"]}, "selection_reason": "vector_similarity"},
+        ))
+    optional_path = tmp_path / "optional.png"
+    optional_path.write_bytes(b"optional")
+    items.append(ContextSourceItem(
+        "platform_default", "optional", optional_path.name, "",
+        {"stored_path": str(optional_path), "file_type": "image/png", "pack_id": "optional-pack",
+         "pack_role": "style", "selection_mode": "optional", "max_images": 20},
+    ))
+    industry_path = tmp_path / "industry.png"
+    industry_path.write_bytes(b"industry")
+    items.append(ContextSourceItem(
+        "industry_matched", "industry", industry_path.name, "",
+        {"stored_path": str(industry_path), "file_type": "image/png"},
+    ))
+    snapshot = assemble_generation_context(campaign, items, [], [], 1000)
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    audit = payload["reference_audit"]
+    assert len(payload["reference_images"]) == 12
+    assert len({reference["reference_id"] for reference in payload["reference_images"][:6]}) == 6
+    assert all(reference["reference_id"].startswith("mandatory-") for reference in payload["reference_images"][:6])
+    assert [reference["reference_id"] for reference in payload["reference_images"][6:9]] == [f"user-{index}" for index in range(3)]
+    assert {reference["reference_id"] for reference in payload["reference_images"][9:]} == {"rag-2", "rag-3", "rag-4"}
+    assert "optional" not in {reference["reference_id"] for reference in payload["reference_images"]}
+    assert "industry" not in {reference["reference_id"] for reference in payload["reference_images"]}
+    assert audit["total_limit"] == 12
+    assert audit["mandatory_selected_count"] == 6
+    assert audit["mandatory_attached_count"] == 6
+    assert audit["user_selected_count"] == 3
+    assert audit["user_attached_count"] == 3
+    assert audit["rag_selected_count"] == 3
+    assert audit["rag_attached_count"] == 3
+
+
+def test_optional_pack_does_not_fill_reserved_user_or_rag_partition(tmp_path):
+    campaign, _ = pack_snapshot(tmp_path, "optional")
+    items = []
+    for index in range(10):
+        path = tmp_path / f"optional-{index}.png"
+        path.write_bytes(f"optional-{index}".encode())
+        items.append(ContextSourceItem(
+            "platform_default", f"optional-{index}", path.name, "",
+            {"stored_path": str(path), "file_type": "image/png", "pack_id": "optional-pack",
+             "pack_role": "style", "selection_mode": "optional", "max_images": 20},
+        ))
+    rag_path = tmp_path / "rag.png"
+    rag_path.write_bytes(b"rag")
+    items.append(ContextSourceItem(
+        "industry_attribute_rag", "rag", rag_path.name, "",
+        {"stored_path": str(rag_path), "file_type": "image/png", "score": 1,
+         "attributes": {"style": ["warm"]}},
+    ))
+    snapshot = assemble_generation_context(campaign, items, [], [], 1000)
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    assert [reference["reference_id"] for reference in payload["reference_images"]] == ["rag"]
+    assert payload["reference_audit"]["mandatory_selected_count"] == 0
+    assert payload["reference_audit"]["user_selected_count"] == 0
+    assert payload["reference_audit"]["rag_selected_count"] == 1
 
 
 def image_result(image_assets):

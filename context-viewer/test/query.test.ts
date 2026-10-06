@@ -310,6 +310,36 @@ test("reference audit normalization covers success, failure, legacy, and malform
   assert.equal(normalizeReferenceAudit({ selected_count: 1, attached_count: 1, failures: {}, references: [] }), null);
 });
 
+test("reference audit normalization exposes fixed quota partition counts", () => {
+  assert.deepEqual(normalizeReferenceAudit({
+    total_limit: 12,
+    mandatory_selected_count: 6,
+    mandatory_attached_count: 5,
+    user_selected_count: 3,
+    user_attached_count: 3,
+    rag_selected_count: 3,
+    rag_attached_count: 2,
+    selected_count: 12,
+    attached_count: 10,
+    multimodal: true,
+    failures: [],
+    references: [],
+  }), {
+    totalLimit: 12,
+    mandatorySelectedCount: 6,
+    mandatoryAttachedCount: 5,
+    userSelectedCount: 3,
+    userAttachedCount: 3,
+    ragSelectedCount: 3,
+    ragAttachedCount: 2,
+    selectedCount: 12,
+    attachedCount: 10,
+    multimodal: true,
+    failures: [],
+    references: [],
+  });
+});
+
 test("reference audit binary-data removal is recursive and preserves safe metadata", () => {
   const sanitized = removeBinaryData({ data: "root-bytes", nested: [{ data: "nested-bytes", file_name: "brand.png" }], reference_audit: { sha256: "abc123" } });
   assert.deepEqual(sanitized, { nested: [{ file_name: "brand.png" }], reference_audit: { sha256: "abc123" } });
@@ -340,6 +370,13 @@ test("reference audit renders success, legacy, and failure states without image 
   }
   assert.doesNotMatch(page, /reference_images/);
   assert.doesNotMatch(JSON.stringify(auditFixture), /base64|image bytes/);
+});
+
+test("Context Viewer displays fixed image quota partition counts", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const label of ["Image quota", "Mandatory Pack", "User references", "RAG visual anchors", "Total limit"]) {
+    assert.match(page, new RegExp(label));
+  }
 });
 
 test("reference audit normalizes and renders Pack provenance without image bytes", async () => {

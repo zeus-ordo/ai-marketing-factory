@@ -322,7 +322,7 @@ def test_cache_loss_rehydrates_nested_industry_knowledge_image_path(monkeypatch,
         {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-industry-restart"},
         loaded,
     )
-    assert payload["reference_images"][0]["data"]
+    assert payload["reference_images"] == []
 
 
 def test_active_pack_loading_surfaces_persistence_errors(monkeypatch):
@@ -461,6 +461,7 @@ def test_image_payload_contains_reference_audit_and_sanitized_persisted_context(
     assert payload["reference_images"][0]["reference_id"] == "ref-1"
     assert payload["reference_images"][0]["data"]
     assert payload["reference_audit"] == {
+        "total_limit": 12,
         "selected_count": 1,
         "attached_count": 1,
         "failures": [],
@@ -472,12 +473,20 @@ def test_image_payload_contains_reference_audit_and_sanitized_persisted_context(
         "selected_attribute_count": 0,
         "selected_anchor_count": 0,
         "attached_anchor_count": 0,
+        "mandatory_selected_count": 0,
+        "mandatory_attached_count": 0,
+        "user_selected_count": 1,
+        "user_attached_count": 1,
+        "rag_selected_count": 0,
+        "rag_attached_count": 0,
         "references": [{
             "reference_id": "ref-1",
             "file_name": "ref-1",
             "mime_type": "image/png",
             "folder": "General",
             "sha256": "4110dd12af975f556bdac0299d0bfa04d42fa22d94f56b8550f1762e48fff7fb",
+            "source_type": "campaign_reference",
+            "selection_reason": "user_reference",
         }],
     }
 

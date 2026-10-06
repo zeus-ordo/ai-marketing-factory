@@ -1,4 +1,4 @@
-export type ReferenceAudit = { candidateCount?: number; selectedCount: number; attachedCount: number; multimodal: boolean; failures: ReferenceAuditFailure[]; references: ReferenceAuditReference[] };
+export type ReferenceAudit = { candidateCount?: number; totalLimit?: number; mandatorySelectedCount?: number; mandatoryAttachedCount?: number; userSelectedCount?: number; userAttachedCount?: number; ragSelectedCount?: number; ragAttachedCount?: number; selectedCount: number; attachedCount: number; multimodal: boolean; failures: ReferenceAuditFailure[]; references: ReferenceAuditReference[] };
 export type ReferenceAuditReference = { referenceId: string; fileName: string; mimeType: string; folder: string; sha256: string; packId?: string; packName?: string; packRole?: string; selectionMode?: string; selectionReason?: string; priority?: number; sourceType?: string };
 export type ReferenceAuditFailure = { referenceId: string; category: string; packId?: string; packName?: string; packRole?: string; selectionMode?: string; selectionReason?: string; priority?: number; sourceType?: string };
 
@@ -29,6 +29,13 @@ export function normalizeReferenceAudit(value: unknown): ReferenceAudit | null {
   if (!isRecord(value) || !validCount(value.selected_count) || !validCount(value.attached_count) || !Array.isArray(value.failures) || !Array.isArray(value.references)) return null;
   return {
     ...(validCount(value.candidate_count) ? { candidateCount: value.candidate_count } : {}),
+    ...(validCount(value.total_limit) ? { totalLimit: value.total_limit } : {}),
+    ...(validCount(value.mandatory_selected_count) ? { mandatorySelectedCount: value.mandatory_selected_count } : {}),
+    ...(validCount(value.mandatory_attached_count) ? { mandatoryAttachedCount: value.mandatory_attached_count } : {}),
+    ...(validCount(value.user_selected_count) ? { userSelectedCount: value.user_selected_count } : {}),
+    ...(validCount(value.user_attached_count) ? { userAttachedCount: value.user_attached_count } : {}),
+    ...(validCount(value.rag_selected_count) ? { ragSelectedCount: value.rag_selected_count } : {}),
+    ...(validCount(value.rag_attached_count) ? { ragAttachedCount: value.rag_attached_count } : {}),
     selectedCount: value.selected_count,
     attachedCount: value.attached_count,
     multimodal: value.multimodal === true,

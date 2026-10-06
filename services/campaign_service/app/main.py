@@ -72,6 +72,7 @@ from .context_assembler import (
     build_generation_reference_payload,
     build_structured_attribute_text,
     select_image_reference_items,
+    select_image_reference_partitions,
     select_visual_anchor_items,
     select_reference_pack_items,
 )
@@ -3001,12 +3002,10 @@ MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    selected_legacy = select_reference_pack_items(list(snapshot.items), snapshot.campaign_id, run_id or getattr(snapshot, "run_id", ""))
-    selected_anchors = select_visual_anchor_items(
-        list(snapshot.items),
-        limit=max(0, min(3, 6 - len(selected_legacy))),
+    selected_mandatory, selected_user, selected_anchors = select_image_reference_partitions(
+        list(snapshot.items), snapshot.campaign_id, run_id or getattr(snapshot, "run_id", "")
     )
-    selected = (*selected_legacy, *selected_anchors)
+    selected = (*selected_mandatory, *selected_user, *selected_anchors)
     references: list[dict[str, Any]] = []
     audit_references: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
@@ -3079,6 +3078,11 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
                     "similarity": metadata.get("score"),
                     "role": metadata.get("role"),
                 })
+            else:
+                audit_reference.update({
+                    "source_type": item.source_type,
+                    "selection_reason": "user_reference",
+                })
             references.append(reference)
             audit_references.append(audit_reference)
         except OSError:
@@ -3100,6 +3104,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "analysis_version", "similarity", "role",
     ) if reference.get(key) is not None} for reference in audit_references]
     audit = {
+        "total_limit": 12,
         "selected_count": len(selected),
         "attached_count": len(references),
         "failures": failures,
@@ -3114,7 +3119,19 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "candidate_attribute_count": attribute_candidate_count,
         "selected_attribute_count": len(build_generation_reference_payload(snapshot, "copywriting")["attributes"]),
         "selected_anchor_count": len(selected_anchors),
-        "attached_anchor_count": sum(1 for reference in references if reference.get("source_type") == "industry_attribute_rag"),
+        "attached_anchor_count": sum(1 for reference in audit_references if reference.get("source_type") == "industry_attribute_rag"),
+        "mandatory_selected_count": len(selected_mandatory),
+        "mandatory_attached_count": sum(
+            1 for reference in audit_references
+            if reference.get("selection_mode") == "mandatory"
+        ),
+        "user_selected_count": len(selected_user),
+        "user_attached_count": sum(
+            1 for reference in audit_references
+            if reference.get("source_type") in {"campaign_reference", "user_selected", "immediate_upload"}
+        ),
+        "rag_selected_count": len(selected_anchors),
+        "rag_attached_count": sum(1 for reference in audit_references if reference.get("source_type") == "industry_attribute_rag"),
     })
     if pack_selected:
         audit.update({"policy_version": "reference-pack-v1"})

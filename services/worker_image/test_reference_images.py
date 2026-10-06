@@ -70,13 +70,36 @@ def test_image_worker_accepts_separate_attributes_and_rejects_unsafe_payload():
         )
 
 
-def test_image_worker_rejects_more_than_six_image_parts():
-    references = [ReferenceImage(reference_id=str(index), file_name="x.png", mime_type="image/png", data="cmVm") for index in range(7)]
+def test_image_worker_rejects_more_than_twelve_image_parts():
+    references = [ReferenceImage(reference_id=str(index), file_name="x.png", mime_type="image/png", data="cmVm") for index in range(13)]
     with pytest.raises(ValueError):
         ImageRunRequest(
             task_id="task-1", campaign_id="campaign-1", company_id="company-1",
             prompt="Create a visual", sizes=["1024x1024"], reference_images=references,
         )
+
+
+def test_image_worker_accepts_fixed_twelve_image_payload_contract():
+    references = [ReferenceImage(reference_id=str(index), file_name="x.png", mime_type="image/png", data="cmVm") for index in range(12)]
+    payload = ImageRunRequest(
+        task_id="task-1", campaign_id="campaign-1", company_id="company-1",
+        prompt="Create a visual", sizes=["1024x1024"], reference_images=references,
+        reference_audit={
+            "total_limit": 12,
+            "mandatory_selected_count": 6,
+            "mandatory_attached_count": 6,
+            "user_selected_count": 3,
+            "user_attached_count": 3,
+            "rag_selected_count": 3,
+            "rag_attached_count": 3,
+            "selected_count": 12,
+            "attached_count": 12,
+            "failures": [],
+            "references": [],
+        },
+    )
+
+    assert len(payload.reference_images) == 12
 
 
 def test_image_worker_rejects_private_image_part_fields_instead_of_ignoring_them():

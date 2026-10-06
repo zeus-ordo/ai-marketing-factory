@@ -318,7 +318,7 @@ def test_copy_payload_has_attributes_without_images_and_image_anchors_are_bounde
         assert forbidden not in str(persisted_context).lower()
 
 
-def test_pack_six_cap_manual_precedence_and_mandatory_failure_are_asserted(tmp_path):
+def test_optional_pack_is_excluded_and_mandatory_failure_is_asserted(tmp_path):
     campaign = _campaign()
     manual = ContextSourceItem("campaign_reference", "manual", "manual.png", "", {"mime_type": "image/png", "stored_path": str(tmp_path / "manual.png")})
     pack_items = [
@@ -332,8 +332,9 @@ def test_pack_six_cap_manual_precedence_and_mandatory_failure_are_asserted(tmp_p
         path.write_bytes(PNG_BYTES)
     optional = assemble_generation_context(campaign, [manual, *pack_items], [], [], 100)
     payload = campaign_main.build_worker_payload_for_task(campaign, {"task_id": "task", "task_type": "image_generation", "run_id": "run"}, optional)
-    assert payload["reference_audit"]["selected_count"] == 6
+    assert payload["reference_audit"]["selected_count"] == 1
     assert payload["reference_audit"]["references"][0]["reference_id"] == "manual"
+    assert all(reference.get("reference_pack_id") != "pack" for reference in payload["reference_audit"]["references"])
 
     mandatory = pack_items[0].__class__(pack_items[0].source_type, pack_items[0].source_id, pack_items[0].label, "", {**dict(pack_items[0].metadata), "selection_mode": "mandatory", "stored_path": str(tmp_path / "missing.png")})
     with pytest.raises(HTTPException) as error:

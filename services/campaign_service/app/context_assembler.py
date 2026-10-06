@@ -16,6 +16,12 @@ from .schemas import CampaignRecord
 from .safe_attributes import validate_safe_attributes
 
 
+IMAGE_REFERENCE_TOTAL_LIMIT = 12
+MANDATORY_PACK_IMAGE_LIMIT = 6
+USER_REFERENCE_IMAGE_LIMIT = 3
+RAG_VISUAL_ANCHOR_LIMIT = 3
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, dict):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
@@ -110,6 +116,39 @@ def select_visual_anchor_items(
         if item.source_type == "industry_attribute_rag" and is_image(item)
     ]
     return tuple(sorted(candidates, key=lambda item: (-score(item), item.source_id))[:limit])
+
+
+def select_image_reference_partitions(
+    items: list[ContextSourceItem],
+    campaign_id: str,
+    run_id: str,
+) -> tuple[tuple[ContextSourceItem, ...], tuple[ContextSourceItem, ...], tuple[ContextSourceItem, ...]]:
+    """Select the fixed visual partitions without allowing optional sources to consume slots."""
+    mandatory = select_reference_pack_items(
+        [item for item in items if item.metadata.get("selection_mode") == "mandatory"],
+        campaign_id,
+        run_id,
+        total_limit=MANDATORY_PACK_IMAGE_LIMIT,
+    )
+    manual_types = {"campaign_reference", "user_selected", "immediate_upload"}
+
+    def is_image(item: ContextSourceItem) -> bool:
+        mime_type = str(
+            item.metadata.get("mime_type")
+            or item.metadata.get("file_type")
+            or item.metadata.get("content_type")
+            or ""
+        )
+        return mime_type.lower().startswith("image/")
+
+    user = tuple(item for item in items if item.source_type in manual_types and is_image(item))[:USER_REFERENCE_IMAGE_LIMIT]
+    occupied = {item.source_id for item in (*mandatory, *user)}
+    remaining = max(0, IMAGE_REFERENCE_TOTAL_LIMIT - len(mandatory) - len(user))
+    rag = tuple(
+        item for item in select_visual_anchor_items(items, limit=min(RAG_VISUAL_ANCHOR_LIMIT, remaining))
+        if item.source_id not in occupied
+    )
+    return mandatory, user, rag
 
 
 def build_generation_reference_payload(

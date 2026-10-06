@@ -34,8 +34,8 @@ class ImageRunRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_reference_contract(self) -> "ImageRunRequest":
-        if len(self.reference_images) > 6:
-            raise ValueError("at most six image parts are allowed")
+        if len(self.reference_images) > 12:
+            raise ValueError("at most twelve image parts are allowed")
 
         forbidden_parts = ("private", "storage", "path", "base64", "binary", "bytes", "blob")
 
