@@ -1,8 +1,6 @@
 import base64
-import json
 import math
 import os
-import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -10,9 +8,9 @@ from typing import Any
 import httpx
 
 try:
-    from services.campaign_service.app.image_enrichment import validate_image_attributes as _campaign_validate_attributes
+    from services.shared.image_enrichment import validate_safe_attributes as _campaign_validate_attributes
 except ImportError:
-    _campaign_validate_attributes = None
+    from shared.image_enrichment import validate_safe_attributes as _campaign_validate_attributes
 
 
 class ProviderError(RuntimeError):
@@ -35,52 +33,8 @@ class EmbeddingProvider(ABC):
         raise NotImplementedError
 
 
-_FORBIDDEN_FIELD_PARTS = ("private", "storage", "path", "base64", "binary", "bytes", "blob")
-_PATH_VALUE = re.compile(r"^(?:[a-zA-Z]:[\\/]|[\\/]|file:|private:|storage:)")
-
-
-def _validate_json_value(value: Any, field_name: str, depth: int = 0) -> None:
-    if depth > 8:
-        raise ValueError("image attributes are too deeply nested")
-    normalized_name = re.sub(r"[^a-z0-9]", "", field_name.casefold())
-    if any(part in normalized_name for part in _FORBIDDEN_FIELD_PARTS):
-        raise ValueError("image attributes contain a private field")
-    if value is None or isinstance(value, (bool, int)):
-        return
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("image attributes contain a non-finite number")
-        return
-    if isinstance(value, str):
-        if len(value) > 4096 or _PATH_VALUE.match(value) or value.startswith("data:"):
-            raise ValueError("image attributes contain private data")
-        return
-    if isinstance(value, dict):
-        if len(value) > 64:
-            raise ValueError("image attributes contain too many fields")
-        for key, child in value.items():
-            if not isinstance(key, str):
-                raise TypeError("image attribute keys must be strings")
-            _validate_json_value(child, key, depth + 1)
-        return
-    if isinstance(value, list):
-        if len(value) > 64:
-            raise ValueError("image attributes contain too many values")
-        for child in value:
-            _validate_json_value(child, field_name, depth + 1)
-        return
-    raise TypeError(f"unsupported image attribute type: {type(value).__name__}")
-
-
 def validate_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
-    if _campaign_validate_attributes is not None:
-        return _campaign_validate_attributes(attributes)
-    if not isinstance(attributes, dict):
-        raise TypeError("image attributes must be an object")
-    _validate_json_value(attributes, "attributes")
-    if len(json.dumps(attributes, ensure_ascii=True, allow_nan=False)) > 32768:
-        raise ValueError("image attributes exceed the maximum size")
-    return attributes
+    return _campaign_validate_attributes(attributes)
 
 
 def validate_embedding(embedding: list[float]) -> list[float]:

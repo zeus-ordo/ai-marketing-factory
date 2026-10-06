@@ -2,55 +2,7 @@ import base64
 import json
 import math
 import re
-from typing import Any, Literal
-
-from pydantic import BaseModel, Field, field_validator
-
-from .schemas import ImageAnalysisRecord
-
-try:
-    from services.shared.image_enrichment import validate_safe_attributes
-except ImportError:
-    validate_safe_attributes = None
-
-
-IMAGE_ANALYSIS_VERSION = "image-rag-v1"
-ImageAnalysisStatus = Literal["pending", "processing", "ready", "failed"]
-EmbeddingStatus = Literal["pending", "processing", "ready", "failed"]
-
-
-class SafeImageAttributes(BaseModel):
-    """Structured, JSON-only image attributes safe to persist and expose."""
-
-    values: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("values")
-    @classmethod
-    def reject_private_or_binary_values(cls, values: dict[str, Any]) -> dict[str, Any]:
-        _validate_json_value(values, "attributes", 0)
-        if len(json.dumps(values, ensure_ascii=True, allow_nan=False)) > 32768:
-            raise ValueError("image attributes exceed the maximum size")
-        return values
-
-
-def validate_image_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
-    if validate_safe_attributes is not None:
-        return validate_safe_attributes(attributes)
-    return SafeImageAttributes(values=attributes).values
-
-
-def canonical_attribute_text(attributes: dict[str, Any]) -> str:
-    """Return stable, bounded text for embedding without image bytes or paths."""
-    safe_attributes = validate_image_attributes(attributes)
-    return json.dumps(safe_attributes, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
-
-
-def redact_provider_error(error: BaseException) -> str:
-    """Persist only a stable provider failure class, never provider diagnostics."""
-    if isinstance(error, TimeoutError):
-        return "provider timeout"
-    return "provider request failed"
-
+from typing import Any
 
 _FORBIDDEN_FIELD_PARTS = ("private", "storage", "path", "base64", "binary", "bytes", "blob")
 _PATH_VALUE = re.compile(r"^(?:[a-zA-Z]:[\\/]|[\\/]|file:|private:|storage:)")
@@ -99,3 +51,12 @@ def _validate_json_value(value: Any, field_name: str, depth: int) -> None:
             _validate_json_value(child, field_name, depth + 1)
         return
     raise TypeError(f"image attributes contain unsupported value type: {type(value).__name__}")
+
+
+def validate_safe_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(attributes, dict):
+        raise TypeError("image attributes must be an object")
+    _validate_json_value(attributes, "attributes", 0)
+    if len(json.dumps(attributes, ensure_ascii=True, allow_nan=False)) > 32768:
+        raise ValueError("image attributes exceed the maximum size")
+    return attributes

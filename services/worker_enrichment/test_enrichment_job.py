@@ -1,6 +1,5 @@
-from pathlib import Path
-
 import pytest
+from fastapi.testclient import TestClient
 
 from app import main
 
@@ -21,8 +20,12 @@ class FakeStore:
         }
         self.calls = []
 
-    def get_image_analysis(self, item_id):
-        return self.analysis if item_id == self.analysis["item_id"] else None
+    def get_image_analysis(self, item_id, analysis_version=None):
+        if item_id != self.analysis["item_id"]:
+            return None
+        if analysis_version is not None and analysis_version != self.analysis["analysis_version"]:
+            return None
+        return self.analysis
 
     def get_image_item(self, item_id):
         return self.item if item_id == self.item["item_id"] else None
@@ -118,3 +121,53 @@ def test_ready_job_is_idempotent_without_provider_calls(monkeypatch, tmp_path):
 
     assert result == {"item_id": "item-1", "status": "already_complete"}
     assert store.calls == []
+
+
+def test_job_queries_the_requested_analysis_version(monkeypatch, tmp_path):
+    store = FakeStore(str(tmp_path / "versioned.png"))
+    store.analysis_versions = {
+        "image-rag-v1": {"item_id": "item-1", "analysis_version": "image-rag-v1", "analysis_status": "ready"},
+        "image-rag-v2": {"item_id": "item-1", "analysis_version": "image-rag-v2", "analysis_status": "pending"},
+    }
+    requested = []
+
+    def get_version(item_id, analysis_version=None):
+        requested.append((item_id, analysis_version))
+        return store.analysis_versions.get(analysis_version)
+
+    monkeypatch.setattr(store, "get_image_analysis", get_version)
+    monkeypatch.setattr(main, "persistence", store)
+    monkeypatch.setattr(main.providers, "analysis_provider", FakeAnalysisProvider([]))
+    monkeypatch.setattr(main.providers, "embedding_provider", FakeEmbeddingProvider([]))
+
+    result = main.process_image_enrichment_job({"item_id": "item-1", "analysis_version": "image-rag-v2"})
+
+    assert result["status"] == "ready"
+    assert requested == [("item-1", "image-rag-v2")]
+
+
+def test_internal_endpoint_rejects_requests_without_configured_key(monkeypatch):
+    monkeypatch.setattr(main, "INTERNAL_API_KEY", "")
+    client = TestClient(main.app)
+
+    response = client.post("/internal/v1/image-enrichment", json={"item_id": "item-1", "analysis_version": "image-rag-v1"})
+
+    assert response.status_code == 401
+
+
+def test_arbitrary_provider_exception_code_is_not_persisted(monkeypatch, tmp_path):
+    store = FakeStore(str(tmp_path / "unsafe-code.png"))
+    monkeypatch.setattr(main, "persistence", store)
+
+    class UnsafeProvider:
+        def analyze(self, *args):
+            error = RuntimeError("provider failure")
+            error.code = "SECRET_INTERNAL_CODE"
+            raise error
+
+    monkeypatch.setattr(main.providers, "analysis_provider", UnsafeProvider())
+
+    result = main.process_image_enrichment_job({"item_id": "item-1", "analysis_version": "image-rag-v1"})
+
+    assert result["status"] == "failed"
+    assert store.calls[-1][1] == "PROVIDER_ERROR"

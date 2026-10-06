@@ -23,7 +23,7 @@ ANALYSIS_VERSION = os.getenv("IMAGE_ANALYSIS_VERSION", "image-rag-v1")
 
 
 class PersistenceBoundary(Protocol):
-    def get_image_analysis(self, item_id: str) -> dict[str, Any] | None: ...
+    def get_image_analysis(self, item_id: str, analysis_version: str) -> dict[str, Any] | None: ...
     def get_image_item(self, item_id: str) -> dict[str, Any] | None: ...
     def claim_image_analysis(self, item_id: str, analysis_version: str) -> bool: ...
     def complete_image_analysis(self, item_id: str, analysis_version: str, attributes: dict[str, Any], embedding: list[float], embedding_model: str) -> dict[str, Any]: ...
@@ -53,12 +53,12 @@ class PostgresPersistenceBoundary:
             "analysis_status": row[2],
         }
 
-    def get_image_analysis(self, item_id: str) -> dict[str, Any] | None:
+    def get_image_analysis(self, item_id: str, analysis_version: str) -> dict[str, Any] | None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT item_id, analysis_version, analysis_status FROM knowledge_item_image_analysis "
-                "WHERE item_id = %s ORDER BY updated_at DESC LIMIT 1",
-                (item_id,),
+                "WHERE item_id = %s AND analysis_version = %s LIMIT 1",
+                (item_id, analysis_version),
             )
             return self._record(cur.fetchone())
 
@@ -137,6 +137,7 @@ class PostgresPersistenceBoundary:
 
 persistence: PersistenceBoundary | None = PostgresPersistenceBoundary()
 INTERNAL_API_KEY = os.getenv("CHATBOT_INTERNAL_API_KEY", "").strip() or os.getenv("INTERNAL_API_KEY", "").strip()
+SAFE_ERROR_CODES = {"ANALYSIS_PROVIDER_ERROR", "EMBEDDING_PROVIDER_ERROR", "INVALID_ATTRIBUTES", "INVALID_EMBEDDING", "PROVIDER_ERROR", "PROVIDER_TIMEOUT"}
 
 
 class EnrichmentRequest(BaseModel):
@@ -151,6 +152,14 @@ def _result(item_id: str, status: str) -> dict[str, str]:
     return {"item_id": item_id, "status": status}
 
 
+def _safe_error_code(error: BaseException) -> str:
+    if isinstance(error, TimeoutError):
+        return "PROVIDER_TIMEOUT"
+    if isinstance(error, providers.ProviderError) and error.code in SAFE_ERROR_CODES:
+        return error.code
+    return "PROVIDER_ERROR"
+
+
 def process_image_enrichment_job(payload: dict[str, Any]) -> dict[str, str]:
     item_id = payload.get("item_id")
     analysis_version = payload.get("analysis_version")
@@ -159,13 +168,13 @@ def process_image_enrichment_job(payload: dict[str, Any]) -> dict[str, str]:
     if persistence is None:
         raise RuntimeError("persistence boundary is not configured")
 
-    record = persistence.get_image_analysis(item_id)
-    if record is None or record.get("analysis_version") != analysis_version:
+    record = persistence.get_image_analysis(item_id, analysis_version)
+    if record is None:
         raise ValueError("image analysis record not found")
     if record.get("analysis_status") == "ready":
         return _result(item_id, "already_complete")
     if not persistence.claim_image_analysis(item_id, analysis_version):
-        latest = persistence.get_image_analysis(item_id)
+        latest = persistence.get_image_analysis(item_id, analysis_version)
         if latest and latest.get("analysis_status") == "ready":
             return _result(item_id, "already_complete")
         return _result(item_id, "already_processing")
@@ -174,16 +183,22 @@ def process_image_enrichment_job(payload: dict[str, Any]) -> dict[str, str]:
         item = persistence.get_image_item(item_id)
         if not item or not item.get("stored_path"):
             raise ValueError("image source unavailable")
-        attributes = providers.validate_attributes(
-            providers.analysis_provider.analyze(
-                str(item["stored_path"]),
-                str(item.get("mime_type") or "image/png"),
-                str(item.get("title") or ""),
-                str(item.get("description") or ""),
+        try:
+            attributes = providers.validate_attributes(
+                providers.analysis_provider.analyze(
+                    str(item["stored_path"]),
+                    str(item.get("mime_type") or "image/png"),
+                    str(item.get("title") or ""),
+                    str(item.get("description") or ""),
+                )
             )
-        )
+        except (TypeError, ValueError) as exc:
+            raise providers.ProviderError("INVALID_ATTRIBUTES") from exc
         attribute_text = canonical_attribute_text(attributes)
-        embedding = providers.validate_embedding(providers.embedding_provider.embed(attribute_text))
+        try:
+            embedding = providers.validate_embedding(providers.embedding_provider.embed(attribute_text))
+        except (TypeError, ValueError) as exc:
+            raise providers.ProviderError("INVALID_EMBEDDING") from exc
         persistence.complete_image_analysis(
             item_id,
             analysis_version,
@@ -193,8 +208,7 @@ def process_image_enrichment_job(payload: dict[str, Any]) -> dict[str, str]:
         )
         return _result(item_id, "ready")
     except Exception as exc:
-        error_code = getattr(exc, "code", "PROVIDER_ERROR")
-        persistence.fail_image_analysis(item_id, analysis_version, error_code, redact_provider_error(exc))
+        persistence.fail_image_analysis(item_id, analysis_version, _safe_error_code(exc), redact_provider_error(exc))
         return _result(item_id, "failed")
 
 
@@ -205,7 +219,7 @@ def health() -> dict[str, str]:
 
 @app.post("/internal/v1/image-enrichment")
 def enrich_image(payload: EnrichmentRequest, x_internal_api_key: str | None = Header(default=None)) -> dict[str, str]:
-    if INTERNAL_API_KEY and x_internal_api_key != INTERNAL_API_KEY:
+    if not INTERNAL_API_KEY or x_internal_api_key != INTERNAL_API_KEY:
         raise HTTPException(status_code=401, detail="invalid internal API key")
     try:
         return process_image_enrichment_job(payload.model_dump())

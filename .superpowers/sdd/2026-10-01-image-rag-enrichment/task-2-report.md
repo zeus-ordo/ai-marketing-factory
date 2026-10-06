@@ -31,3 +31,19 @@ Complete. Implemented the isolated asynchronous image enrichment worker only. Qu
 - End-to-end PostgreSQL persistence was not exercised because `CAMPAIGN_TEST_DATABASE_URL` is not configured.
 - Provider endpoints are configurable through environment variables and require compatible upstream `/analyze` and `/embeddings` APIs.
 - The worker requires `CAMPAIGN_DATABASE_URL` or `DATABASE_URL` at runtime.
+
+## Review Fixes
+
+Applied worker-only review corrections:
+
+- Added `services/shared/image_enrichment.py` as the strict validator source and included it in the worker image; the worker no longer contains a weaker fallback validator. Runtime tests cover absolute/relative paths, base64, and binary fields.
+- Changed persistence lookup to query `(item_id, analysis_version)` directly and added a multiple-version regression test.
+- Internal enrichment requests now require a configured internal API key; missing configuration is rejected with `401` before persistence or provider work.
+- Provider error codes are mapped to a fixed safe allowlist; arbitrary exception `.code` values are never persisted.
+
+Fix verification:
+
+- Worker focused tests: `13 passed`
+- Task 1 persistence tests: `13 passed, 3 skipped`
+- Compile check: passed
+- Diff check: passed
