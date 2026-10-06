@@ -15,11 +15,13 @@ import {
   listReferencePackItems,
   listReferencePacks,
   listFolders,
+  retryKnowledgeItemAnalysis,
   updateKnowledgeItem,
   updateReferencePack,
   uploadKnowledgeItem,
   uploadReferencePackItems,
   type FolderRecord,
+  type KnowledgeItemAnalysisSummary,
   type KnowledgeItemRecord,
   type ReferencePackItemRecord,
   type ReferencePackRecord,
@@ -54,6 +56,7 @@ export default function ContentStudioPage() {
   const [uploadStates, setUploadStates] = useState<BatchUploadFileState<File>[]>([]);
   const [fileKey, setFileKey] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [retryingAnalysisId, setRetryingAnalysisId] = useState<string | null>(null);
 
   // Folder state
   const [folders, setFolders] = useState<FolderRecord[]>([]);
@@ -192,6 +195,18 @@ export default function ContentStudioPage() {
     }
   }
 
+  async function handleRetryAnalysis(itemId: string) {
+    setRetryingAnalysisId(itemId);
+    try {
+      await retryKnowledgeItemAnalysis(itemId);
+      await loadItems();
+    } catch {
+      setMessage(t("knowledgeAnalysis.analysisRetryFailed"));
+    } finally {
+      setRetryingAnalysisId(null);
+    }
+  }
+
   async function handleDownload(item: KnowledgeItemRecord) {
     const contentUrl = item.content_url || (typeof item.metadata.download_url === "string" ? item.metadata.download_url : null);
     if (!contentUrl && !item.description.trim()) return;
@@ -234,6 +249,7 @@ export default function ContentStudioPage() {
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">{t("knowledge.title")}</h1>
         <p className="text-sm text-slate-500">{t("knowledge.subtitle")}</p>
+        <p className="mt-1 text-xs text-slate-500">{t("knowledgeAnalysis.analysisReadyOnly")}</p>
       </header>
 
       {message ? <p className="rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-700">{message}</p> : null}
@@ -395,20 +411,22 @@ export default function ContentStudioPage() {
               <th className="px-4 py-3">{t("knowledge.table.title")}</th>
               <th className="px-4 py-3">{t("knowledge.table.source")}</th>
               <th className="px-4 py-3">{t("knowledge.table.category")}</th>
+              <th className="px-4 py-3">{t("knowledgeAnalysis.analysisAttributes")}</th>
               <th className="px-4 py-3">{t("knowledge.table.created")}</th>
               <th className="px-4 py-3">{t("knowledge.table.actions")}</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td className="px-4 py-6 text-center text-slate-500" colSpan={5}>{t("common.loading")}</td></tr>
+              <tr><td className="px-4 py-6 text-center text-slate-500" colSpan={6}>{t("common.loading")}</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td className="px-4 py-6 text-center text-slate-500" colSpan={5}>{t("knowledge.empty")}</td></tr>
+              <tr><td className="px-4 py-6 text-center text-slate-500" colSpan={6}>{t("knowledge.empty")}</td></tr>
             ) : filtered.map((item) => (
               <tr key={item.item_id} className="border-b border-slate-200/70 last:border-none dark:border-slate-800">
                 <td className="px-4 py-3"><div className="font-medium">{item.title}</div><div className="text-xs text-slate-500">{item.description || String(item.metadata.file_name ?? "")}</div></td>
                 <td className="px-4 py-3">{item.source === "ai" ? t("knowledge.tabs.ai") : t("knowledge.tabs.manual")}</td>
                 <td className="px-4 py-3">{String(item.metadata.category ?? "General")}</td>
+                <td className="px-4 py-3"><ImageAnalysisSummary analysis={item.analysis} onRetry={() => void handleRetryAnalysis(item.item_id)} retrying={retryingAnalysisId === item.item_id} /></td>
                 <td className="px-4 py-3">{formatDateTime(locale, item.created_at)}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
@@ -439,6 +457,14 @@ export default function ContentStudioPage() {
       {canManageReferencePacks ? <SystemReferencePacksSection /> : null}
     </section>
   );
+}
+
+function ImageAnalysisSummary({ analysis, onRetry, retrying }: { analysis?: KnowledgeItemAnalysisSummary | null; onRetry: () => void; retrying: boolean }) {
+  const { t, locale } = useI18n();
+  if (!analysis) return <span className="text-xs text-slate-400">{t("common.notAvailable")}</span>;
+  const statusLabel = analysis.analysis_status === "pending" ? t("knowledgeAnalysis.analysisPending") : analysis.analysis_status === "processing" ? t("knowledgeAnalysis.analysisProcessing") : analysis.analysis_status === "ready" ? t("knowledgeAnalysis.analysisReady") : t("knowledgeAnalysis.analysisFailed");
+  const attributes = Object.entries(analysis.attributes).map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(", ") : value}`).join("; ");
+  return <div className="space-y-1 text-xs"><div className="font-medium">{statusLabel}</div><div className="text-slate-500">{t("knowledgeAnalysis.analysisVersion")}: {analysis.analysis_version}</div>{attributes ? <div className="text-slate-500">{t("knowledgeAnalysis.analysisAttributes")}: {attributes}</div> : null}{analysis.analyzed_at ? <div className="text-slate-500">{t("knowledgeAnalysis.analysisAnalyzedAt")}: {formatDateTime(locale, analysis.analyzed_at)}</div> : null}{analysis.analysis_status === "failed" && analysis.retryable ? <button type="button" onClick={onRetry} disabled={retrying} className="font-medium text-blue-600 disabled:opacity-50">{retrying ? t("knowledgeAnalysis.analysisRetrying") : t("knowledgeAnalysis.analysisRetry")}</button> : null}</div>;
 }
 
 const PACK_ROLES: ReferencePackRole[] = ["brand_identity", "product", "style", "composition", "campaign_examples"];

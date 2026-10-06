@@ -17,6 +17,19 @@ type NestedKeys<T> = T extends string
 
 export const translations = {
   en: {
+    knowledgeAnalysis: {
+      analysisReadyOnly: "Only ready items are available to new RAG retrieval.",
+      analysisPending: "Pending",
+      analysisProcessing: "Processing",
+      analysisReady: "Ready",
+      analysisFailed: "Failed",
+      analysisRetry: "Retry",
+      analysisRetrying: "Retrying...",
+      analysisRetryFailed: "Failed to retry image analysis.",
+      analysisVersion: "Analysis version",
+      analysisAttributes: "Attributes",
+      analysisAnalyzedAt: "Analyzed",
+    },
     auth: {
       login: "Sign In",
       register: "Register",
@@ -964,6 +977,19 @@ export const translations = {
     },
   },
   "zh-Hant": {
+    knowledgeAnalysis: {
+      analysisReadyOnly: "只有就緒項目可供新的 RAG 檢索使用。",
+      analysisPending: "待處理",
+      analysisProcessing: "處理中",
+      analysisReady: "就緒",
+      analysisFailed: "失敗",
+      analysisRetry: "重試",
+      analysisRetrying: "重試中...",
+      analysisRetryFailed: "圖片分析重試失敗。",
+      analysisVersion: "分析版本",
+      analysisAttributes: "屬性",
+      analysisAnalyzedAt: "分析時間",
+    },
     app: {
       title: "AI 行銷自動化工廠",
       searchPlaceholder: "搜尋活動、素材、工作節點...",
@@ -1848,6 +1874,19 @@ export const translations = {
     },
   },
   ja: {
+    knowledgeAnalysis: {
+      analysisReadyOnly: "新しい RAG 検索で利用できるのは準備完了の項目だけです。",
+      analysisPending: "保留中",
+      analysisProcessing: "処理中",
+      analysisReady: "準備完了",
+      analysisFailed: "失敗",
+      analysisRetry: "再試行",
+      analysisRetrying: "再試行中...",
+      analysisRetryFailed: "画像分析の再試行に失敗しました。",
+      analysisVersion: "分析バージョン",
+      analysisAttributes: "属性",
+      analysisAnalyzedAt: "分析日時",
+    },
     app: {
       title: "AIマーケティング工場",
       searchPlaceholder: "キャンペーン・素材・ワーカーを検索...",

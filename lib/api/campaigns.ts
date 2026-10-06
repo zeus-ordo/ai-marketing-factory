@@ -296,6 +296,17 @@ export type KnowledgeItemRecord = {
   metadata: Record<string, unknown>;
   folder_id?: string | null;
   created_at: string;
+  analysis?: KnowledgeItemAnalysisSummary | null;
+};
+
+export type KnowledgeItemAnalysisStatus = "pending" | "processing" | "ready" | "failed";
+
+export type KnowledgeItemAnalysisSummary = {
+  analysis_status: KnowledgeItemAnalysisStatus;
+  analysis_version: string;
+  attributes: Record<string, string | string[]>;
+  retryable: boolean;
+  analyzed_at: string | null;
 };
 
 type KnowledgeItemListResponse = {
@@ -959,6 +970,7 @@ export type ReferencePackItemRecord = {
   file_size: number;
   content_url: string;
   created_at: string;
+  analysis?: KnowledgeItemAnalysisSummary | null;
 };
 
 type ReferencePackListResponse = { items: ReferencePackRecord[]; total: number };
@@ -1251,6 +1263,16 @@ export async function updateCampaignReference(
 export async function listKnowledgeItems(): Promise<KnowledgeItemRecord[]> {
   const data = await request<KnowledgeItemListResponse>("/api/v1/knowledge-items");
   return data.items;
+}
+
+export async function getKnowledgeItemAnalysis(itemId: string): Promise<KnowledgeItemAnalysisSummary> {
+  return request<KnowledgeItemAnalysisSummary>(`/api/v1/knowledge-items/${itemId}/analysis`);
+}
+
+export async function retryKnowledgeItemAnalysis(itemId: string): Promise<KnowledgeItemAnalysisSummary> {
+  return request<KnowledgeItemAnalysisSummary>(`/api/v1/knowledge-items/${itemId}/analysis/retry`, {
+    method: "POST",
+  });
 }
 
 export async function listReferencePacks(params?: {
