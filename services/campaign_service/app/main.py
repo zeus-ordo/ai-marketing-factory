@@ -2468,10 +2468,11 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
     if not industry or persistence is None or not hasattr(persistence, "list_ready_image_analysis"):
         return []
 
+    requested_role = str(getattr(campaign.brief.target_audience, "persona", "") or "").strip() or None
     ready_rows: list[dict[str, Any]] = []
     for scope in (campaign.company_id, "platform"):
         try:
-            ready_rows.extend(persistence.list_ready_image_analysis(scope, industry, limit))
+            ready_rows.extend(persistence.list_ready_image_analysis(scope, industry, limit, requested_role))
         except Exception:
             logger.warning("Failed to load ready image analysis", exc_info=True)
 
@@ -2485,7 +2486,6 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
                 query_embedding = [float(value) for value in candidate_embedding]
         except (TypeError, ValueError, json.JSONDecodeError):
             logger.warning("Ignoring invalid IMAGE_RAG_QUERY_EMBEDDING")
-    requested_role = str(getattr(campaign.brief.target_audience, "persona", "") or "").strip() or None
     try:
         for scope in (campaign.company_id, "platform"):
             vector_rows.extend(

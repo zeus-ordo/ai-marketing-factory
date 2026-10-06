@@ -3257,14 +3257,33 @@ class PostgresPersistence:
                 row = cur.fetchone()
         return self._image_analysis_dict(row) if row is not None else None
 
-    def list_ready_image_analysis(self, company_id: str, industry: str | None, limit: int) -> list[dict[str, Any]]:
+    def list_ready_image_analysis(
+        self,
+        company_id: str,
+        industry: str | None,
+        limit: int,
+        role: str | None = None,
+    ) -> list[dict[str, Any]]:
         if limit < 1:
             return []
         filters = ["a.company_id = %s", "a.analysis_status = 'ready'", "k.deleted_at IS NULL"]
         params: list[Any] = [company_id]
         if industry:
-            filters.append("a.industry = %s")
-            params.append(industry)
+            filters.append(
+                """
+                (
+                    LOWER(COALESCE(a.industry, '')) = LOWER(%s)
+                    OR LOWER(COALESCE(k.metadata_json->>'industry', '')) = LOWER(%s)
+                    OR LOWER(COALESCE(k.metadata_json->>'industry_category', '')) = LOWER(%s)
+                    OR LOWER(COALESCE(k.metadata_json->>'category', '')) = LOWER(%s)
+                    OR LOWER(COALESCE(k.metadata_json->>'folder', '')) = LOWER(%s)
+                    OR LOWER(COALESCE(k.metadata_json->>'folder_name', '')) = LOWER(%s)
+                )
+                """
+            )
+            params.extend([industry] * 6)
+        filters.append("(%s IS NULL OR LOWER(COALESCE(k.metadata_json->>'role', '')) = LOWER(%s))")
+        params.extend([role, role])
         params.append(limit)
         with self._connect() as conn:
             with conn.cursor() as cur:

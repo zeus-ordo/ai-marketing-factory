@@ -106,7 +106,7 @@ def test_retrieval_includes_only_ready_scoped_items_and_safe_runtime_path(monkey
     ]
 
     class Persistence:
-        def list_ready_image_analysis(self, company_id, industry, limit):
+        def list_ready_image_analysis(self, company_id, industry, limit, role=None):
             return rows if company_id == "company-1" else []
 
         def list_knowledge_items(self, company_id):
@@ -131,7 +131,7 @@ def test_vector_failure_falls_back_to_deterministic_ready_matching(monkeypatch):
     ]
 
     class Persistence:
-        def list_ready_image_analysis(self, company_id, industry, limit):
+        def list_ready_image_analysis(self, company_id, industry, limit, role=None):
             return ready
 
         def list_knowledge_items(self, company_id):
@@ -145,6 +145,38 @@ def test_vector_failure_falls_back_to_deterministic_ready_matching(monkeypatch):
 
     assert [row["item_id"] for row in result] == ["restaurant"]
     assert result[0]["metadata"]["selection_reason"] == "deterministic_industry_match"
+
+
+def test_fallback_passes_role_to_ready_listing_before_limit(monkeypatch):
+    import app.main as main
+
+    wrong_role = {
+        "item_id": "wrong-role", "company_id": "company-1", "title": "Wrong",
+        "description": "Restaurant foodie", "metadata": {"category": "Restaurant", "role": "athlete"},
+        "analysis_status": "ready", "analysis_version": "v1", "attributes": {"style": ["cool"]},
+    }
+    matching_role = {
+        "item_id": "matching-role", "company_id": "company-1", "title": "Matching",
+        "description": "Restaurant foodie", "metadata": {"category": "Restaurant", "role": "foodie"},
+        "analysis_status": "ready", "analysis_version": "v1", "attributes": {"style": ["warm"]},
+    }
+
+    class Persistence:
+        def list_ready_image_analysis(self, company_id, industry, limit, role=None):
+            assert role == "foodie"
+            return [matching_role] if role == "foodie" else [wrong_role]
+
+        def list_knowledge_items(self, company_id):
+            return [wrong_role, matching_role]
+
+        def search_ready_image_analysis(self, *args, **kwargs):
+            raise RuntimeError("vector unavailable")
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+
+    result = main.list_enriched_knowledge_context(campaign(), limit=1)
+
+    assert [row["item_id"] for row in result] == ["matching-role"]
 
 
 def test_retrieval_rejects_nested_unsafe_attributes(monkeypatch):
@@ -161,7 +193,7 @@ def test_retrieval_rejects_nested_unsafe_attributes(monkeypatch):
     }
 
     class Persistence:
-        def list_ready_image_analysis(self, company_id, industry, limit):
+        def list_ready_image_analysis(self, company_id, industry, limit, role=None):
             return [unsafe]
 
         def list_knowledge_items(self, company_id):
@@ -280,7 +312,7 @@ def test_generation_context_keeps_legacy_and_adds_enriched_sources(monkeypatch):
         def list_knowledge_items(self, company_id):
             return [legacy, enriched_row]
 
-        def list_ready_image_analysis(self, company_id, industry, limit):
+        def list_ready_image_analysis(self, company_id, industry, limit, role=None):
             return [enriched_row]
 
         def list_campaign_references(self, campaign_id, limit=8):
