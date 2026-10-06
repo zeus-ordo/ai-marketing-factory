@@ -174,6 +174,29 @@ class CampaignListResponse(BaseModel):
     total: int
 
 
+class ImageAnalysisRecord(BaseModel):
+    item_id: str
+    analysis_status: Literal["pending", "processing", "ready", "failed"]
+    analysis_version: str
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    embedding_status: Literal["pending", "processing", "ready", "failed"]
+    embedding_model: str | None = None
+    embedding_dimension: int | None = None
+    error_code: str | None = None
+    error_detail: str | None = None
+    attempt_count: int = 0
+    analyzed_at: datetime | None = None
+    updated_at: datetime
+
+
+class KnowledgeItemAnalysisSummary(BaseModel):
+    analysis_status: Literal["pending", "processing", "ready", "failed"]
+    analysis_version: str
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    retryable: bool
+    analyzed_at: datetime | None = None
+
+
 class TaskPlanResponse(BaseModel):
     campaign_id: str
     plan_version: int

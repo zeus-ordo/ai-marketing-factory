@@ -47,6 +47,7 @@ from .schemas import (
     CampaignRunListResponse,
     ErrorResponse,
     FinalAssetBundle,
+    KnowledgeItemAnalysisSummary,
     TaskListResponse,
     TaskRecord,
     ValidationResult,
@@ -286,6 +287,7 @@ class KnowledgeItemRecord(BaseModel):
     folder_id: str | None = None
     reference_pack_id: str | None = None
     created_at: datetime
+    analysis: KnowledgeItemAnalysisSummary | None = None
 
 
 class KnowledgeItemListResponse(BaseModel):

@@ -315,6 +315,45 @@ class PostgresPersistence:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS knowledge_item_image_analysis (
+                        item_id TEXT NOT NULL REFERENCES knowledge_items(item_id) ON DELETE CASCADE,
+                        analysis_version TEXT NOT NULL,
+                        company_id TEXT NOT NULL,
+                        industry TEXT,
+                        analysis_status TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (analysis_status IN ('pending', 'processing', 'ready', 'failed')),
+                        attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        embedding_json JSONB,
+                        embedding_status TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (embedding_status IN ('pending', 'processing', 'ready', 'failed')),
+                        embedding_model TEXT,
+                        embedding_dimension INTEGER,
+                        error_code TEXT,
+                        error_detail TEXT,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        retryable BOOLEAN NOT NULL DEFAULT TRUE,
+                        analyzed_at TIMESTAMP,
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (item_id, analysis_version)
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_image_analysis_company_status_industry
+                    ON knowledge_item_image_analysis (company_id, analysis_status, industry);
+                    """
+                )
+                # pgvector is optional. JSONB remains the durable fallback when it is unavailable.
+                cur.execute("SAVEPOINT image_analysis_vector_migration;")
+                try:
+                    cur.execute("ALTER TABLE knowledge_item_image_analysis ADD COLUMN IF NOT EXISTS embedding vector;")
+                    cur.execute("RELEASE SAVEPOINT image_analysis_vector_migration;")
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT image_analysis_vector_migration;")
+                    cur.execute("RELEASE SAVEPOINT image_analysis_vector_migration;")
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS reference_packs (
                         pack_id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
@@ -2952,10 +2991,20 @@ class PostgresPersistence:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT item_id, company_id, title, source, description, content_url, metadata_json, created_at, folder_id, reference_pack_id
-                    FROM knowledge_items
-                    WHERE company_id = %s AND deleted_at IS NULL
-                    ORDER BY created_at DESC;
+                    SELECT k.item_id, k.company_id, k.title, k.source, k.description, k.content_url,
+                           k.metadata_json, k.created_at, k.folder_id, k.reference_pack_id,
+                           a.analysis_status, a.analysis_version, a.attributes_json,
+                           a.retryable, a.analyzed_at
+                    FROM knowledge_items k
+                    LEFT JOIN LATERAL (
+                        SELECT analysis_status, analysis_version, attributes_json, retryable, analyzed_at
+                        FROM knowledge_item_image_analysis
+                        WHERE item_id = k.item_id
+                        ORDER BY updated_at DESC
+                        LIMIT 1
+                    ) a ON TRUE
+                    WHERE k.company_id = %s AND k.deleted_at IS NULL
+                    ORDER BY k.created_at DESC;
                     """,
                     (company_id,),
                 )
@@ -2972,6 +3021,17 @@ class PostgresPersistence:
                 "created_at": row[7],
                 "folder_id": row[8],
                 "reference_pack_id": row[9] if len(row) > 9 else None,
+                "analysis": (
+                    {
+                        "analysis_status": row[10],
+                        "analysis_version": row[11],
+                        "attributes": dict(row[12] or {}),
+                        "retryable": bool(row[13]),
+                        "analyzed_at": row[14],
+                    }
+                    if row[10] is not None
+                    else None
+                ),
             }
             for row in rows
         ]
@@ -3009,6 +3069,194 @@ class PostgresPersistence:
                 )
             conn.commit()
         return item
+
+    @staticmethod
+    def _image_analysis_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "item_id": row[0],
+            "analysis_version": row[1],
+            "analysis_status": row[2],
+            "attributes": dict(row[3] or {}),
+            "embedding_status": row[4],
+            "embedding_model": row[5],
+            "embedding_dimension": int(row[6]) if row[6] is not None else None,
+            "error_code": row[7],
+            "error_detail": row[8],
+            "attempt_count": int(row[9] or 0),
+            "retryable": bool(row[10]),
+            "analyzed_at": row[11],
+            "updated_at": row[12],
+        }
+
+    def create_image_analysis(self, item_id: str, analysis_version: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO knowledge_item_image_analysis (item_id, analysis_version, company_id, industry)
+                    SELECT item_id, %s, company_id,
+                           COALESCE(metadata_json->>'industry', metadata_json->>'industry_category', metadata_json->>'category')
+                    FROM knowledge_items
+                    WHERE item_id = %s AND deleted_at IS NULL
+                    ON CONFLICT (item_id, analysis_version) DO NOTHING;
+                    """,
+                    (analysis_version, item_id),
+                )
+                cur.execute(
+                    """
+                    SELECT item_id, analysis_version, analysis_status, attributes_json,
+                           embedding_status, embedding_model, embedding_dimension,
+                           error_code, error_detail, attempt_count, retryable, analyzed_at, updated_at
+                    FROM knowledge_item_image_analysis
+                    WHERE item_id = %s AND analysis_version = %s;
+                    """,
+                    (item_id, analysis_version),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            raise ValueError(f"knowledge item not found: {item_id}")
+        return self._image_analysis_dict(row)
+
+    def claim_image_analysis(self, item_id: str, analysis_version: str) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE knowledge_item_image_analysis
+                    SET analysis_status = 'processing', embedding_status = 'processing',
+                        attempt_count = attempt_count + 1, error_code = NULL,
+                        error_detail = NULL, updated_at = NOW()
+                    WHERE item_id = %s AND analysis_version = %s
+                      AND (analysis_status = 'pending' OR (analysis_status = 'failed' AND retryable = TRUE))
+                    RETURNING item_id;
+                    """,
+                    (item_id, analysis_version),
+                )
+                claimed = cur.fetchone() is not None
+            conn.commit()
+        return claimed
+
+    def complete_image_analysis(
+        self,
+        item_id: str,
+        analysis_version: str,
+        attributes: dict[str, Any],
+        embedding: list[float] | None,
+        embedding_model: str | None,
+    ) -> dict[str, Any]:
+        from .image_enrichment import validate_image_attributes
+
+        safe_attributes = validate_image_attributes(attributes)
+        dimension = len(embedding) if embedding is not None else None
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE knowledge_item_image_analysis
+                    SET analysis_status = 'ready', embedding_status = %s,
+                        attributes_json = %s::jsonb, embedding_json = %s::jsonb,
+                        embedding_model = %s, embedding_dimension = %s,
+                        error_code = NULL, error_detail = NULL, retryable = FALSE,
+                        analyzed_at = NOW(), updated_at = NOW()
+                    WHERE item_id = %s AND analysis_version = %s
+                      AND analysis_status = 'processing'
+                    RETURNING item_id, analysis_version, analysis_status, attributes_json,
+                              embedding_status, embedding_model, embedding_dimension,
+                              error_code, error_detail, attempt_count, retryable, analyzed_at, updated_at;
+                    """,
+                    (
+                        "ready" if embedding is not None else "pending",
+                        json.dumps(safe_attributes),
+                        json.dumps(embedding) if embedding is not None else None,
+                        embedding_model,
+                        dimension,
+                        item_id,
+                        analysis_version,
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            raise ValueError("image analysis must be claimed before completion")
+        return self._image_analysis_dict(row)
+
+    def fail_image_analysis(self, item_id: str, analysis_version: str, error_code: str, error_detail: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE knowledge_item_image_analysis
+                    SET analysis_status = 'failed', embedding_status = 'failed',
+                        error_code = %s, error_detail = %s, retryable = TRUE, updated_at = NOW()
+                    WHERE item_id = %s AND analysis_version = %s
+                      AND analysis_status IN ('pending', 'processing')
+                    RETURNING item_id, analysis_version, analysis_status, attributes_json,
+                              embedding_status, embedding_model, embedding_dimension,
+                              error_code, error_detail, attempt_count, retryable, analyzed_at, updated_at;
+                    """,
+                    (error_code, error_detail, item_id, analysis_version),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        if row is None:
+            raise ValueError("image analysis is not pending or processing")
+        return self._image_analysis_dict(row)
+
+    def get_image_analysis(self, item_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT item_id, analysis_version, analysis_status, attributes_json,
+                           embedding_status, embedding_model, embedding_dimension,
+                           error_code, error_detail, attempt_count, retryable, analyzed_at, updated_at
+                    FROM knowledge_item_image_analysis
+                    WHERE item_id = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1;
+                    """,
+                    (item_id,),
+                )
+                row = cur.fetchone()
+        return self._image_analysis_dict(row) if row is not None else None
+
+    def list_ready_image_analysis(self, company_id: str, industry: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit < 1:
+            return []
+        filters = ["a.company_id = %s", "a.analysis_status = 'ready'", "k.deleted_at IS NULL"]
+        params: list[Any] = [company_id]
+        if industry:
+            filters.append("a.industry = %s")
+            params.append(industry)
+        params.append(limit)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT a.item_id, a.analysis_version, a.analysis_status, a.attributes_json,
+                           a.embedding_status, a.embedding_model, a.embedding_dimension,
+                           a.error_code, a.error_detail, a.attempt_count, a.retryable,
+                           a.analyzed_at, a.updated_at, k.title, k.description, k.source
+                    FROM knowledge_item_image_analysis a
+                    JOIN knowledge_items k ON k.item_id = a.item_id
+                    WHERE {' AND '.join(filters)}
+                    ORDER BY a.analyzed_at DESC NULLS LAST, a.item_id
+                    LIMIT %s;
+                    """,
+                    tuple(params),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                **self._image_analysis_dict(row[:13]),
+                "title": row[13],
+                "description": row[14],
+                "source": row[15],
+                "company_id": company_id,
+            }
+            for row in rows
+        ]
 
     def update_knowledge_item(self, company_id: str, item_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         current_items = self.list_knowledge_items(company_id)
