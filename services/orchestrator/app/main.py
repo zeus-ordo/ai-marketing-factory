@@ -499,11 +499,16 @@ def block_pending_descendants(campaign_tasks: dict[str, OrchestratorTask], faile
             changed = True
 
 
-def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+def post_json(url: str, payload: dict[str, Any], *, internal_auth: bool = False) -> dict[str, Any]:
+    headers = {"Content-Type": "application/json"}
+    if internal_auth:
+        if not INTERNAL_API_KEY:
+            raise RuntimeError("Internal worker API key is not configured")
+        headers["X-Internal-Api-Key"] = INTERNAL_API_KEY
     req = request.Request(
         url,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         data=json.dumps(payload).encode("utf-8"),
     )
     try:
@@ -719,6 +724,7 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
         return post_json(
             f"{WORKER_ENRICHMENT_URL}/internal/v1/image-enrichment",
             worker_payload,
+            internal_auth=True,
         )
 
     company_id = task.company_id or ""
@@ -958,6 +964,30 @@ def _release_lease(key: str, token: str) -> None:
         logger.warning("Failed to release lease %s", key)
 
 
+def publish_enrichment_retry(fields: dict[str, str], retry_count: int) -> None:
+    redis_client.xadd(
+        ENRICHMENT_TOPIC,
+        {
+            "task_type": "image_enrichment",
+            "item_id": fields["item_id"],
+            "analysis_version": fields["analysis_version"],
+            "retry_count": str(retry_count),
+        },
+    )
+
+
+def publish_enrichment_dlq(fields: dict[str, str], reason: str) -> None:
+    redis_client.xadd(
+        DLQ_TOPIC,
+        {
+            "task_type": "image_enrichment",
+            "item_id": fields["item_id"],
+            "analysis_version": fields["analysis_version"],
+            "reason": reason,
+        },
+    )
+
+
 def process_queue_message(stream_name: str, message_id: str, fields: dict[str, str]) -> bool:
     message_key = f"orchestrator:message-claim:{stream_name}:{message_id}"
     message_token = uuid.uuid4().hex
@@ -986,6 +1016,15 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
 
             campaign_id = fields.get("campaign_id")
             task_id = fields.get("task_id")
+            if stream_name == ENRICHMENT_TOPIC and fields.get("item_id") and fields.get("analysis_version"):
+                task_key = f"orchestrator:task-claim:image-enrichment:{fields['item_id']}:{fields['analysis_version']}"
+                task_token = uuid.uuid4().hex
+                if not redis_set(task_key, task_token, nx=True, ex=MESSAGE_CLAIM_TTL_SECONDS):
+                    _release_lease(message_key, message_token)
+                    with active_message_ids_lock:
+                        active_message_ids.discard(active_key)
+                    logger.info("Image enrichment is already claimed; leaving message %s pending", message_id)
+                    return False
             if campaign_id and task_id:
                 task_key = f"orchestrator:task-claim:{campaign_id}:{task_id}"
                 task_token = uuid.uuid4().hex
@@ -1016,48 +1055,10 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
                 active_message_ids.discard(active_key)
             logger.exception("Failed to acquire distributed claim for message %s", message_id)
             return False
-    try:
-        if stream_name == ENRICHMENT_TOPIC:
-            item_id = fields.get("item_id")
-            analysis_version = fields.get("analysis_version")
-            if not item_id or not analysis_version:
-                ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
-                acknowledged = ack_result is None or bool(ack_result)
-                return acknowledged
-            enrichment_task = SimpleNamespace(
-                task_id=f"{item_id}:{analysis_version}",
-                task_type="image_enrichment",
-                status="planned",
-                priority=0,
-                worker_payload={"item_id": item_id, "analysis_version": analysis_version},
-            )
-            try:
-                run_worker(enrichment_task, "")
-            except Exception as exc:
-                error_class = classify_worker_error(exc)
-                if error_class in {"quota", "rate_limit", "timeout", "provider_error"}:
-                    logger.warning("image enrichment worker failed (%s); leaving message pending", error_class)
-                else:
-                    logger.error("image enrichment worker failed (%s): %s", error_class, sanitize_error_detail(str(exc)))
-                return False
-            ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
-            acknowledged = ack_result is None or bool(ack_result)
-            return acknowledged
-        campaign_id = fields.get("campaign_id")
-        task_id = fields.get("task_id")
-        if not campaign_id or not task_id:
-            ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
-            if ack_result is not None and not ack_result:
-                logger.warning("XACK did not acknowledge message %s", message_id)
-                return False
-            acknowledged = True
-            return True
-        if not process_task(campaign_id, task_id) or heartbeat_failed.is_set():
-            logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)
-            return False
-
-        # Join the heartbeat before the final ownership check so renewal and ACK
-        # cannot race, then retain claims unless the ACK is confirmed.
+    def finalize_ack() -> bool:
+        nonlocal acknowledged
+        # Join the heartbeat before the final ownership check so renewal and
+        # ACK cannot race, for both campaign and enrichment streams.
         heartbeat_stop.set()
         if heartbeat_thread:
             heartbeat_thread.join()
@@ -1077,6 +1078,47 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
                 return False
             acknowledged = True
             return True
+
+    try:
+        if stream_name == ENRICHMENT_TOPIC:
+            item_id = fields.get("item_id")
+            analysis_version = fields.get("analysis_version")
+            if not item_id or not analysis_version:
+                return finalize_ack()
+            enrichment_task = SimpleNamespace(
+                task_id=f"{item_id}:{analysis_version}",
+                task_type="image_enrichment",
+                status="planned",
+                priority=0,
+                worker_payload={"item_id": item_id, "analysis_version": analysis_version},
+            )
+            try:
+                run_worker(enrichment_task, "")
+            except Exception as exc:
+                error_class = classify_worker_error(exc)
+                retry_count = int(fields.get("retry_count", "0")) + 1
+                reason = sanitize_error_detail(str(exc))
+                if error_class in {"quota", "rate_limit", "timeout", "provider_error"} and retry_count <= MAX_RETRY:
+                    logger.warning("image enrichment worker failed (%s); publishing retry %s", error_class, retry_count)
+                    publish_enrichment_retry(fields, retry_count)
+                else:
+                    logger.error("image enrichment worker failed (%s); publishing DLQ: %s", error_class, reason)
+                    publish_enrichment_dlq(fields, reason)
+            return finalize_ack()
+        campaign_id = fields.get("campaign_id")
+        task_id = fields.get("task_id")
+        if not campaign_id or not task_id:
+            ack_result = redis_client.xack(stream_name, GROUP_NAME, message_id)
+            if ack_result is not None and not ack_result:
+                logger.warning("XACK did not acknowledge message %s", message_id)
+                return False
+            acknowledged = True
+            return True
+        if not process_task(campaign_id, task_id) or heartbeat_failed.is_set():
+            logger.warning("persistence_error: leaving queued task %s pending for retry", task_id)
+            return False
+
+        return finalize_ack()
     finally:
         heartbeat_stop.set()
         if heartbeat_thread:

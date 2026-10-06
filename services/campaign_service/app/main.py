@@ -6207,9 +6207,18 @@ def _get_pack_or_404(pack_id: str) -> ReferencePackRecord:
 
 def _public_knowledge_item(row: dict[str, Any]) -> dict[str, Any]:
     public = dict(row)
-    metadata = public.get("metadata")
-    if isinstance(metadata, dict):
-        public["metadata"] = {key: value for key, value in metadata.items() if key != "stored_path"}
+    def remove_private_paths(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: remove_private_paths(item)
+                for key, item in value.items()
+                if key != "stored_path"
+            }
+        if isinstance(value, list):
+            return [remove_private_paths(item) for item in value]
+        return value
+
+    public = remove_private_paths(public)
     return public
 
 
@@ -6409,6 +6418,9 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
         knowledge_items.setdefault("platform", []).insert(0, KnowledgeItemRecord(**item))
     analysis = _create_pending_analysis(item)
     if analysis is not None:
+        if persistence is None:
+            cached = knowledge_items["platform"][0]
+            knowledge_items["platform"][0] = cached.model_copy(update={"analysis": _analysis_summary(analysis)})
         _enqueue_best_effort(item_id, IMAGE_ANALYSIS_VERSION)
     return _pack_item_response(item, pack_id)
 

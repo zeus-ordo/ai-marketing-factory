@@ -137,3 +137,30 @@ def test_reference_pack_upload_enqueues(monkeypatch, tmp_path):
     result = main.upload_reference_pack_item(request(), "pack-1", "Reference", upload())
 
     assert published == [(result.item_id, "image-rag-v1")]
+
+
+def test_upload_response_recursively_removes_private_paths():
+    public = main._public_knowledge_item({
+        "item_id": "kh-1",
+        "metadata": {
+            "stored_path": "/private/root.png",
+            "nested": {"stored_path": "/private/nested.png", "label": "safe"},
+        },
+    })
+
+    assert public["metadata"] == {"nested": {"label": "safe"}}
+
+
+def test_in_memory_reference_pack_upload_caches_pending_analysis(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "persistence", None)
+    monkeypatch.setattr(main, "KNOWLEDGE_UPLOADS_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
+    monkeypatch.setattr(main, "_get_pack_or_404", lambda _pack_id: object())
+    monkeypatch.setattr(main, "enqueue_image_enrichment", lambda *_args: None)
+    main.knowledge_items.clear()
+
+    result = main.upload_reference_pack_item(request(), "pack-1", "Reference", upload())
+
+    cached = main.knowledge_items["platform"][0]
+    assert result.analysis.analysis_status == "pending"
+    assert cached.analysis.analysis_status == "pending"

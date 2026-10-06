@@ -67,7 +67,8 @@ def test_capture_failure_does_not_prevent_worker_dispatch(monkeypatch):
 
 def test_image_enrichment_dispatches_to_internal_worker(monkeypatch):
     dispatched = []
-    monkeypatch.setattr(orchestrator, "post_json", lambda url, payload: dispatched.append((url, payload)) or {"status": "accepted"})
+    monkeypatch.setattr(orchestrator, "INTERNAL_API_KEY", "internal-test-key")
+    monkeypatch.setattr(orchestrator, "post_json", lambda url, payload, internal_auth=False: dispatched.append((url, payload, internal_auth)) or {"status": "accepted"})
 
     enrichment = type("EnrichmentTask", (), {
         "task_type": "image_enrichment",
@@ -80,7 +81,70 @@ def test_image_enrichment_dispatches_to_internal_worker(monkeypatch):
     assert dispatched == [(
         f"{orchestrator.WORKER_ENRICHMENT_URL}/internal/v1/image-enrichment",
         {"item_id": "kh-1", "analysis_version": "image-rag-v1"},
+        True,
     )]
+
+
+def test_image_enrichment_failure_retries_then_goes_to_dlq(monkeypatch):
+    published = []
+    acknowledged = []
+
+    class Redis:
+        def set(self, *_args, **_kwargs):
+            return True
+
+        def eval(self, script, _keys, key, *_args):
+            return 1
+
+        def xadd(self, topic, fields):
+            published.append((topic, fields))
+
+        def xack(self, *args):
+            acknowledged.append(args)
+            return 1
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "run_worker", lambda *_args: (_ for _ in ()).throw(TimeoutError("worker timed out")))
+
+    assert orchestrator.process_queue_message(
+        orchestrator.ENRICHMENT_TOPIC, "1-0", {"item_id": "kh-1", "analysis_version": "image-rag-v1"}
+    ) is True
+    assert published == [(orchestrator.ENRICHMENT_TOPIC, {"task_type": "image_enrichment", "item_id": "kh-1", "analysis_version": "image-rag-v1", "retry_count": "1"})]
+    assert acknowledged == [(orchestrator.ENRICHMENT_TOPIC, orchestrator.GROUP_NAME, "1-0")]
+
+    published.clear()
+    acknowledged.clear()
+    assert orchestrator.process_queue_message(
+        orchestrator.ENRICHMENT_TOPIC,
+        "2-0",
+        {"item_id": "kh-1", "analysis_version": "image-rag-v1", "retry_count": str(orchestrator.MAX_RETRY)},
+    ) is True
+    assert published[0][0] == orchestrator.DLQ_TOPIC
+    assert published[0][1]["item_id"] == "kh-1"
+    assert acknowledged == [(orchestrator.ENRICHMENT_TOPIC, orchestrator.GROUP_NAME, "2-0")]
+
+
+def test_image_enrichment_ack_requires_final_lease_ownership(monkeypatch):
+    acknowledged = []
+
+    class Redis:
+        def set(self, *_args, **_kwargs):
+            return True
+
+        def eval(self, script, _keys, key, *_args):
+            return 0 if "pexpire" in script else 1
+
+        def xack(self, *args):
+            acknowledged.append(args)
+            return 1
+
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "run_worker", lambda *_args: {"status": "accepted"})
+
+    assert orchestrator.process_queue_message(
+        orchestrator.ENRICHMENT_TOPIC, "lease-loss", {"item_id": "kh-1", "analysis_version": "image-rag-v1"}
+    ) is False
+    assert acknowledged == []
 
 
 def test_image_failure_blocks_video_but_not_unrelated_copy(monkeypatch):
