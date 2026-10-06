@@ -1,0 +1,165 @@
+from datetime import datetime, timezone
+
+import pytest
+
+from app.context_assembler import (
+    ContextSourceItem,
+    build_structured_attribute_text,
+    select_visual_anchor_items,
+)
+from app.schemas import CampaignBrief, CampaignRecord, Deliverables, TargetAudience
+
+
+def campaign() -> CampaignRecord:
+    return CampaignRecord(
+        company_id="company-1",
+        campaign_id="campaign-1",
+        created_at=datetime.now(timezone.utc),
+        brief=CampaignBrief(
+            campaign_name="Test",
+            product_name="New drink",
+            industry_category="Restaurant",
+            objective="awareness",
+            target_audience=TargetAudience(age_range="25-40", gender="all", persona="foodie"),
+            platforms=["instagram"],
+            budget=100,
+            brand_tone=["warm"],
+            deliverables=Deliverables(),
+            deadline=datetime.now(timezone.utc),
+        ),
+    )
+
+
+def enriched(item_id: str, score: float, stored_path: str | None = None) -> ContextSourceItem:
+    metadata = {
+        "analysis_version": "image-rag-v1",
+        "score": score,
+        "selection_reason": "vector_similarity",
+        "mime_type": "image/png",
+        "stored_path": stored_path,
+    }
+    return ContextSourceItem(
+        "industry_attribute_rag",
+        item_id,
+        item_id,
+        '{"style": ["warm"]}',
+        metadata,
+    )
+
+
+def test_structured_attribute_text_is_stable_bounded_and_safe():
+    text = build_structured_attribute_text(
+        {
+            "source_item_id": "item-1",
+            "stored_path": "/private/image.png",
+            "style": ["warm", "x" * 500],
+            "caption": "y" * 5000,
+        }
+    )
+
+    assert text.startswith("source_item_id: item-1")
+    assert len(text) <= 2400
+    assert "/private/image.png" not in text
+
+
+def test_visual_anchor_selection_is_deterministic_and_bounded():
+    items = [enriched(f"item-{index}", score=index / 10) for index in range(8)]
+
+    selected = select_visual_anchor_items(items, limit=3)
+
+    assert [item.source_id for item in selected] == ["item-7", "item-6", "item-5"]
+    assert select_visual_anchor_items(list(reversed(items)), limit=3) == selected
+
+
+def test_visual_anchor_selection_ignores_non_enriched_and_non_image_items():
+    assert select_visual_anchor_items(
+        [
+            ContextSourceItem("industry_matched", "legacy", "legacy", "text", {"mime_type": "image/png"}),
+            ContextSourceItem("industry_attribute_rag", "text", "text", "text", {"mime_type": "text/plain"}),
+        ]
+    ) == ()
+
+
+def test_retrieval_includes_only_ready_scoped_items_and_safe_runtime_path(monkeypatch):
+    import app.main as main
+
+    rows = [
+        {
+            "item_id": "ready",
+            "company_id": "company-1",
+            "title": "Ready",
+            "description": "ready item",
+            "metadata": {"industry": "Restaurant", "role": "foodie", "stored_path": "/private/ready.png", "file_type": "image/png"},
+            "analysis_version": "image-rag-v1",
+            "analysis_status": "ready",
+            "attributes": {"style": ["warm"]},
+        },
+    ]
+
+    class Persistence:
+        def list_ready_image_analysis(self, company_id, industry, limit):
+            return rows if company_id == "company-1" else []
+
+        def list_knowledge_items(self, company_id):
+            return rows if company_id == "company-1" else []
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    result = main.list_enriched_knowledge_context(campaign())
+
+    assert [row["item_id"] for row in result] == ["ready"]
+    assert result[0]["stored_path"] == "/private/ready.png"
+    assert result[0]["metadata"]["analysis_version"] == "image-rag-v1"
+    assert result[0]["metadata"]["source_type"] == "industry_attribute_rag"
+    assert "stored_path" not in result[0]["metadata"]
+
+
+def test_vector_failure_falls_back_to_deterministic_ready_matching(monkeypatch):
+    import app.main as main
+
+    ready = [
+        {"item_id": "restaurant", "company_id": "company-1", "title": "Restaurant", "description": "Restaurant style", "metadata": {"category": "Restaurant"}, "analysis_status": "ready", "analysis_version": "v1", "attributes": {"style": ["warm"]}},
+        {"item_id": "other", "company_id": "company-1", "title": "Other", "description": "Retail style", "metadata": {"category": "Retail"}, "analysis_status": "ready", "analysis_version": "v1", "attributes": {"style": ["cool"]}},
+    ]
+
+    class Persistence:
+        def list_ready_image_analysis(self, company_id, industry, limit):
+            return ready
+
+        def list_knowledge_items(self, company_id):
+            return ready
+
+        def search_ready_image_analysis(self, *args, **kwargs):
+            raise RuntimeError("pgvector unavailable")
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    result = main.list_enriched_knowledge_context(campaign())
+
+    assert [row["item_id"] for row in result] == ["restaurant"]
+    assert result[0]["metadata"]["selection_reason"] == "deterministic_industry_match"
+
+
+def test_generation_context_keeps_legacy_and_adds_enriched_sources(monkeypatch):
+    import app.main as main
+
+    legacy = {"item_id": "legacy", "title": "Legacy", "description": "Restaurant", "metadata": {"category": "Restaurant"}}
+    enriched_row = {"item_id": "new", "title": "New", "description": "", "metadata": {"category": "Restaurant", "file_type": "image/png"}, "analysis_status": "ready", "analysis_version": "v1", "attributes": {"style": ["warm"]}}
+
+    class Persistence:
+        def list_knowledge_items(self, company_id):
+            return [legacy, enriched_row]
+
+        def list_ready_image_analysis(self, company_id, industry, limit):
+            return [enriched_row]
+
+        def list_campaign_references(self, campaign_id, limit=8):
+            return []
+
+        def list_reference_packs(self, **kwargs):
+            return []
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main, "external_search_provider", None)
+    snapshot = main.create_generation_context(campaign(), "run-1")
+
+    assert [item.source_type for item in snapshot.items] == ["industry_matched", "industry_attribute_rag"]
+    assert "style" in snapshot.items[1].text

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import json
 from math import floor
+import math
 from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
@@ -74,6 +76,70 @@ def select_image_reference_items(items: list[ContextSourceItem]) -> tuple[Contex
     manual = [item for item in items if item.source_type in manual_types and is_image(item)]
     industry = [item for item in items if item.source_type == "industry_matched" and is_image(item)]
     return tuple([*manual[:4], *industry[:2]])
+
+
+def select_visual_anchor_items(
+    items: list[ContextSourceItem],
+    limit: int = 3,
+) -> tuple[ContextSourceItem, ...]:
+    """Select a stable, bounded set of ready enriched image references."""
+    if limit <= 0:
+        return ()
+
+    def is_image(item: ContextSourceItem) -> bool:
+        mime_type = str(
+            item.metadata.get("mime_type")
+            or item.metadata.get("file_type")
+            or item.metadata.get("content_type")
+            or ""
+        )
+        return mime_type.lower().startswith("image/")
+
+    def score(item: ContextSourceItem) -> float:
+        try:
+            value = float(item.metadata.get("score", 0))
+        except (TypeError, ValueError):
+            return 0.0
+        return value if math.isfinite(value) else 0.0
+
+    candidates = [
+        item for item in items
+        if item.source_type == "industry_attribute_rag" and is_image(item)
+    ]
+    return tuple(sorted(candidates, key=lambda item: (-score(item), item.source_id))[:limit])
+
+
+def build_structured_attribute_text(attributes: dict[str, Any]) -> str:
+    """Build deterministic, bounded prompt text from validated image attributes."""
+    private_keys = {"stored_path", "storage_key", "binary_data", "base64", "image_data", "bytes"}
+    max_field_length = 400
+    max_total_length = 2400
+
+    def safe_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): safe_value(item)
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                if str(key).casefold() not in private_keys
+            }
+        if isinstance(value, (list, tuple)):
+            return [safe_value(item) for item in value]
+        return value
+
+    lines: list[str] = []
+    keys = sorted(attributes, key=str)
+    if "source_item_id" in keys:
+        keys.remove("source_item_id")
+        keys.insert(0, "source_item_id")
+    for key in keys:
+        if key == "source_item_id":
+            lines.append(f"source_item_id: {str(attributes[key])[:max_field_length]}")
+            continue
+        if str(key).casefold() in private_keys:
+            continue
+        value = json.dumps(safe_value(attributes[key]), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        lines.append(f"{key}: {value[:max_field_length]}")
+    return "\n".join(lines)[:max_total_length]
 
 
 def select_reference_pack_items(

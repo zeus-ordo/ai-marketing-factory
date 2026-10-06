@@ -64,7 +64,14 @@ from .validation import validate_campaign_brief
 from .industry_matching import match_industry_items
 from .external_search import ExternalSearchResult, build_campaign_search_query, build_search_provider
 from .external_search import ExternalSearchError
-from .context_assembler import ContextSourceItem, GenerationContextSnapshot, assemble_generation_context, select_image_reference_items, select_reference_pack_items
+from .context_assembler import (
+    ContextSourceItem,
+    GenerationContextSnapshot,
+    assemble_generation_context,
+    build_structured_attribute_text,
+    select_image_reference_items,
+    select_reference_pack_items,
+)
 
 
 class QueueHealthResponse(BaseModel):
@@ -2424,6 +2431,8 @@ def list_industry_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
     selected: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     for row in rows:
+        if row.get("analysis") is not None or row.get("analysis_status") is not None:
+            continue
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         source_type = str(metadata.get("source_type") or "")
         if source_type == "user_selected" or metadata.get("selected") is True:
@@ -2446,6 +2455,114 @@ def list_industry_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
             "source_type": str(row.get("source_type") or "industry_matched"),
             "stored_path": knowledge_item_stored_path(row),
             "folder": folder,
+        })
+    return context
+
+
+def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) -> list[dict[str, Any]]:
+    """Retrieve ready image attributes while keeping attachment paths transient."""
+    if limit <= 0:
+        return []
+    industry = (getattr(campaign.brief, "industry_category", "") or "").strip()
+    if not industry or persistence is None or not hasattr(persistence, "list_ready_image_analysis"):
+        return []
+
+    ready_rows: list[dict[str, Any]] = []
+    for scope in (campaign.company_id, "platform"):
+        try:
+            ready_rows.extend(persistence.list_ready_image_analysis(scope, industry, limit))
+        except Exception:
+            logger.warning("Failed to load ready image analysis", exc_info=True)
+
+    # Prefer vector-ranked rows when the optional persistence seam is available.
+    vector_rows: list[dict[str, Any]] | None = None
+    search = getattr(persistence, "search_ready_image_analysis", None)
+    if callable(search):
+        try:
+            vector_rows = list(search(
+                campaign.company_id,
+                industry,
+                campaign.brief.product_name,
+                campaign.brief.objective,
+                limit,
+            ))
+        except Exception:
+            logger.info("Vector image retrieval unavailable; using deterministic matching", exc_info=True)
+
+    rows_by_id = {str(row.get("item_id")): row for row in ready_rows if row.get("item_id")}
+    if vector_rows is not None:
+        for row in vector_rows:
+            if row.get("item_id"):
+                rows_by_id[str(row["item_id"])] = row
+
+    source_rows: dict[str, dict[str, Any]] = {}
+    for scope in (campaign.company_id, "platform"):
+        try:
+            for row in persistence.list_knowledge_items(scope):
+                if row.get("item_id"):
+                    source_rows[str(row["item_id"])] = row
+        except Exception:
+            logger.warning("Failed to load knowledge item provenance", exc_info=True)
+
+    candidates: list[dict[str, Any]] = []
+    for item_id, analysis in rows_by_id.items():
+        if str(analysis.get("analysis_status") or "") != "ready":
+            continue
+        source = source_rows.get(item_id, {})
+        merged = {**source, **analysis}
+        metadata = dict(source.get("metadata") or {})
+        metadata.update(dict(analysis.get("metadata") or {}))
+        scope = str(merged.get("company_id") or ("platform" if item_id in source_rows and source_rows[item_id].get("company_id") == "platform" else campaign.company_id))
+        if scope not in {campaign.company_id, "platform"} or merged.get("deleted_at") is not None or merged.get("is_active") is False:
+            continue
+        row_industry = str(metadata.get("industry") or metadata.get("industry_category") or analysis.get("industry") or "")
+        if row_industry and row_industry.casefold() != industry.casefold():
+            continue
+        row_role = str(metadata.get("role") or merged.get("role") or analysis.get("role") or "").strip()
+        requested_role = str(getattr(campaign.brief.target_audience, "persona", "") or "").strip()
+        if row_role and requested_role and row_role.casefold() != requested_role.casefold():
+            continue
+        merged["metadata"] = metadata
+        candidates.append(merged)
+
+    if vector_rows is None:
+        candidates = match_industry_items(
+            industry,
+            campaign.brief.product_name,
+            campaign.brief.objective,
+            candidates,
+            limit=limit,
+        )
+    else:
+        candidates.sort(key=lambda row: (-float(row.get("score") or 0), str(row.get("item_id") or "")))
+
+    context: list[dict[str, Any]] = []
+    for row in candidates[:limit]:
+        metadata = dict(row.get("metadata") or {})
+        attributes = row.get("attributes")
+        if not isinstance(attributes, dict):
+            analysis = row.get("analysis") if isinstance(row.get("analysis"), dict) else {}
+            attributes = analysis.get("attributes") if isinstance(analysis.get("attributes"), dict) else {}
+        item_id = str(row.get("item_id") or "")
+        stored_path = knowledge_item_stored_path(row)
+        safe_metadata = {
+            key: value for key, value in metadata.items()
+            if key != "stored_path"
+        }
+        safe_metadata.update({
+            "source_type": "industry_attribute_rag",
+            "source_item_id": item_id,
+            "analysis_version": row.get("analysis_version") or (row.get("analysis") or {}).get("analysis_version"),
+            "role": metadata.get("role") or row.get("role") or getattr(campaign.brief.target_audience, "persona", ""),
+            "score": row.get("score", 0),
+            "selection_reason": row.get("selection_reason") or ("vector_similarity" if vector_rows is not None else "deterministic_industry_match"),
+        })
+        context.append({
+            **row,
+            "source_type": "industry_attribute_rag",
+            "attributes": attributes,
+            "stored_path": stored_path,
+            "metadata": safe_metadata,
         })
     return context
 
@@ -2567,6 +2684,18 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
                 "stored_path": knowledge_item_stored_path(row),
                 "folder": row.get("folder"),
             },
+        ))
+    for row in list_enriched_knowledge_context(campaign):
+        metadata = dict(row.get("metadata") or {})
+        attributes = dict(row.get("attributes") or {})
+        attributes.setdefault("source_item_id", str(row.get("item_id") or ""))
+        metadata["stored_path"] = row.get("stored_path")
+        industry.append(ContextSourceItem(
+            "industry_attribute_rag",
+            str(row.get("item_id") or ""),
+            str(row.get("title") or "enriched image reference"),
+            build_structured_attribute_text(attributes),
+            metadata,
         ))
     external: list[ContextSourceItem] = []
     search_status = "not_configured" if external_search_provider is None else "available"
