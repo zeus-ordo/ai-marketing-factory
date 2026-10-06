@@ -149,12 +149,18 @@ services:
     environment:
       - CAMPAIGN_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/marketing_ai
       - CHATBOT_INTERNAL_API_KEY=${CHATBOT_INTERNAL_API_KEY:?CHATBOT_INTERNAL_API_KEY must be set}
+      - IMAGE_ANALYSIS_PROVIDER=${IMAGE_ANALYSIS_PROVIDER:-}
       - IMAGE_ANALYSIS_BASE_URL=${IMAGE_ANALYSIS_BASE_URL:-http://multimodal-provider:8080}
       - IMAGE_ANALYSIS_MODEL=${IMAGE_ANALYSIS_MODEL:-vision-model}
       - IMAGE_ANALYSIS_API_KEY=${IMAGE_ANALYSIS_API_KEY:-}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-}
       - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://embedding-provider:8080}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-embedding-model}
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_ANALYSIS_MODEL=${GEMINI_ANALYSIS_MODEL:-gemini-2.5-flash}
+      - GEMINI_EMBEDDING_MODEL=${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
+      - GEMINI_API_BASE_URL=${GEMINI_API_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
       - IMAGE_ANALYSIS_VERSION=${IMAGE_ANALYSIS_VERSION:-image-rag-v1}
     depends_on:
       postgres:

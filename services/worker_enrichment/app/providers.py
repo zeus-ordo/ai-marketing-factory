@@ -1,6 +1,8 @@
 import base64
+import json
 import math
 import os
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -60,7 +62,7 @@ class HttpImageAnalysisProvider(ImageAnalysisProvider):
                 )
                 response.raise_for_status()
                 return validate_attributes(response.json())
-        except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError) as exc:
             raise ProviderError("ANALYSIS_PROVIDER_ERROR") from exc
 
 
@@ -80,17 +82,121 @@ class HttpEmbeddingProvider(EmbeddingProvider):
                 )
                 response.raise_for_status()
                 return validate_embedding(response.json()["data"][0]["embedding"])
-        except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
+        except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError, IndexError) as exc:
             raise ProviderError("EMBEDDING_PROVIDER_ERROR") from exc
 
 
-analysis_provider: ImageAnalysisProvider = HttpImageAnalysisProvider(
-    os.getenv("IMAGE_ANALYSIS_BASE_URL", "http://multimodal-provider:8080"),
-    os.getenv("IMAGE_ANALYSIS_MODEL", "vision-model"),
-    os.getenv("IMAGE_ANALYSIS_API_KEY", ""),
-)
-embedding_provider: EmbeddingProvider = HttpEmbeddingProvider(
-    os.getenv("EMBEDDING_BASE_URL", "http://embedding-provider:8080"),
-    os.getenv("EMBEDDING_MODEL", "embedding-model"),
-    os.getenv("EMBEDDING_API_KEY", ""),
-)
+GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_GEMINI_ANALYSIS_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
+
+
+def _response_text(payload: dict[str, Any]) -> str:
+    parts = payload["candidates"][0]["content"]["parts"]
+    text = "".join(part["text"] for part in parts if isinstance(part.get("text"), str))
+    if not text:
+        raise ValueError("missing provider response text")
+    return text
+
+
+def _parse_json_response(text: str) -> Any:
+    fenced = re.fullmatch(r"\s*```(?:json)?\s*(.*?)\s*```\s*", text, re.IGNORECASE | re.DOTALL)
+    return json.loads(fenced.group(1) if fenced else text)
+
+
+class GeminiImageAnalysisProvider(ImageAnalysisProvider):
+    def __init__(self, api_key: str, model: str, base_url: str = GEMINI_API_BASE_URL) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+
+    def analyze(self, image_path: str, mime_type: str, title: str, description: str) -> dict[str, Any]:
+        try:
+            if not self.api_key:
+                raise ProviderError("ANALYSIS_PROVIDER_ERROR")
+            image_data = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+            prompt = (
+                "Analyze this image and return only a JSON object of useful visual attributes. "
+                "Do not include image bytes, paths, URLs, or private metadata.\n"
+                f"Title: {title}\nDescription: {description}"
+            )
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(
+                    f"{self.base_url}/models/{self.model}:generateContent",
+                    headers={"x-goog-api-key": self.api_key},
+                    json={
+                        "contents": [{"parts": [
+                            {"inlineData": {"mimeType": mime_type, "data": image_data}},
+                            {"text": prompt},
+                        ]}],
+                        "generationConfig": {
+                            "responseMimeType": "application/json",
+                            "responseSchema": {"type": "OBJECT"},
+                        },
+                    },
+                )
+                response.raise_for_status()
+                attributes = _parse_json_response(_response_text(response.json()))
+                return validate_attributes(attributes)
+        except Exception as exc:
+            raise ProviderError("ANALYSIS_PROVIDER_ERROR") from exc
+
+
+class GeminiEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, api_key: str, model: str, base_url: str = GEMINI_API_BASE_URL) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+
+    def embed(self, text: str) -> list[float]:
+        try:
+            if not self.api_key:
+                raise ProviderError("EMBEDDING_PROVIDER_ERROR")
+            with httpx.Client(timeout=60.0) as client:
+                response = client.post(
+                    f"{self.base_url}/models/{self.model}:embedContent",
+                    headers={"x-goog-api-key": self.api_key},
+                    json={"content": {"parts": [{"text": text}]}},
+                )
+                response.raise_for_status()
+                return validate_embedding(response.json()["embedding"]["values"])
+        except Exception as exc:
+            raise ProviderError("EMBEDDING_PROVIDER_ERROR") from exc
+
+
+def _use_gemini(provider_variable: str) -> bool:
+    configured = os.getenv(provider_variable, "").strip().lower()
+    if configured:
+        return configured == "gemini"
+    return bool(os.getenv("GEMINI_API_KEY", "").strip())
+
+
+def build_providers() -> tuple[ImageAnalysisProvider, EmbeddingProvider]:
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    analysis_model = os.getenv("GEMINI_ANALYSIS_MODEL", DEFAULT_GEMINI_ANALYSIS_MODEL).strip()
+    embedding_model = os.getenv("GEMINI_EMBEDDING_MODEL", DEFAULT_GEMINI_EMBEDDING_MODEL).strip()
+    gemini_base_url = os.getenv("GEMINI_API_BASE_URL", GEMINI_API_BASE_URL).strip().rstrip("/")
+
+    analysis: ImageAnalysisProvider
+    if _use_gemini("IMAGE_ANALYSIS_PROVIDER"):
+        analysis = GeminiImageAnalysisProvider(gemini_key, analysis_model, gemini_base_url)
+    else:
+        analysis = HttpImageAnalysisProvider(
+            os.getenv("IMAGE_ANALYSIS_BASE_URL", "http://multimodal-provider:8080"),
+            os.getenv("IMAGE_ANALYSIS_MODEL", "vision-model"),
+            os.getenv("IMAGE_ANALYSIS_API_KEY", ""),
+        )
+
+    embedding: EmbeddingProvider
+    if _use_gemini("EMBEDDING_PROVIDER"):
+        embedding = GeminiEmbeddingProvider(gemini_key, embedding_model, gemini_base_url)
+    else:
+        embedding = HttpEmbeddingProvider(
+            os.getenv("EMBEDDING_BASE_URL", "http://embedding-provider:8080"),
+            os.getenv("EMBEDDING_MODEL", "embedding-model"),
+            os.getenv("EMBEDDING_API_KEY", ""),
+        )
+    return analysis, embedding
+
+
+analysis_provider, embedding_provider = build_providers()

@@ -222,7 +222,7 @@ def process_image_enrichment_job(payload: dict[str, Any]) -> dict[str, str]:
             analysis_version,
             attributes,
             embedding,
-            os.getenv("EMBEDDING_MODEL", "embedding-model"),
+            getattr(providers.embedding_provider, "model", os.getenv("EMBEDDING_MODEL", "embedding-model")),
         )
         return _result(item_id, "ready")
     except Exception as exc:
