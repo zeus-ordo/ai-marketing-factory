@@ -32,6 +32,19 @@ def validate_image_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
     return SafeImageAttributes(values=attributes).values
 
 
+def canonical_attribute_text(attributes: dict[str, Any]) -> str:
+    """Return stable, bounded text for embedding without image bytes or paths."""
+    safe_attributes = validate_image_attributes(attributes)
+    return json.dumps(safe_attributes, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+
+def redact_provider_error(error: BaseException) -> str:
+    """Persist only a stable provider failure class, never provider diagnostics."""
+    if isinstance(error, TimeoutError):
+        return "provider timeout"
+    return "provider request failed"
+
+
 _FORBIDDEN_FIELD_PARTS = ("private", "storage", "path", "base64", "binary", "bytes", "blob")
 _PATH_VALUE = re.compile(r"^(?:[a-zA-Z]:[\\/]|[\\/]|file:|private:|storage:)")
 _RELATIVE_PATH_VALUE = re.compile(r"^(?:\.\.?[\\/])")
