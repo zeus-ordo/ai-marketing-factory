@@ -110,6 +110,61 @@ def select_visual_anchor_items(
     return tuple(sorted(candidates, key=lambda item: (-score(item), item.source_id))[:limit])
 
 
+def build_generation_reference_payload(
+    snapshot: GenerationContextSnapshot,
+    task_type: str,
+) -> dict[str, Any]:
+    """Build the serializable split between attributes and image references."""
+    enriched = [item for item in snapshot.items if item.source_type == "industry_attribute_rag"]
+
+    def provenance(item: ContextSourceItem) -> dict[str, Any]:
+        metadata = dict(item.metadata)
+        return {
+            "source_item_id": item.source_id,
+            "source_type": item.source_type,
+            "analysis_version": metadata.get("analysis_version"),
+            "similarity": metadata.get("score"),
+            "selection_reason": metadata.get("selection_reason"),
+            "sha256": metadata.get("sha256"),
+            "role": metadata.get("role"),
+        }
+
+    attributes = []
+    for item in enriched:
+        metadata = dict(item.metadata)
+        values = metadata.get("attributes")
+        if not isinstance(values, dict):
+            values = {"text": item.text}
+        attributes.append({"source_item_id": item.source_id, "attributes": values, "provenance": provenance(item)})
+
+    legacy = select_reference_pack_items(list(snapshot.items), snapshot.campaign_id, snapshot.run_id or "")
+    legacy_references = [
+        {
+            "source_id": item.source_id,
+            "source_type": item.source_type,
+            "file_name": item.label,
+            "mime_type": dict(item.metadata).get("mime_type") or dict(item.metadata).get("file_type"),
+            "pack_id": dict(item.metadata).get("pack_id"),
+            "pack_role": dict(item.metadata).get("pack_role"),
+        }
+        for item in legacy
+    ]
+    anchors = select_visual_anchor_items(enriched) if task_type == "image_generation" else ()
+    visual_anchors = [
+        {
+            "source_id": item.source_id,
+            "file_name": item.label,
+            "mime_type": dict(item.metadata).get("mime_type") or dict(item.metadata).get("file_type"),
+            "analysis_version": dict(item.metadata).get("analysis_version"),
+            "similarity": dict(item.metadata).get("score"),
+            "selection_reason": dict(item.metadata).get("selection_reason"),
+            "sha256": dict(item.metadata).get("sha256"),
+        }
+        for item in anchors
+    ]
+    return {"attributes": attributes, "visual_anchors": visual_anchors, "legacy_references": legacy_references}
+
+
 def build_structured_attribute_text(attributes: dict[str, Any]) -> str:
     """Build deterministic, bounded prompt text from validated image attributes."""
     private_keys = {"stored_path", "storage_key", "binary_data", "base64", "image_data", "bytes"}

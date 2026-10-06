@@ -1,4 +1,5 @@
 from app.prompt_utils import fit_minimax_prompt
+from app.main import _attribute_context
 from app.schemas import RevisionRequest
 from pydantic import ValidationError
 
@@ -6,6 +7,14 @@ from pydantic import ValidationError
 def test_fit_minimax_prompt_keeps_short_prompt_unchanged():
     prompt = "Campaign: demo\nCreate a campaign key visual."
     assert fit_minimax_prompt(prompt) == prompt
+
+
+def test_attribute_context_is_textual_and_contains_no_private_path():
+    context = _attribute_context([{"source_item_id": "item-1", "style": ["warm"]}])
+
+    assert "Visual reference attributes:" in context
+    assert "item-1" in context
+    assert "stored_path" not in context
 
 
 def test_fit_minimax_prompt_keeps_prompt_under_provider_limit_and_preserves_edges():

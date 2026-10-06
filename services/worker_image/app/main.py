@@ -195,6 +195,14 @@ def _active_provider_name() -> str:
     return "StabilityAI"
 
 
+def _attribute_context(attributes: list[dict[str, object]]) -> str:
+    if not attributes:
+        return ""
+    return "\n\nVisual reference attributes:\n" + "\n".join(
+        f"- {_json.dumps(attribute, ensure_ascii=False, sort_keys=True)}" for attribute in attributes
+    )
+
+
 def _missing_key_detail() -> str:
     if _active_provider() == "minimax":
         return "MINIMAX_API_KEY or IMAGE_WORKER_API_KEY is required when IMAGE_WORKER_PROVIDER=minimax and WORKER_STRICT_REAL_MODE=true"
@@ -267,7 +275,7 @@ def run_image_worker(payload: ImageRunRequest) -> ImageRunResponse:
     for size in payload.sizes:
         try:
             generated_url = _validate_image_asset(
-                _generate_image_asset_url(payload.prompt, size, api_key, payload.reference_images),
+                _generate_image_asset_url(_attribute_context(payload.attributes) + payload.prompt, size, api_key, payload.reference_images),
                 provider=_active_provider(),
                 status_code=200,
             )

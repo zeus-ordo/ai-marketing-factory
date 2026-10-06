@@ -51,3 +51,29 @@ def test_image_worker_rejects_reference_attachment_errors():
 
     assert error.value.status_code == 422
     assert "missing_file" in str(error.value.detail)
+
+
+def test_image_worker_accepts_separate_attributes_and_rejects_unsafe_payload():
+    payload = ImageRunRequest(
+        task_id="task-1", campaign_id="campaign-1", company_id="company-1",
+        prompt="Create a visual", sizes=["1024x1024"],
+        attributes=[{"source_item_id": "item-1", "style": ["warm"]}],
+        visual_anchors=[{"source_id": "item-1", "sha256": "abc"}],
+    )
+    assert payload.attributes[0]["source_item_id"] == "item-1"
+
+    with pytest.raises(ValueError):
+        ImageRunRequest(
+            task_id="task-1", campaign_id="campaign-1", company_id="company-1",
+            prompt="Create a visual", sizes=["1024x1024"],
+            visual_anchors=[{"source_id": "item-1", "stored_path": "/private/image.png"}],
+        )
+
+
+def test_image_worker_rejects_more_than_six_image_parts():
+    references = [ReferenceImage(reference_id=str(index), file_name="x.png", mime_type="image/png", data="cmVm") for index in range(7)]
+    with pytest.raises(ValueError):
+        ImageRunRequest(
+            task_id="task-1", campaign_id="campaign-1", company_id="company-1",
+            prompt="Create a visual", sizes=["1024x1024"], reference_images=references,
+        )

@@ -8,7 +8,7 @@ os.environ.setdefault("CHATBOT_INTERNAL_API_KEY", "test-key")
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app import main
-from app.context_assembler import ContextSourceItem, assemble_generation_context
+from app.context_assembler import ContextSourceItem, assemble_generation_context, build_generation_reference_payload
 from app.schemas import CampaignBrief, CampaignRecord, Deliverables, TaskRecord
 
 
@@ -46,6 +46,48 @@ def test_optional_pack_missing_file_is_audited_without_blocking_generation(tmp_p
     assert failure["selection_mode"] == "optional"
     assert failure["selection_reason"] == "optional_pack"
     assert failure["priority"] == 10
+
+
+def test_copy_payload_has_attributes_without_image_parts(tmp_path):
+    campaign, snapshot = pack_snapshot(tmp_path, "optional")
+    snapshot = assemble_generation_context(campaign, [ContextSourceItem(
+        "industry_attribute_rag", "attr-1", "anchor.png", "warm visual",
+        {"mime_type": "image/png", "attributes": {"style": ["warm"]},
+         "analysis_version": "image-rag-v1", "selection_reason": "vector_similarity"},
+    )], [], [], 100)
+
+    payload = build_generation_reference_payload(snapshot, "copywriting")
+
+    assert payload["attributes"][0]["source_item_id"] == "attr-1"
+    assert payload["visual_anchors"] == []
+    assert payload["legacy_references"] == []
+
+
+def test_image_payload_caps_enriched_anchors_and_keeps_pack_precedence(tmp_path):
+    campaign, _ = pack_snapshot(tmp_path, "optional")
+    pack_path = tmp_path / "pack.png"
+    pack_path.write_bytes(b"pack")
+    items = [ContextSourceItem(
+        "platform_default", "pack-item", "pack.png", "", {
+            "stored_path": str(pack_path), "file_type": "image/png", "pack_id": "pack-1",
+            "pack_role": "brand_identity", "selection_mode": "mandatory", "max_images": 1,
+        },
+    )]
+    for index in range(5):
+        anchor_path = tmp_path / f"anchor-{index}.png"
+        anchor_path.write_bytes(f"anchor-{index}".encode())
+        items.append(ContextSourceItem(
+            "industry_attribute_rag", f"anchor-{index}", f"anchor-{index}.png", "",
+            {"stored_path": str(anchor_path), "file_type": "image/png", "attributes": {"style": ["warm"]},
+             "analysis_version": "image-rag-v1", "score": index, "selection_reason": "vector_similarity"},
+        ))
+    snapshot = assemble_generation_context(campaign, items, [], [], 100)
+
+    payload = build_generation_reference_payload(snapshot, "image_generation")
+
+    assert len(payload["visual_anchors"]) == 3
+    assert all("stored_path" not in anchor for anchor in payload["visual_anchors"])
+    assert payload["legacy_references"][0]["source_id"] == "pack-item"
 
 
 def test_mandatory_pack_missing_file_returns_structured_422(tmp_path):

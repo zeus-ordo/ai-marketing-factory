@@ -137,6 +137,29 @@ def test_worker_dispatch_continues_when_capture_fails(monkeypatch):
     assert result == {"ok": True}
 
 
+def test_worker_capture_keeps_attribute_provenance_without_paths_or_image_parts(monkeypatch):
+    from app import main
+
+    captured = []
+    monkeypatch.setattr(main, "persistence", type("Persistence", (), {
+        "save_llm_generation_payload": lambda _self, payload: captured.append(payload),
+    })())
+    worker_payload = {
+        "campaign_id": "campaign-1", "task_id": "task-1", "prompt": "safe",
+        "attributes": [{"source_item_id": "item-1", "analysis_version": "v1", "sha256": "abc"}],
+        "visual_anchors": [{"source_id": "item-1", "selection_reason": "vector_similarity", "sha256": "abc"}],
+        "reference_images": [{"reference_id": "item-1", "data": "secret-bytes"}],
+    }
+    monkeypatch.setattr(main, "post_json", lambda _url, payload: payload)
+
+    main._worker_post_json("http://worker", worker_payload, "image_generation", "campaign-1", "task-1", "company-1")
+
+    assert "reference_images" not in captured[0]["context"]
+    assert "/" not in str(captured[0]["context"])
+    assert "secret-bytes" not in str(captured[0]["context"])
+    assert captured[0]["context"]["visual_anchors"][0]["sha256"] == "abc"
+
+
 def test_internal_capture_ingest_requires_key_and_persists_exact_payload(monkeypatch):
     from fastapi import Request
     from app import main

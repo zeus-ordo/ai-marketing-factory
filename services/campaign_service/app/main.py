@@ -69,8 +69,10 @@ from .context_assembler import (
     ContextSourceItem,
     GenerationContextSnapshot,
     assemble_generation_context,
+    build_generation_reference_payload,
     build_structured_attribute_text,
     select_image_reference_items,
+    select_visual_anchor_items,
     select_reference_pack_items,
 )
 
@@ -2574,6 +2576,7 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
         safe_metadata.update({
             "source_type": "industry_attribute_rag",
             "source_item_id": item_id,
+            "attributes": attributes,
             "analysis_version": row.get("analysis_version") or (row.get("analysis") or {}).get("analysis_version"),
             "role": metadata.get("role") or row.get("role") or getattr(campaign.brief.target_audience, "persona", ""),
             "score": row.get("score", 0),
@@ -2993,7 +2996,12 @@ MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    selected = select_reference_pack_items(list(snapshot.items), snapshot.campaign_id, run_id or getattr(snapshot, "run_id", ""))
+    selected_legacy = select_reference_pack_items(list(snapshot.items), snapshot.campaign_id, run_id or getattr(snapshot, "run_id", ""))
+    selected_anchors = select_visual_anchor_items(
+        list(snapshot.items),
+        limit=max(0, min(3, 6 - len(selected_legacy))),
+    )
+    selected = (*selected_legacy, *selected_anchors)
     references: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     seen_hashes: set[str] = set()
@@ -3001,6 +3009,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         metadata = item.metadata
         reference_id = item.source_id
         is_pack = item.source_type in {"platform_default", "industry_default"}
+        is_enriched = item.source_type == "industry_attribute_rag"
         stored_path = str(item.transient_stored_path or "")
         failure_metadata = {
             "reference_pack_id": metadata.get("pack_id"),
@@ -3011,22 +3020,22 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
             "source_type": item.source_type,
             "file_name": item.label,
             "mime_type": metadata.get("mime_type") or metadata.get("file_type"),
-            "selection_reason": "mandatory_pack" if metadata.get("selection_mode") == "mandatory" else "optional_pack",
+            "selection_reason": "visual_anchor" if is_enriched else ("mandatory_pack" if metadata.get("selection_mode") == "mandatory" else "optional_pack"),
         }
         if not stored_path or not os.path.isfile(stored_path):
             failure = {"reference_id": reference_id, "category": "missing_file"}
-            if is_pack:
+            if is_pack or is_enriched:
                 failure.update({key: value for key, value in failure_metadata.items() if value is not None})
-                failure["mandatory"] = str(metadata.get("selection_mode")) == "mandatory"
+                failure["mandatory"] = bool(is_pack and str(metadata.get("selection_mode")) == "mandatory")
             failures.append(failure)
             continue
         try:
             file_size = os.path.getsize(stored_path)
             if file_size > MAX_REFERENCE_IMAGE_BYTES:
                 failure = {"reference_id": reference_id, "category": "file_too_large"}
-                if is_pack:
+                if is_pack or is_enriched:
                     failure.update({key: value for key, value in failure_metadata.items() if value is not None})
-                    failure["mandatory"] = str(metadata.get("selection_mode")) == "mandatory"
+                    failure["mandatory"] = bool(is_pack and str(metadata.get("selection_mode")) == "mandatory")
                 failures.append(failure)
                 continue
             raw = open(stored_path, "rb").read()
@@ -3054,12 +3063,19 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
                     "source_type": item.source_type,
                     "file_size": file_size,
                 })
+            elif is_enriched:
+                reference.update({
+                    "source_type": item.source_type,
+                    "analysis_version": metadata.get("analysis_version"),
+                    "selection_reason": metadata.get("selection_reason") or "visual_anchor",
+                    "similarity": metadata.get("score"),
+                })
             references.append(reference)
         except OSError:
             failure = {"reference_id": reference_id, "category": "read_error"}
-            if is_pack:
+            if is_pack or is_enriched:
                 failure.update({key: value for key, value in failure_metadata.items() if value is not None})
-                failure["mandatory"] = str(metadata.get("selection_mode")) == "mandatory"
+                failure["mandatory"] = bool(is_pack and str(metadata.get("selection_mode")) == "mandatory")
             failures.append(failure)
     pack_candidate_count = sum(
         1 for item in snapshot.items
@@ -3068,10 +3084,11 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         and str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "").lower().startswith("image/")
     )
     pack_selected = pack_candidate_count > 0
-    audit_references = [
-        {key: reference[key] for key in (("reference_id", "reference_pack_id", "pack_name", "pack_role", "selection_mode", "selection_reason", "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256") if pack_selected else ("reference_id", "file_name", "mime_type", "folder", "sha256")) if reference.get(key) is not None}
-        for reference in references
-    ]
+    audit_references = [{key: reference[key] for key in (
+        "reference_id", "reference_pack_id", "pack_name", "pack_role", "selection_mode", "selection_reason",
+        "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256",
+        "analysis_version", "similarity",
+    ) if reference.get(key) is not None} for reference in references]
     audit = {
         "selected_count": len(selected),
         "attached_count": len(references),
@@ -3079,6 +3096,14 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "multimodal": bool(references),
         "references": audit_references,
     }
+    attribute_candidate_count = sum(1 for item in snapshot.items if item.source_type == "industry_attribute_rag")
+    if attribute_candidate_count:
+        audit.update({
+            "candidate_count": pack_candidate_count + attribute_candidate_count,
+            "candidate_attribute_count": attribute_candidate_count,
+            "selected_attribute_count": len(selected_anchors),
+            "attached_anchor_count": sum(1 for reference in references if reference.get("source_type") == "industry_attribute_rag"),
+        })
     if pack_selected:
         audit.update({"policy_version": "reference-pack-v1", "candidate_count": pack_candidate_count})
     return references, audit
@@ -3101,6 +3126,10 @@ def build_worker_payload_for_task(
             for item in snapshot.items
         ],
     } if snapshot else {}
+    context_payload.update(
+        build_generation_reference_payload(snapshot, str(task_type))
+        if snapshot else {"attributes": [], "visual_anchors": [], "legacy_references": []}
+    )
     task_provider = task.get("provider") if isinstance(task, dict) else task.provider
     task_model = task.get("model") if isinstance(task, dict) else task.model
     task_run_id = task.get("run_id") if isinstance(task, dict) else task.run_id
