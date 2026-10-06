@@ -2470,7 +2470,9 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
     if not industry or persistence is None or not hasattr(persistence, "list_ready_image_analysis"):
         return []
 
-    requested_role = str(getattr(campaign.brief.target_audience, "persona", "") or "").strip() or None
+    # Audience persona is not image-role metadata. User-uploaded Knowledge items
+    # commonly have no role and must remain eligible for scope/industry retrieval.
+    requested_role = None
     ready_rows: list[dict[str, Any]] = []
     for scope in (campaign.company_id, "platform"):
         try:
@@ -2614,7 +2616,7 @@ def list_industry_knowledge_prompt_lines(campaign: CampaignRecord, limit: int = 
 def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]]:
     """Load active global and campaign-industry Pack items without exposing storage paths."""
     industry = (getattr(campaign.brief, "industry_category", "") or "").strip().lower()
-    if persistence is not None:
+    if persistence is not None and hasattr(persistence, "list_reference_packs"):
         try:
             packs = persistence.list_reference_packs(is_active=True)
             rows_by_pack = {
@@ -2623,6 +2625,9 @@ def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]
             }
         except Exception:
             raise RuntimeError("Unable to load active reference packs")
+    elif persistence is not None:
+        packs = []
+        rows_by_pack = {}
     else:
         packs = [pack.model_dump(mode="python") for pack in reference_packs.values() if pack.is_active]
         rows_by_pack = {
@@ -3100,14 +3105,16 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
     }
     attribute_candidate_count = sum(1 for item in snapshot.items if item.source_type == "industry_attribute_rag")
     audit.update({
-        "candidate_count": pack_candidate_count + attribute_candidate_count,
+        "candidate_count": len(snapshot.items),
+        "pack_candidate_count": pack_candidate_count,
+        "enriched_candidate_count": attribute_candidate_count,
         "candidate_attribute_count": attribute_candidate_count,
         "selected_attribute_count": len(build_generation_reference_payload(snapshot, "copywriting")["attributes"]),
         "selected_anchor_count": len(selected_anchors),
         "attached_anchor_count": sum(1 for reference in references if reference.get("source_type") == "industry_attribute_rag"),
     })
     if pack_selected:
-        audit.update({"policy_version": "reference-pack-v1", "candidate_count": pack_candidate_count})
+        audit.update({"policy_version": "reference-pack-v1"})
     return references, audit
 
 

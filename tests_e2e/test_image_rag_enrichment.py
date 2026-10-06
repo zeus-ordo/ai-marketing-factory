@@ -363,7 +363,7 @@ def test_company_isolation_and_platform_visibility(campaign_config, monkeypatch)
 
 
 @pytest.mark.e2e
-def test_live_upload_pending_requires_explicit_runtime_infrastructure(campaign_client):
+def test_live_deployed_boundary_upload_pending_requires_explicit_runtime_infrastructure(campaign_client):
     response = campaign_client.post(
         "/api/v1/knowledge-items/upload",
         data={"title": "live image"},

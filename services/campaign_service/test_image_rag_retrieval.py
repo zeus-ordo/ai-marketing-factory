@@ -147,7 +147,7 @@ def test_vector_failure_falls_back_to_deterministic_ready_matching(monkeypatch):
     assert result[0]["metadata"]["selection_reason"] == "deterministic_industry_match"
 
 
-def test_fallback_passes_role_to_ready_listing_before_limit(monkeypatch):
+def test_fallback_does_not_use_audience_persona_as_image_role(monkeypatch):
     import app.main as main
 
     wrong_role = {
@@ -163,8 +163,8 @@ def test_fallback_passes_role_to_ready_listing_before_limit(monkeypatch):
 
     class Persistence:
         def list_ready_image_analysis(self, company_id, industry, limit, role=None):
-            assert role == "foodie"
-            return [matching_role] if role == "foodie" else [wrong_role]
+            assert role is None
+            return [matching_role, wrong_role]
 
         def list_knowledge_items(self, company_id):
             return [wrong_role, matching_role]
@@ -174,9 +174,39 @@ def test_fallback_passes_role_to_ready_listing_before_limit(monkeypatch):
 
     monkeypatch.setattr(main, "persistence", Persistence())
 
-    result = main.list_enriched_knowledge_context(campaign(), limit=1)
+    result = main.list_enriched_knowledge_context(campaign(), limit=2)
 
-    assert [row["item_id"] for row in result] == ["matching-role"]
+    assert [row["item_id"] for row in result] == ["matching-role", "wrong-role"]
+
+
+def test_user_knowledge_image_without_role_is_not_filtered_by_audience_persona(monkeypatch):
+    import app.main as main
+
+    knowledge_image = {
+        "item_id": "knowledge-image",
+        "company_id": "company-1",
+        "title": "Uploaded reference",
+        "description": "Restaurant reference",
+        "metadata": {"category": "Restaurant"},
+        "analysis_status": "ready",
+        "analysis_version": "v1",
+        "attributes": {"style": ["warm"]},
+    }
+
+    class Persistence:
+        def list_ready_image_analysis(self, company_id, industry, limit, role=None):
+            assert role is None
+            return [knowledge_image]
+
+        def list_knowledge_items(self, company_id):
+            return [knowledge_image]
+
+        def search_ready_image_analysis(self, *args, **kwargs):
+            raise RuntimeError("vector unavailable")
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+
+    assert [row["item_id"] for row in main.list_enriched_knowledge_context(campaign())] == ["knowledge-image"]
 
 
 def test_retrieval_rejects_nested_unsafe_attributes(monkeypatch):
@@ -251,6 +281,48 @@ def test_persistence_vector_search_uses_pgvector_and_scope_filters():
     assert "a.analysis_status = 'ready'" in cursor.query
     assert "role" in cursor.query
     assert cursor.query.index("role") < cursor.query.index("LIMIT")
+
+
+def test_persistence_vector_search_returns_ready_rows():
+    from app.persistence import PostgresPersistence
+
+    row = (
+        "item-1", "v1", "ready", {"style": ["warm"]}, "ready", "embed-v1", 2,
+        None, None, 1, False, None, None, "Uploaded image", "Restaurant", "manual",
+        "company-1", {"category": "Restaurant"}, 0.91,
+    )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, query, params=None):
+            pass
+
+        def fetchall(self):
+            return [row]
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    persistence = object.__new__(PostgresPersistence)
+    persistence._connect = lambda: Connection()
+
+    results = persistence.search_ready_image_analysis("company-1", "Restaurant", [0.1, 0.2], 8)
+
+    assert [item["item_id"] for item in results] == ["item-1"]
+    assert results[0]["score"] == 0.91
+    assert results[0]["metadata"] == {"category": "Restaurant"}
 
 
 def test_complete_image_analysis_fetches_returning_row_before_vector_update():

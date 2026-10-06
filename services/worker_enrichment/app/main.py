@@ -114,6 +114,22 @@ class PostgresPersistenceBoundary:
                 (json.dumps(attributes), json.dumps(embedding), embedding_model, len(embedding), item_id, analysis_version),
             )
             row = cur.fetchone()
+            if row is not None:
+                # JSONB is the durable fallback; pgvector is an optional retrieval accelerator.
+                cur.execute("SAVEPOINT image_analysis_embedding_vector;")
+                try:
+                    cur.execute(
+                        """
+                        UPDATE knowledge_item_image_analysis
+                        SET embedding = %s::vector
+                        WHERE item_id = %s AND analysis_version = %s;
+                        """,
+                        ("[" + ",".join(str(float(value)) for value in embedding) + "]", item_id, analysis_version),
+                    )
+                    cur.execute("RELEASE SAVEPOINT image_analysis_embedding_vector;")
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT image_analysis_embedding_vector;")
+                    cur.execute("RELEASE SAVEPOINT image_analysis_embedding_vector;")
             conn.commit()
         if row is None:
             raise ValueError("image analysis must be claimed before completion")

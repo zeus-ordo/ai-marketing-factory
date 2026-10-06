@@ -171,3 +171,49 @@ def test_arbitrary_provider_exception_code_is_not_persisted(monkeypatch, tmp_pat
 
     assert result["status"] == "failed"
     assert store.calls[-1][1] == "PROVIDER_ERROR"
+
+
+def test_postgres_completion_writes_pgvector_embedding_when_available():
+    from app.main import PostgresPersistenceBoundary
+
+    class Cursor:
+        def __init__(self):
+            self.queries = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, query, params=None):
+            self.queries.append((query, params))
+
+        def fetchone(self):
+            return ("item-1",)
+
+    class Connection:
+        def __init__(self, cursor):
+            self.cursor_value = cursor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return self.cursor_value
+
+        def commit(self):
+            pass
+
+    cursor = Cursor()
+    boundary = object.__new__(PostgresPersistenceBoundary)
+    boundary._connect = lambda: Connection(cursor)
+
+    boundary.complete_image_analysis("item-1", "image-rag-v1", {"style": ["warm"]}, [0.1, 0.2], "embed-v1")
+
+    vector_updates = [(query, params) for query, params in cursor.queries if "SET embedding =" in query]
+    assert len(vector_updates) == 1
+    assert vector_updates[0][1][0] == "[0.1,0.2]"

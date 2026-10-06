@@ -25,3 +25,18 @@
 
 - The live authenticated Cloud SQL query could not be executed from this workstation without the target VM credentials and network. The deployment script now supplies the configured Cloud SQL host, and viewer authentication/query route tests plus the production build pass.
 - The existing campaign-service full-suite fixture failures remain documented above and should be handled in their owning tests separately.
+
+## Final Fix Wave (2026-10-06)
+
+- Enrichment completion writes the validated embedding to the optional pgvector column inside a savepoint; embedding JSONB remains the fallback when pgvector is unavailable.
+- Enriched image retrieval no longer derives a role filter from campaign audience persona. Role filtering remains available only when explicit role metadata is supplied.
+- Reference audit counts now preserve total candidates and separately report `pack_candidate_count` and `enriched_candidate_count`.
+- Offline E2E tests assert real TestClient/application behavior. The live test name explicitly identifies the deployed boundary and remains opt-in/skipped when live infrastructure is unavailable.
+
+## Final Verification
+
+- `python -m pytest services/campaign_service -q`: 238 passed, 5 skipped.
+- `python -m pytest services/worker_enrichment -q`: 15 passed.
+- `python -m pytest tests_e2e -q`: 27 passed, 5 skipped.
+- `python -m compileall -q services/worker_enrichment services/campaign_service tests_e2e`: passed.
+- `npm run build`: passed; existing multiple-lockfile workspace-root warning only.

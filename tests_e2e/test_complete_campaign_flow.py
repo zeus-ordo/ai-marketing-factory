@@ -259,7 +259,7 @@ def test_worker_result_route_persists_success_state_and_rejects_empty_result(mon
     client = TestClient(campaign_main.app)
 
     response = client.post("/internal/workers/results", headers=internal_headers(), json={
-        "task_type": "image_generation", "result": {"task_id": "image-1", "campaign_id": item.campaign_id, "company_id": item.company_id, "run_id": "run-1", "status": "passed", "image_assets": [{"url": "https://asset.test/image.png"}], "provider": "vertex", "model_name": "imagen-3"}
+        "task_type": "image_generation", "result": {"task_id": "image-1", "campaign_id": item.campaign_id, "company_id": item.company_id, "run_id": "run-1", "status": "passed", "image_assets": [{"url": "data:image/png;base64,cG5n"}], "provider": "vertex", "model_name": "imagen-3"}
     })
     assert response.status_code == 202
     assert response.json()["status"] == "accepted"

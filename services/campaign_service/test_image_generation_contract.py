@@ -177,7 +177,9 @@ def test_pack_audit_counts_pack_candidates_and_preserves_mixed_manual_provenance
     )
 
     audit = payload["reference_audit"]
-    assert audit["candidate_count"] == 7
+    assert audit["candidate_count"] == 8
+    assert audit["pack_candidate_count"] == 7
+    assert audit["enriched_candidate_count"] == 0
     assert audit["selected_count"] == 6
     assert audit["attached_count"] == 6
     assert audit["references"][0]["reference_id"] == "manual-1"
@@ -216,7 +218,8 @@ def test_pack_audit_filters_default_sources_without_pack_id(tmp_path):
         campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
     )
 
-    assert payload["reference_audit"]["candidate_count"] == 1
+    assert payload["reference_audit"]["candidate_count"] == 2
+    assert payload["reference_audit"]["pack_candidate_count"] == 1
     assert all(reference["reference_id"] != "invalid" for reference in payload["reference_audit"]["references"])
 
 
