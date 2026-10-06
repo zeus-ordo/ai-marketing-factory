@@ -3196,7 +3196,8 @@ class PostgresPersistence:
                         analysis_version,
                     ),
                 )
-                if embedding is not None:
+                row = cur.fetchone()
+                if row is not None and embedding is not None:
                     cur.execute("SAVEPOINT image_analysis_embedding_vector;")
                     try:
                         cur.execute(
@@ -3211,7 +3212,6 @@ class PostgresPersistence:
                     except Exception:
                         cur.execute("ROLLBACK TO SAVEPOINT image_analysis_embedding_vector;")
                         cur.execute("RELEASE SAVEPOINT image_analysis_embedding_vector;")
-                row = cur.fetchone()
             conn.commit()
         if row is None:
             raise ValueError("image analysis must be claimed before completion")
@@ -3300,6 +3300,7 @@ class PostgresPersistence:
         industry: str,
         query_embedding: list[float] | None,
         limit: int,
+        role: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search ready analyses with pgvector, raising when vector search is unavailable."""
         if limit < 1:
@@ -3336,10 +3337,14 @@ class PostgresPersistence:
                       AND k.deleted_at IS NULL
                       AND COALESCE(k.metadata_json->>'active', 'true') <> 'false'
                       AND {industry_filter}
+                      AND (%s IS NULL OR LOWER(COALESCE(k.metadata_json->>'role', '')) = LOWER(%s))
                     ORDER BY a.embedding <=> %s::vector, a.item_id
                     LIMIT %s;
                     """,
-                    (vector, company_id, industry, industry, industry, industry, industry, industry, vector, limit),
+                    (
+                        vector, company_id, industry, industry, industry, industry, industry, industry,
+                        role, role, vector, limit,
+                    ),
                 )
                 rows = cur.fetchall()
         return [

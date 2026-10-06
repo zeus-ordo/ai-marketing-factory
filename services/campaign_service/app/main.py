@@ -2485,10 +2485,11 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
                 query_embedding = [float(value) for value in candidate_embedding]
         except (TypeError, ValueError, json.JSONDecodeError):
             logger.warning("Ignoring invalid IMAGE_RAG_QUERY_EMBEDDING")
+    requested_role = str(getattr(campaign.brief.target_audience, "persona", "") or "").strip() or None
     try:
         for scope in (campaign.company_id, "platform"):
             vector_rows.extend(
-                persistence.search_ready_image_analysis(scope, industry, query_embedding, limit)
+                persistence.search_ready_image_analysis(scope, industry, query_embedding, limit, requested_role)
             )
     except Exception:
         logger.info("Vector image retrieval unavailable; using deterministic matching", exc_info=True)
@@ -2532,7 +2533,6 @@ def list_enriched_knowledge_context(campaign: CampaignRecord, limit: int = 8) ->
         if not row_industry or row_industry.casefold() != industry.casefold():
             continue
         row_role = str(metadata.get("role") or merged.get("role") or analysis.get("role") or "").strip()
-        requested_role = str(getattr(campaign.brief.target_audience, "persona", "") or "").strip()
         if row_role and requested_role and row_role.casefold() != requested_role.casefold():
             continue
         merged["metadata"] = metadata

@@ -211,12 +211,63 @@ def test_persistence_vector_search_uses_pgvector_and_scope_filters():
     persistence = object.__new__(PostgresPersistence)
     persistence._connect = lambda: Connection(cursor)
 
-    persistence.search_ready_image_analysis("company-1", "Restaurant", [0.1, 0.2], 8)
+    persistence.search_ready_image_analysis("company-1", "Restaurant", [0.1, 0.2], 8, "foodie")
 
     assert "<=>" in cursor.query
     assert "k.deleted_at IS NULL" in cursor.query
     assert "metadata_json" in cursor.query
     assert "a.analysis_status = 'ready'" in cursor.query
+    assert "role" in cursor.query
+    assert cursor.query.index("role") < cursor.query.index("LIMIT")
+
+
+def test_complete_image_analysis_fetches_returning_row_before_vector_update():
+    from app.persistence import PostgresPersistence
+
+    row = (
+        "item-1", "v1", "ready", {"style": ["warm"]}, "ready", "embed-v1", 2,
+        None, None, 1, False, None, None,
+    )
+
+    class Cursor:
+        def __init__(self):
+            self.returning_result = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, query, params=None):
+            self.returning_result = "RETURNING" in query
+
+        def fetchone(self):
+            assert self.returning_result, "fetchone must read the UPDATE RETURNING result"
+            return row
+
+    class Connection:
+        def __init__(self, cursor):
+            self.cursor_value = cursor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return self.cursor_value
+
+        def commit(self):
+            pass
+
+    persistence = object.__new__(PostgresPersistence)
+    persistence._connect = lambda: Connection(Cursor())
+
+    result = persistence.complete_image_analysis("item-1", "v1", {"style": ["warm"]}, [0.1, 0.2], "embed-v1")
+
+    assert result["item_id"] == "item-1"
 
 
 def test_generation_context_keeps_legacy_and_adds_enriched_sources(monkeypatch):
