@@ -38,3 +38,19 @@ No provider, queue, worker endpoint, retrieval, or UI implementation was added.
 
 - Real PostgreSQL lifecycle coverage remains pending until a disposable database is configured.
 - The optional vector column is attempted inside a savepoint; JSONB embedding storage remains available when pgvector is unavailable.
+
+## Review Fix
+
+- Hardened the shared image attribute validator to allow only bounded JSON primitives, lists, and string-keyed dictionaries; it rejects private/storage/path/base64/binary fields and values, arbitrary objects, sets, tuples, dates, non-finite numbers, and oversized values.
+- Added the same validator to the public analysis schemas.
+- Added tests for ready-item listing, rejected unsafe/non-JSON attributes, and public schema validation.
+
+```text
+python -m pytest services/campaign_service/test_image_enrichment_persistence.py services/campaign_service/test_persistence_migrations.py -q
+12 passed, 3 skipped, 2 warnings in 0.69s
+
+python -m compileall -q services/campaign_service/app services/campaign_service/test_image_enrichment_persistence.py services/campaign_service/test_persistence_migrations.py
+git diff --check
+```
+
+The three PostgreSQL lifecycle tests remain skipped because `CAMPAIGN_TEST_DATABASE_URL` is not configured; no database success was fabricated.

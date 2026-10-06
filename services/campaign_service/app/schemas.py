@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class TargetAudience(BaseModel):
@@ -188,6 +188,13 @@ class ImageAnalysisRecord(BaseModel):
     analyzed_at: datetime | None = None
     updated_at: datetime
 
+    @field_validator("attributes")
+    @classmethod
+    def validate_safe_attributes(cls, value: dict[str, Any]) -> dict[str, Any]:
+        from .image_enrichment import validate_image_attributes
+
+        return validate_image_attributes(value)
+
 
 class KnowledgeItemAnalysisSummary(BaseModel):
     analysis_status: Literal["pending", "processing", "ready", "failed"]
@@ -195,6 +202,13 @@ class KnowledgeItemAnalysisSummary(BaseModel):
     attributes: dict[str, Any] = Field(default_factory=dict)
     retryable: bool
     analyzed_at: datetime | None = None
+
+    @field_validator("attributes")
+    @classmethod
+    def validate_safe_attributes(cls, value: dict[str, Any]) -> dict[str, Any]:
+        from .image_enrichment import validate_image_attributes
+
+        return validate_image_attributes(value)
 
 
 class TaskPlanResponse(BaseModel):
