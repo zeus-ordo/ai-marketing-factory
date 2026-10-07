@@ -569,6 +569,7 @@ export const translations = {
       table: { title: "Title", source: "Source", category: "Folder", created: "Created", actions: "Actions" },
     },
     referencePacks: {
+      roleFilterLabel: "Role filter", industryFilterLabel: "Industry filter", activeFilterLabel: "Active status filter", nameLabel: "Pack name", roleLabel: "Role", industryLabel: "Industry", selectionModeLabel: "Selection mode", maxImagesLabel: "Maximum images", priorityLabel: "Priority", activeLabel: "Active", chooseImagesLabel: "Choose images", selectedFilesLabel: "Selected files: {count}", uploadLabel: "Upload images", noPackSelected: "Select a Pack before uploading images.",
       policyLoadFailed: "Upload rules could not be loaded. Try again.",
       title: "System Reference Packs",
       subtitle: "Manage platform-wide image packs used during campaign generation.",
@@ -1588,6 +1589,7 @@ export const translations = {
       table: { title: "標題", source: "來源", category: "資料夾", created: "建立時間", actions: "操作" },
     },
     referencePacks: {
+      roleFilterLabel: "角色篩選", industryFilterLabel: "產業篩選", activeFilterLabel: "啟用狀態篩選", nameLabel: "素材包名稱", roleLabel: "角色", industryLabel: "產業", selectionModeLabel: "選擇模式", maxImagesLabel: "最多圖片數", priorityLabel: "優先級", activeLabel: "啟用", chooseImagesLabel: "選擇圖片", selectedFilesLabel: "已選檔案：{count}", uploadLabel: "上傳圖片", noPackSelected: "請先選擇素材包，再上傳圖片。",
       policyLoadFailed: "無法載入上傳規則，請再試一次。",
       title: "系統參考素材包", subtitle: "管理活動生成時使用的平台圖片素材包。", loadFailed: "載入參考素材包失敗。", itemsLoadFailed: "載入素材包圖片失敗。", saveFailed: "儲存參考素材包失敗。", saved: "參考素材包已儲存。", deleteFailed: "刪除參考素材包失敗。", deleteConfirm: "確定要刪除此素材包及其圖片嗎？", deleted: "參考素材包已刪除。", deleteItemConfirm: "確定要刪除此素材包圖片嗎？", deleteItemFailed: "刪除素材包圖片失敗。", uploaded: "素材包圖片已上傳。", uploadFailed: "部分素材包圖片上傳失敗。", new: "新增素材包", empty: "尚無參考素材包。", selectPack: "選擇素材包以編輯設定與圖片。", name: "素材包名稱", industry: "產業（空白＝全域）", industryFilter: "依產業篩選", allRoles: "全部角色", allStatus: "全部狀態", active: "啟用", inactive: "停用", global: "全域", mandatory: "必要", optional: "可選", maxImages: "最多圖片數", priority: "優先級", chooseImages: "選擇圖片", selectedFiles: "已選擇 {count} 張圖片", noFiles: "尚未選擇圖片", upload: "上傳圖片", imageCount: "{count} 張圖片",
       roles: { brand_identity: "品牌識別", product: "產品", style: "風格", composition: "構圖", campaign_examples: "活動範例" },
@@ -2484,6 +2486,7 @@ export const translations = {
       table: { title: "タイトル", source: "ソース", category: "フォルダ", created: "作成日時", actions: "操作" },
     },
     referencePacks: {
+      roleFilterLabel: "役割フィルター", industryFilterLabel: "業種フィルター", activeFilterLabel: "有効状態フィルター", nameLabel: "パック名", roleLabel: "役割", industryLabel: "業種", selectionModeLabel: "選択モード", maxImagesLabel: "最大画像数", priorityLabel: "優先度", activeLabel: "有効", chooseImagesLabel: "画像を選択", selectedFilesLabel: "選択したファイル: {count}", uploadLabel: "画像をアップロード", noPackSelected: "画像をアップロードする前にパックを選択してください。",
       policyLoadFailed: "アップロード規則を読み込めません。もう一度お試しください。",
       title: "システム参照パック", subtitle: "キャンペーン生成で使うプラットフォーム画像パックを管理します。", loadFailed: "参照パックの読み込みに失敗しました。", itemsLoadFailed: "パック画像の読み込みに失敗しました。", saveFailed: "参照パックの保存に失敗しました。", saved: "参照パックを保存しました。", deleteFailed: "参照パックの削除に失敗しました。", deleteConfirm: "この参照パックと画像を削除しますか？", deleted: "参照パックを削除しました。", deleteItemConfirm: "このパック画像を削除しますか？", deleteItemFailed: "パック画像の削除に失敗しました。", uploaded: "パック画像をアップロードしました。", uploadFailed: "一部のパック画像のアップロードに失敗しました。", new: "新規パック", empty: "参照パックはありません。", selectPack: "パックを選択して設定と画像を編集してください。", name: "パック名", industry: "業種（空白＝全体）", industryFilter: "業種で絞り込む", allRoles: "すべての役割", allStatus: "すべての状態", active: "有効", inactive: "無効", global: "全体", mandatory: "必須", optional: "任意", maxImages: "最大画像数", priority: "優先度", chooseImages: "画像を選択", selectedFiles: "{count} 枚選択中", noFiles: "画像未選択", upload: "画像をアップロード", imageCount: "{count} 枚",
       roles: { brand_identity: "ブランドアイデンティティ", product: "製品", style: "スタイル", composition: "構図", campaign_examples: "キャンペーン例" },

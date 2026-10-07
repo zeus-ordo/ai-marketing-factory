@@ -27,6 +27,7 @@
     "dev:up": "node scripts/dev-up.mjs",
     "dev:bootstrap:win": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap-dev.ps1",
     "check:i18n": "node scripts/check-i18n.mjs",
+    "check:reference-pack-form": "node scripts/check-reference-pack-form-contract.mjs",
     "ci:frontend": "npm run check:i18n && npm run lint && npm run build",
     "smoke:chatbot:phase-d": "node scripts/chatbot-phase-d-smoke.mjs",
     "smoke:e2e:oneclick": "node scripts/e2e-oneclick.mjs",
