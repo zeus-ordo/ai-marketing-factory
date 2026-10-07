@@ -40,3 +40,16 @@ The page change is limited to readable text styling in the Content Studio Refere
 - Repository-wide lint remains non-clean because of pre-existing generated `context-viewer/.next` errors and existing `context-viewer`/page hook issues.
 - Repository i18n check reports pre-existing hardcoded UI text in `app/campaigns/page.tsx`.
 - Build emits the existing multiple-lockfile workspace-root warning.
+
+## Review Fix
+
+The review finding was confirmed: `dark:text-slate-100` and `dark:text-slate-300` conflicted with the form and controls' `bg-white` surfaces. The fix removes only those inconsistent dark-mode text variants from the white Reference Pack surfaces and keeps dark entered text, slate placeholders, readable status/guidance text, option text, and existing descendant control selectors. No handlers, state, APIs, labels, validation, upload behavior, focus styles, or disabled styles changed.
+
+### Review-Fix Verification
+
+- Focused dark-on-white RED check before the fix: **RED**.
+- Focused dark-on-white GREEN check after the fix: **PASS**.
+- `npm run check:reference-pack-form`: **PASS**.
+- `npx tsc --noEmit`: **PASS**.
+- `npm run build`: **PASS**; `/content-studio` compiled successfully.
+- `git diff --check`: **PASS**.
