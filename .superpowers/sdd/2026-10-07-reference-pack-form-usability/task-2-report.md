@@ -53,3 +53,16 @@ The review finding was confirmed: `dark:text-slate-100` and `dark:text-slate-300
 - `npx tsc --noEmit`: **PASS**.
 - `npm run build`: **PASS**; `/content-studio` compiled successfully.
 - `git diff --check`: **PASS**.
+
+## Re-Review Fix: Dark-Surface Guidance
+
+The re-review identified that filter labels and loading/empty-pack messages sit on the section's dark-mode surface rather than the white control/form surfaces. Added `dark:text-slate-100` to those labels and messages, and `dark:text-slate-300` to the section subtitle. White inputs, selects, and options retain dark entered text and readable placeholders without dark-mode overrides. Behavior, handlers, state, APIs, labels, validation, upload flow, focus styles, and disabled styles were preserved.
+
+### Re-Review Verification
+
+- Focused dark-surface guidance RED check before the fix: **RED**.
+- Focused dark-surface guidance GREEN check after the fix: **PASS**.
+- `npm run check:reference-pack-form`: **PASS**.
+- `npx tsc --noEmit`: **PASS**.
+- `npm run build`: **PASS**; `/content-studio` compiled successfully.
+- `git diff --check`: **PASS**.
