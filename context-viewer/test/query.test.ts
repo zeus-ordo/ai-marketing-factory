@@ -380,6 +380,39 @@ test("reference audit binary-data removal is recursive and preserves safe metada
   assert.doesNotMatch(JSON.stringify(sanitized), /bytes|base64|data/);
 });
 
+test("reference audit normalization rejects unsafe legacy metadata values independently", () => {
+  const audit = normalizeReferenceAudit({
+    selected_count: 1,
+    attached_count: 1,
+    failures: [{
+      reference_id: "ref-1",
+      category: "download_failed",
+      provenance: "C:/private/provenance.json",
+      pack_name: "data:text/plain;base64,ZmFrZQ==",
+    }],
+    references: [{
+      reference_id: "ref-1",
+      file_name: "C:\\private\\brand.png",
+      mime_type: "image/png",
+      folder: "data:image/png;base64,ZmFrZQ==",
+      sha256: "abc123",
+      provenance: "/private/provenance.json",
+      data: "raw-bytes",
+      image_data: "raw-image-data",
+      base64: "cmF3LWJ5dGVz",
+      stored_path: "/private/brand.png",
+    }],
+  });
+
+  assert.ok(audit);
+  assert.equal(audit.references[0].fileName, "File name not recorded");
+  assert.equal(audit.references[0].folder, "Folder not recorded");
+  assert.equal(audit.references[0].provenance, undefined);
+  assert.equal(audit.failures[0].packName, undefined);
+  assert.equal(audit.failures[0].provenance, undefined);
+  assert.doesNotMatch(JSON.stringify(audit), /private|data:image|base64|raw-bytes|stored_path/);
+});
+
 test("viewer keeps audit state local to the selected activity", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(page, /activeReferenceAudit/);

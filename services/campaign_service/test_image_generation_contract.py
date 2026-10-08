@@ -132,6 +132,36 @@ def test_image_audit_has_fixed_counts_and_anchor_role_when_empty():
     assert audit["attached_anchor_count"] == 0
 
 
+def test_image_audit_rejects_unsafe_reference_metadata_but_keeps_worker_bytes(tmp_path):
+    campaign = _campaign() if "_campaign" in globals() else CampaignRecord(
+        company_id="company", campaign_id="campaign", created_at=datetime.utcnow(),
+        brief=CampaignBrief(campaign_name="Campaign", product_name="Product", objective="awareness",
+            target_audience={"age_range": "all", "gender": "all", "persona": "all"}, platforms=["social"],
+            budget=1, brand_tone=[], deliverables=Deliverables(image_assets=1), deadline=datetime.utcnow()),
+    )
+    path = tmp_path / "reference.png"
+    path.write_bytes(b"reference-bytes")
+    snapshot = assemble_generation_context(campaign, [ContextSourceItem(
+        "campaign_reference", "unsafe-ref", "C:/private/brand.png", "",
+        {
+            "stored_path": str(path), "file_type": "image/png", "folder": "data:image/png;base64,ZmFrZQ==",
+            "provenance": "C:\\private\\provenance.json", "pack_name": "L3ByaXZhdGUvcGFjay5qcGc=",
+        },
+    )], [], [], 100)
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    assert payload["reference_images"][0]["data"]
+    serialized_audit = str(payload["reference_audit"]).lower()
+    assert "data:image" not in serialized_audit
+    assert "c:/private" not in serialized_audit
+    assert "provenance.json" not in serialized_audit
+    assert "l3by" not in serialized_audit
+    assert all(key not in serialized_audit for key in ("stored_path", "image_data", "base64", "binary_data"))
+
+
 def test_mandatory_pack_missing_file_returns_structured_422(tmp_path):
     from fastapi import HTTPException
 

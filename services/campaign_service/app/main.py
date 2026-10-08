@@ -3076,6 +3076,38 @@ Video type policy:
 
 
 MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
+_AUDIT_BINARY_KEYS = {"data", "image_data", "base64", "stored_path", "binary_data", "bytes"}
+_AUDIT_REFERENCE_KEYS = {
+    "reference_id", "reference_pack_id", "pack_name", "pack_role", "selection_mode", "selection_reason",
+    "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256",
+    "analysis_version", "similarity", "role", "selected", "provenance", "mandatory", "category",
+}
+_AUDIT_PATH_KEYS = {"reference_id", "reference_pack_id", "pack_name", "pack_role", "file_name", "folder", "provenance"}
+
+
+def _is_unsafe_audit_string(value: str, key: str) -> bool:
+    normalized = value.strip().lower()
+    if not normalized or normalized.startswith("data:") or normalized.startswith("file://"):
+        return True
+    if key in _AUDIT_PATH_KEYS and ("/" in value or "\\" in value or (len(value) >= 3 and value[1:3] == ":\\")):
+        return True
+    if key not in {"sha256", "mime_type"} and len(value) >= 16 and re.fullmatch(r"[a-z0-9+/]+={0,2}", normalized):
+        return True
+    return False
+
+
+def _sanitize_reference_audit_record(record: dict[str, Any], keys: set[str] = _AUDIT_REFERENCE_KEYS) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in record.items():
+        if key not in keys or key.lower() in _AUDIT_BINARY_KEYS:
+            continue
+        if key == "provenance" and value not in {"immutable", "adjustable"}:
+            continue
+        if isinstance(value, str) and _is_unsafe_audit_string(value, key):
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            sanitized[key] = value
+    return sanitized
 
 
 def build_image_reference_payload(
@@ -3203,12 +3235,25 @@ def build_image_reference_payload(
         and str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "").lower().startswith("image/")
     )
     pack_selected = pack_candidate_count > 0
-    audit_references = [{key: reference[key] for key in (
-        "reference_id", "reference_pack_id", "pack_name", "pack_role", "selection_mode", "selection_reason",
-        "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256",
-        "analysis_version", "similarity", "role",
-    ) if reference.get(key) is not None} for reference in audit_references]
+    audit_references = [_sanitize_reference_audit_record(reference) for reference in audit_references]
+    failures = [_sanitize_reference_audit_record(failure, _AUDIT_REFERENCE_KEYS) for failure in failures]
     partition_metadata = build_regeneration_reference_metadata(snapshot, run_id, persisted_selection)
+    partition_metadata["immutable"] = [_sanitize_reference_audit_record(item) for item in partition_metadata["immutable"]]
+    partition_metadata["adjustable"] = [_sanitize_reference_audit_record(item) for item in partition_metadata["adjustable"]]
+    partition_metadata["immutable_reference_ids"] = [
+        item["reference_id"] for item in partition_metadata["immutable"] if item.get("reference_id")
+    ]
+    partition_metadata["adjustable_reference_ids"] = [
+        item["reference_id"] for item in partition_metadata["adjustable"] if item.get("reference_id")
+    ]
+    safe_partition_ids = {
+        item["reference_id"] for partition in (partition_metadata["immutable"], partition_metadata["adjustable"])
+        for item in partition if item.get("reference_id")
+    }
+    partition_metadata["selected_reference_ids"] = [
+        reference_id for reference_id in partition_metadata.get("selected_reference_ids", [])
+        if reference_id in safe_partition_ids
+    ]
     selected_provenance = {
         item["reference_id"]: item["provenance"]
         for partition in (partition_metadata["immutable"], partition_metadata["adjustable"])

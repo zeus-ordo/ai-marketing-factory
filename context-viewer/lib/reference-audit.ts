@@ -6,35 +6,38 @@ export type ReferenceAuditFailure = { referenceId: string; category: string; pro
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function displayString(value: unknown, fallback: string) { return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : fallback; }
 function displayOptionalString(value: unknown) { return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : undefined; }
+function unsafeString(value: string, key = "") { const normalized = value.trim().toLowerCase(); const pathKey = new Set(["reference_id", "reference_pack_id", "pack_name", "pack_role", "file_name", "folder", "provenance"]); return !normalized || normalized.startsWith("data:") || normalized.startsWith("file://") || (pathKey.has(key) && /[\\/]/.test(value)) || (key !== "sha256" && key !== "mime_type" && /^[a-z0-9+/]{16,}={0,2}$/i.test(value)); }
+function safeDisplayString(value: unknown, fallback: string, key: string) { const result = displayOptionalString(value); return result && !unsafeString(result, key) ? result : fallback; }
+function safeOptionalString(value: unknown, key: string) { const result = displayOptionalString(value); return result && !unsafeString(result, key) ? result : undefined; }
 function validCount(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value >= 0; }
 function displayOptionalNumber(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
 function displayIds(value: unknown) { return Array.isArray(value) ? value.filter(item => typeof item === "string" || typeof item === "number").map(String) : undefined; }
-function partition(value: unknown): ReferenceAuditPartition[] { return Array.isArray(value) ? value.filter(isRecord).map(item => ({ referenceId: displayString(item.reference_id, "Unknown reference"), ...(item.provenance === "immutable" || item.provenance === "adjustable" ? { provenance: item.provenance } : {}), ...(typeof item.selected === "boolean" ? { selected: item.selected } : {}) })) : []; }
+function partition(value: unknown): ReferenceAuditPartition[] { return Array.isArray(value) ? value.filter(isRecord).map(item => ({ referenceId: safeDisplayString(item.reference_id, "Unknown reference", "reference_id"), ...(item.provenance === "immutable" || item.provenance === "adjustable" ? { provenance: item.provenance } : {}), ...(typeof item.selected === "boolean" ? { selected: item.selected } : {}) })) : []; }
 function provenance(value: Record<string, unknown>) {
-  const packId = displayOptionalString(value.reference_pack_id);
-  const packName = displayOptionalString(value.pack_name);
-  const packRole = displayOptionalString(value.pack_role);
-  const selectionMode = displayOptionalString(value.selection_mode);
-  const selectionReason = displayOptionalString(value.selection_reason);
+  const packId = safeOptionalString(value.reference_pack_id, "reference_pack_id");
+  const packName = safeOptionalString(value.pack_name, "pack_name");
+  const packRole = safeOptionalString(value.pack_role, "pack_role");
+  const selectionMode = safeOptionalString(value.selection_mode, "selection_mode");
+  const selectionReason = safeOptionalString(value.selection_reason, "selection_reason");
   const priority = displayOptionalNumber(value.priority);
-  const sourceType = displayOptionalString(value.source_type);
+  const sourceType = safeOptionalString(value.source_type, "source_type");
   return { ...(packId ? { packId } : {}), ...(packName ? { packName } : {}), ...(packRole ? { packRole } : {}), ...(selectionMode ? { selectionMode } : {}), ...(selectionReason ? { selectionReason } : {}), ...(priority !== undefined ? { priority } : {}), ...(sourceType ? { sourceType } : {}) };
 }
 
 export function removeBinaryData(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(removeBinaryData);
   if (!isRecord(value)) return value;
-  const binaryKeys = new Set(["data", "image_data", "base64", "stored_path"]);
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !binaryKeys.has(key.toLowerCase())).map(([key, entry]) => [key, removeBinaryData(entry)]));
+  const binaryKeys = new Set(["data", "image_data", "base64", "stored_path", "binary_data", "bytes"]);
+  return Object.fromEntries(Object.entries(value).filter(([key, entry]) => !binaryKeys.has(key.toLowerCase()) && !(typeof entry === "string" && unsafeString(entry, key))).map(([key, entry]) => [key, removeBinaryData(entry)]));
 }
 
 export function normalizeReferenceAudit(value: unknown): ReferenceAudit | null {
   if (!isRecord(value) || !validCount(value.selected_count) || !validCount(value.attached_count) || !Array.isArray(value.failures) || !Array.isArray(value.references)) return null;
   const partitions = isRecord(value.partitions) ? { immutable: partition(value.partitions.immutable), adjustable: partition(value.partitions.adjustable) } : undefined;
   return {
-    ...(typeof value.generation_context_id === "string" ? { generationContextId: value.generation_context_id } : {}),
+    ...(safeOptionalString(value.generation_context_id, "generation_context_id") ? { generationContextId: safeOptionalString(value.generation_context_id, "generation_context_id") } : {}),
     ...(isRecord(value.brand_context) ? { brandContext: removeBinaryData(value.brand_context) as Record<string, unknown> } : {}),
-    ...(typeof value.project_description === "string" ? { projectDescription: value.project_description } : {}),
+    ...(safeOptionalString(value.project_description, "project_description") ? { projectDescription: safeOptionalString(value.project_description, "project_description") } : {}),
     ...(displayIds(value.immutable_reference_ids) ? { immutableReferenceIds: displayIds(value.immutable_reference_ids) } : {}),
     ...(displayIds(value.adjustable_reference_ids) ? { adjustableReferenceIds: displayIds(value.adjustable_reference_ids) } : {}),
     ...(partitions ? { partitions } : {}),
@@ -49,8 +52,8 @@ export function normalizeReferenceAudit(value: unknown): ReferenceAudit | null {
     selectedCount: value.selected_count,
     attachedCount: value.attached_count,
     multimodal: value.multimodal === true,
-    failures: value.failures.filter(isRecord).map(failure => ({ referenceId: displayString(failure.reference_id, "Unknown reference"), category: displayString(failure.category, "Unknown failure"), ...(failure.provenance === "immutable" || failure.provenance === "adjustable" ? { provenance: failure.provenance } : {}), ...provenance(failure) })),
-    references: value.references.filter(isRecord).map(reference => ({ referenceId: displayString(reference.reference_id, "Unknown reference"), fileName: displayString(reference.file_name, "File name not recorded"), mimeType: displayString(reference.mime_type, "MIME type not recorded"), folder: displayString(reference.folder, "Folder not recorded"), sha256: displayString(reference.sha256, "SHA-256 not recorded"), ...(reference.provenance === "immutable" || reference.provenance === "adjustable" ? { provenance: reference.provenance } : {}), ...(typeof reference.selected === "boolean" ? { selected: reference.selected } : {}), ...provenance(reference) })),
+    failures: value.failures.filter(isRecord).map(failure => ({ referenceId: safeDisplayString(failure.reference_id, "Unknown reference", "reference_id"), category: safeDisplayString(failure.category, "Unknown failure", "category"), ...(failure.provenance === "immutable" || failure.provenance === "adjustable" ? { provenance: failure.provenance } : {}), ...provenance(failure) })),
+    references: value.references.filter(isRecord).map(reference => ({ referenceId: safeDisplayString(reference.reference_id, "Unknown reference", "reference_id"), fileName: safeDisplayString(reference.file_name, "File name not recorded", "file_name"), mimeType: safeDisplayString(reference.mime_type, "MIME type not recorded", "mime_type"), folder: safeDisplayString(reference.folder, "Folder not recorded", "folder"), sha256: safeDisplayString(reference.sha256, "SHA-256 not recorded", "sha256"), ...(reference.provenance === "immutable" || reference.provenance === "adjustable" ? { provenance: reference.provenance } : {}), ...(typeof reference.selected === "boolean" ? { selected: reference.selected } : {}), ...provenance(reference) })),
   };
 }
 
