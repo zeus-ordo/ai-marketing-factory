@@ -25,6 +25,25 @@ Regression tests were added before implementation. The initial focused run faile
 - `npm run build`: passed.
 - `git diff --check`: passed.
 
+## Second-Round High Fix
+
+The second-round High finding was caused by `GenerationContextSnapshot.selected_reference_ids` being a legacy manual-reference field, while mandatory Pack and RAG attachment selection was only recomputed at payload-build time. The fix now captures the complete bounded image selection when assembling the snapshot:
+
+- Snapshot fields preserve ordered `image_reference_ids` and `image_reference_partitions` for mandatory, user/manual, and RAG attachments.
+- The same partition data is persisted through existing `generation_context_items.metadata_json` markers, so reloaded legacy-shaped snapshots can recover the original selection without a schema migration.
+- Regeneration and initial image payload building prefer the persisted complete image selection and enforce the 6/3/3 partition limits plus the 12-image total limit.
+- Snapshots without the new fields or markers retain the deterministic legacy selection fallback.
+- Added regression coverage for a persisted snapshot containing Brand/Product, manual, and RAG references across a different regeneration run.
+
+## Second-Round Verification
+
+- `python -m pytest services/campaign_service/test_context_assembler.py services/campaign_service/test_image_generation_contract.py -q`: 57 passed, 2 pre-existing deprecation warnings.
+- `python -m pytest test_reference_images.py test_provider_contract.py test_prompt.py -q` in `services/worker_image`: 36 passed.
+- `npm test` in `context-viewer`: 45 passed.
+- `npx tsc --noEmit`: passed.
+- `npm run build`: passed.
+- `git diff --check`: passed.
+
 ## Concerns
 
 - Existing unrelated worktree changes (`next-env.d.ts`, `tsconfig.tsbuildinfo`, `artifacts/`, and existing documentation files) were not modified or staged.

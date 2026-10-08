@@ -72,6 +72,7 @@ from .context_assembler import (
     build_generation_reference_payload,
     build_regeneration_reference_metadata,
     build_structured_attribute_text,
+    snapshot_image_reference_selection,
     select_image_reference_items,
     select_image_reference_partitions,
     select_visual_anchor_items,
@@ -2771,7 +2772,14 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
         except Exception:
             search_status = "provider_error"
             search_error = "External search provider failed"
-    snapshot = assemble_generation_context(campaign, [*selected, *pack_items], industry, external, GENERATION_CONTEXT_TOKEN_BUDGET)
+    snapshot = assemble_generation_context(
+        campaign,
+        [*selected, *pack_items],
+        industry,
+        external,
+        GENERATION_CONTEXT_TOKEN_BUDGET,
+        run_id=run_id,
+    )
     return GenerationContextSnapshot(
         **{**snapshot.__dict__, "external_search_status": search_status, "external_search_error": search_error, "run_id": run_id}
     )
@@ -3045,6 +3053,8 @@ def build_image_reference_payload(
     run_id: str | None = None,
     persisted_selection: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if persisted_selection is None:
+        persisted_selection = snapshot_image_reference_selection(snapshot)
     persisted_ids = persisted_selection.get("selected_reference_ids") if persisted_selection else None
     if not persisted_ids and persisted_selection and isinstance(persisted_selection.get("partitions"), dict):
         persisted_ids = [
@@ -5973,7 +5983,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
         reference_images, reference_audit = build_image_reference_payload(
             snapshot,
             run_id,
-            {"selected_reference_ids": list(snapshot.selected_reference_ids)} if snapshot and snapshot.selected_reference_ids else None,
+            snapshot_image_reference_selection(snapshot) if snapshot else None,
         ) if snapshot else ([], {})
         blocking_failures = [failure for failure in reference_audit.get("failures", []) if failure.get("mandatory", True)]
         if blocking_failures:

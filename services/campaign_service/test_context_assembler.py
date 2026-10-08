@@ -186,6 +186,40 @@ def test_regeneration_reference_metadata_preserves_partitions_and_stable_ids(tmp
     assert all("data" not in json.dumps(value) for value in metadata.values())
 
 
+def test_persisted_snapshot_regeneration_reuses_complete_image_partitions(tmp_path):
+    import importlib
+
+    main = importlib.import_module("app.main")
+    sources = []
+    for index, role in enumerate(("brand_identity", "product", "brand_identity", "product")):
+        path = tmp_path / f"mandatory-{index}.png"
+        path.write_bytes(f"mandatory-{index}".encode())
+        sources.append(pack_item(f"pack-{index}", role, f"mandatory-{index}", selection_mode="mandatory", stored_path=str(path)))
+    for index in range(4):
+        path = tmp_path / f"manual-{index}.png"
+        path.write_bytes(f"manual-{index}".encode())
+        sources.append(item("campaign_reference", f"manual-{index}", f"manual-{index}.png", mime_type="image/png", stored_path=str(path)))
+    for index in range(4):
+        path = tmp_path / f"rag-{index}.png"
+        path.write_bytes(f"rag-{index}".encode())
+        sources.append(item("industry_attribute_rag", f"rag-{index}", f"rag-{index}.png", mime_type="image/png", stored_path=str(path), score=str(index), role="style"))
+
+    snapshot = assemble_generation_context(campaign(), sources, [], [], 100, run_id="reviewed-run")
+    persisted_snapshot = snapshot.__class__(
+        **{**snapshot.__dict__, "image_reference_ids": (), "image_reference_partitions": {}}
+    )
+
+    references, audit = main.build_image_reference_payload(persisted_snapshot, "different-run")
+
+    assert snapshot.image_reference_ids
+    assert set(snapshot.image_reference_ids) == set(audit["selected_reference_ids"])
+    assert [reference["reference_id"] for reference in references] == list(snapshot.image_reference_ids)
+    assert len(references) <= 12
+    assert len(snapshot.image_reference_partitions["mandatory"]) == 4
+    assert len(snapshot.image_reference_partitions["user"]) == 3
+    assert len(snapshot.image_reference_partitions["rag"]) == 3
+
+
 def test_active_pack_loading_preserves_persisted_item_metadata(monkeypatch):
     import importlib
 

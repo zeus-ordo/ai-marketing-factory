@@ -68,6 +68,8 @@ class GenerationContextSnapshot:
     run_id: str | None = None
     selected_reference_ids: tuple[str, ...] = ()
     matched_folder_names: tuple[str, ...] = ()
+    image_reference_ids: tuple[str, ...] = ()
+    image_reference_partitions: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def estimate_tokens(text: str) -> int:
@@ -151,12 +153,54 @@ def select_image_reference_partitions(
     return mandatory, user, rag
 
 
+def snapshot_image_reference_selection(snapshot: GenerationContextSnapshot) -> dict[str, Any] | None:
+    """Read persisted image partitions, including metadata markers from legacy loads."""
+    partitions = {
+        str(key): [str(item_id) for item_id in value]
+        for key, value in (snapshot.image_reference_partitions or {}).items()
+    }
+    if not partitions:
+        for item in snapshot.items:
+            partition = item.metadata.get("image_reference_partition")
+            if item.metadata.get("image_reference_selected") is True and isinstance(partition, str):
+                try:
+                    position = int(item.metadata.get("image_reference_position", len(partitions.get(partition, ()))))
+                except (TypeError, ValueError):
+                    position = len(partitions.get(partition, ()))
+                partitions.setdefault(partition, []).append((
+                    position,
+                    item.source_id,
+                ))
+        partitions = {
+            key: [item_id for _, item_id in sorted(value)]
+            for key, value in partitions.items()
+        }
+    ids = list(snapshot.image_reference_ids)
+    if not ids:
+        ids = [item_id for partition in partitions.values() for item_id in partition]
+    if not ids:
+        return None
+    partition_limits = {"mandatory": MANDATORY_PACK_IMAGE_LIMIT, "user": USER_REFERENCE_IMAGE_LIMIT, "rag": RAG_VISUAL_ANCHOR_LIMIT}
+    bounded_partitions: dict[str, list[str]] = {}
+    partition_order = [*partition_limits, *(key for key in partitions if key not in partition_limits)]
+    for key in partition_order:
+        value = partitions.get(key, [])
+        bounded_partitions[key] = list(value[:partition_limits.get(key, IMAGE_REFERENCE_TOTAL_LIMIT)])
+    bounded_ids = [item_id for partition in bounded_partitions.values() for item_id in partition]
+    bounded_ids.extend(item_id for item_id in ids if item_id not in bounded_ids)
+    ids = list(dict.fromkeys(bounded_ids))[:IMAGE_REFERENCE_TOTAL_LIMIT]
+    return {"selected_reference_ids": ids, "image_reference_partitions": bounded_partitions}
+
+
 def build_regeneration_reference_metadata(
     snapshot: GenerationContextSnapshot,
     run_id: str | None = None,
     persisted_selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the original image partitions without transient attachment data."""
+    stored_selection = snapshot_image_reference_selection(snapshot)
+    if persisted_selection is None:
+        persisted_selection = stored_selection
     persisted_ids = persisted_selection.get("selected_reference_ids") if persisted_selection is not None else None
     persisted_partitions = persisted_selection.get("partitions") if persisted_selection is not None else None
     if not isinstance(persisted_ids, (list, tuple)) and isinstance(persisted_partitions, Mapping):
@@ -505,6 +549,7 @@ def assemble_generation_context(
     industry_items: list[ContextSourceItem],
     external_items: list[ContextSourceItem],
     total_budget: int,
+    run_id: str | None = None,
 ) -> GenerationContextSnapshot:
     internal_budget = max(0, floor(total_budget * 0.75))
     external_budget = max(0, total_budget - internal_budget)
@@ -525,6 +570,37 @@ def assemble_generation_context(
             external_used += tokens
     items = [*internal, *external]
     total_used = internal_used + external_used
+    mandatory_images, user_images, rag_images = select_image_reference_partitions(items, campaign.campaign_id, run_id or "")
+    image_partitions = {
+        "mandatory": tuple(item.source_id for item in mandatory_images),
+        "user": tuple(item.source_id for item in user_images),
+        "rag": tuple(item.source_id for item in rag_images),
+    }
+    partition_by_id = {
+        item_id: partition
+        for partition, item_ids in image_partitions.items()
+        for item_id in item_ids
+    }
+    image_reference_position = {
+        item_id: position
+        for position, item_id in enumerate(item_id for item_ids in image_partitions.values() for item_id in item_ids)
+    }
+    items = tuple(
+        ContextSourceItem(
+            item.source_type,
+            item.source_id,
+            item.label,
+            item.text,
+            {
+                **dict(item.metadata),
+                "image_reference_partition": partition_by_id[item.source_id],
+                "image_reference_selected": True,
+                "image_reference_position": image_reference_position[item.source_id],
+            } if item.source_id in partition_by_id else dict(item.metadata),
+            item.transient_stored_path,
+        )
+        for item in items
+    )
     return GenerationContextSnapshot(
         generation_context_id=f"gctx_{uuid4().hex[:12]}",
         campaign_id=campaign.campaign_id,
@@ -536,4 +612,6 @@ def assemble_generation_context(
         external_source_urls=tuple(str(item.metadata.get("url") or "") for item in external if item.metadata.get("url")),
         selected_reference_ids=tuple(item.source_id for item in selected_items if item.source_type in {"user_selected", "immediate_upload", "campaign_reference"}),
         matched_folder_names=tuple(dict.fromkeys(str(item.metadata.get("folder") or item.metadata.get("folder_name") or "") for item in industry_items if item.metadata.get("folder") or item.metadata.get("folder_name"))),
+        image_reference_ids=tuple(item_id for partition in image_partitions.values() for item_id in partition),
+        image_reference_partitions=image_partitions,
     )
