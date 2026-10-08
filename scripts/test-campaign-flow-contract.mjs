@@ -5,6 +5,7 @@ const campaignPage = await readFile(new URL("app/campaigns/page.tsx", root), "ut
 const reviewPage = await readFile(new URL("app/review/page.tsx", root), "utf8");
 const api = await readFile(new URL("lib/api/campaigns.ts", root), "utf8");
 for (const [source, needle, message] of [
+  [campaignPage, "!regenerateSubmittedAssetIds.has(asset.id)", "Submitted assets must be excluded from the regenerate action"],
   [campaignPage, "generation_context_id", "Campaign page must display generation_context_id"],
   [campaignPage, "retryCampaignTask", "Campaign page must expose task retry"],
   [reviewPage, "internal_ratio", "Review page must display internal_ratio"],

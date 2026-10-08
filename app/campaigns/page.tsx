@@ -260,6 +260,7 @@ export default function CampaignCenterPage() {
   const [editAssets, setEditAssets] = useState<EditAssetRow[]>([]);
   const [editAssetsLoading, setEditAssetsLoading] = useState(false);
   const [regenerateTarget, setRegenerateTarget] = useState<EditAssetRow | null>(null);
+  const [regenerateSubmittedAssetIds, setRegenerateSubmittedAssetIds] = useState<Set<string>>(new Set());
   const [regenerateReason, setRegenerateReason] = useState("");
   const [regenerateInstruction, setRegenerateInstruction] = useState("");
   const [regenerateBusy, setRegenerateBusy] = useState(false);
@@ -1007,6 +1008,11 @@ export default function CampaignCenterPage() {
         reject_reason: reason,
         user_instruction: regenerateInstruction.trim(),
         operator: "operator",
+      });
+      setRegenerateSubmittedAssetIds((submittedAssetIds) => {
+        const nextSubmittedAssetIds = new Set(submittedAssetIds);
+        nextSubmittedAssetIds.add(regenerateTarget.id);
+        return nextSubmittedAssetIds;
       });
       setMessage("重新生成工單已送出，新的素材會進入審核。");
       setRegenerateReason("");
@@ -2100,7 +2106,7 @@ export default function CampaignCenterPage() {
                               >
                                 下載
                               </button>
-                              {asset.status === "rejected" && isLatestEditAsset(asset, editAssets) ? (
+                              {asset.status === "rejected" && isLatestEditAsset(asset, editAssets) && !regenerateSubmittedAssetIds.has(asset.id) ? (
                               <button
                                 type="button"
                                 onClick={() => openRegenerateWorkOrder(asset)}
