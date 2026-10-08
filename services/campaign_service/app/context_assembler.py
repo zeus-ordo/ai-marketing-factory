@@ -151,6 +151,79 @@ def select_image_reference_partitions(
     return mandatory, user, rag
 
 
+def build_regeneration_reference_metadata(
+    snapshot: GenerationContextSnapshot,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Describe the original image partitions without transient attachment data."""
+    mandatory, user, anchors = select_image_reference_partitions(
+        list(snapshot.items), snapshot.campaign_id, run_id or snapshot.run_id or ""
+    )
+    selected_ids = {item.source_id for item in (*mandatory, *user, *anchors)}
+    image_items = [
+        item for item in snapshot.items
+        if str(
+            item.metadata.get("mime_type")
+            or item.metadata.get("file_type")
+            or item.metadata.get("content_type")
+            or ""
+        ).lower().startswith("image/")
+    ]
+
+    def is_immutable(item: ContextSourceItem) -> bool:
+        metadata = item.metadata
+        role = str(metadata.get("pack_role") or metadata.get("role") or "").casefold()
+        protected = metadata.get("immutable") is True or metadata.get("protected") is True
+        return role in {"brand_identity", "product", "logo", "real_product"} or protected
+
+    def safe_metadata_value(value: Any) -> Any:
+        if value is None or isinstance(value, (int, float, bool)):
+            return value
+        if not isinstance(value, str):
+            return None
+        normalized = value.casefold()
+        if (
+            value.startswith(("/", "\\"))
+            or len(value) > 2 and value[1] == ":" and value[2:3] in {"/", "\\"}
+            or normalized.startswith(("file:", "private:", "storage:", "data:"))
+        ):
+            return None
+        return value
+
+    def describe(item: ContextSourceItem) -> dict[str, Any]:
+        metadata = item.metadata
+        return {
+            "reference_id": item.source_id,
+            "source_type": item.source_type,
+            "file_name": item.label,
+            "mime_type": safe_metadata_value(metadata.get("mime_type") or metadata.get("file_type") or metadata.get("content_type")),
+            "folder": safe_metadata_value(metadata.get("folder") or metadata.get("folder_name")),
+            "reference_pack_id": safe_metadata_value(metadata.get("pack_id")),
+            "pack_role": safe_metadata_value(metadata.get("pack_role")),
+            "role": safe_metadata_value(metadata.get("role")),
+            "analysis_version": safe_metadata_value(metadata.get("analysis_version")),
+            "similarity": safe_metadata_value(metadata.get("score")),
+            "selection_reason": safe_metadata_value(metadata.get("selection_reason")),
+            "selected": item.source_id in selected_ids,
+            "provenance": "immutable" if is_immutable(item) else "adjustable",
+        }
+
+    described = [describe(item) for item in image_items]
+    described = [
+        {key: value for key, value in item.items() if value is not None}
+        for item in described
+    ]
+    immutable = [item for item in described if item["provenance"] == "immutable"]
+    adjustable = [item for item in described if item["provenance"] == "adjustable"]
+    return {
+        "immutable": immutable,
+        "adjustable": adjustable,
+        "immutable_reference_ids": [item["reference_id"] for item in immutable],
+        "adjustable_reference_ids": [item["reference_id"] for item in adjustable],
+        "selected_reference_ids": [item.source_id for item in (*mandatory, *user, *anchors)],
+    }
+
+
 def build_generation_reference_payload(
     snapshot: GenerationContextSnapshot,
     task_type: str,

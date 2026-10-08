@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import app.context_assembler as context_assembler
 from app.context_assembler import (
     ContextSourceItem,
     assemble_generation_context,
@@ -149,6 +150,40 @@ def test_reference_pack_selection_ignores_whitespace_only_pack_id():
     )
 
     assert selected == ()
+
+
+def test_regeneration_reference_metadata_preserves_partitions_and_stable_ids(tmp_path):
+    paths = {}
+    for name in ("brand", "product", "style", "rag"):
+        path = tmp_path / f"{name}.png"
+        path.write_bytes(name.encode())
+        paths[name] = str(path)
+    sources = [
+        pack_item("brand", "brand_identity", "brand-1", selection_mode="mandatory", stored_path=paths["brand"]),
+        pack_item("product", "product", "product-1", selection_mode="mandatory", stored_path=paths["product"]),
+        pack_item("style", "style", "style-1", stored_path=paths["style"]),
+        item(
+            "industry_attribute_rag",
+            "rag-1",
+            "",
+            mime_type="image/png",
+            stored_path=paths["rag"],
+            score="0.9",
+            selection_reason="visual_anchor",
+            role="style",
+        ),
+    ]
+    snapshot = assemble_generation_context(campaign(), sources, [], [], 100)
+
+    builder = getattr(context_assembler, "build_regeneration_reference_metadata", None)
+    assert callable(builder), "regeneration reference metadata helper is required"
+    metadata = builder(snapshot)
+
+    assert metadata["immutable_reference_ids"] == ["brand-1", "product-1"]
+    assert metadata["adjustable_reference_ids"] == ["style-1", "rag-1"]
+    assert metadata["selected_reference_ids"] == ["brand-1", "product-1", "rag-1"]
+    assert all("stored_path" not in json.dumps(value) for value in metadata.values())
+    assert all("data" not in json.dumps(value) for value in metadata.values())
 
 
 def test_active_pack_loading_preserves_persisted_item_metadata(monkeypatch):
@@ -487,7 +522,23 @@ def test_image_payload_contains_reference_audit_and_sanitized_persisted_context(
             "sha256": "4110dd12af975f556bdac0299d0bfa04d42fa22d94f56b8550f1762e48fff7fb",
             "source_type": "campaign_reference",
             "selection_reason": "user_reference",
+            "provenance": "adjustable",
         }],
+        "immutable_reference_ids": [],
+        "adjustable_reference_ids": ["ref-1"],
+        "selected_reference_ids": ["ref-1"],
+        "partitions": {
+            "immutable": [],
+            "adjustable": [{
+                "reference_id": "ref-1",
+                "source_type": "campaign_reference",
+                "file_name": "ref-1",
+                "mime_type": "image/png",
+                "folder": "General",
+                "selected": True,
+                "provenance": "adjustable",
+            }],
+        },
     }
 
     captured = {}
@@ -712,3 +763,62 @@ def test_review_regeneration_uses_snapshot_for_image_and_ads(monkeypatch):
     main._perform_asset_regeneration(request, "asset")
     assert captured["payload"]["generation_context_id"] == new_snapshot.generation_context_id
     assert "NEW REVIEW SNAPSHOT" in captured["payload"]["prompt"]
+
+
+def test_review_image_regeneration_reuses_snapshot_reference_images_and_audit(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
+    import importlib
+    from starlette.requests import Request
+    from app.schemas import AssetOutput
+
+    main = importlib.import_module("app.main")
+    monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
+    reference_path = tmp_path / "brand.png"
+    reference_path.write_bytes(b"brand-image")
+    snapshot = assemble_generation_context(
+        campaign(),
+        [item(
+            "platform_default",
+            "brand-1",
+            "brand.png",
+            pack_id="brand",
+            pack_role="brand_identity",
+            selection_mode="mandatory",
+            mime_type="image/png",
+            stored_path=str(reference_path),
+        )],
+        [],
+        [],
+        100,
+    )
+    main.generation_context_cache.clear()
+    main.generation_context_run_cache.clear()
+    main.cache_generation_context(snapshot, "run-1")
+    asset = AssetOutput(
+        company_id="co-1", asset_id="asset", campaign_id="camp-1", task_id="task",
+        asset_type="image", url="https://old", created_at=datetime.now(timezone.utc), run_id="run-1",
+    )
+
+    class Persistence:
+        def get_asset_output(self, asset_id): return asset
+        def get_review_item_by_asset(self, asset_id): return None
+        def list_asset_outputs(self, campaign_id): return [asset]
+        def save_asset_outputs(self, assets): pass
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main.store, "get_campaign", lambda campaign_id: campaign())
+    monkeypatch.setattr(main, "post_json", lambda url, payload: {"image_assets": [{"url": "https://new", "size": "1024x1024"}], "task_id": "task", "campaign_id": "camp-1", "provider": "p", "model_name": "m"})
+    monkeypatch.setattr(main, "cache_generated_asset_url", lambda **kwargs: (kwargs["source_url"], {"stored_path": "generated/test.png"}))
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda *args: None)
+    monkeypatch.setattr(main, "finalize_campaign_workflow", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "append_trace_event", lambda *args, **kwargs: None)
+    captured = {}
+    monkeypatch.setattr(main, "_capture_worker_payload", lambda payload, *args, **kwargs: captured.update(payload))
+
+    main._perform_asset_regeneration(
+        Request({"type": "http", "headers": [(b"x-internal-api-key", b"test-key")]}),
+        "asset",
+    )
+
+    assert captured["reference_images"][0]["reference_id"] == "brand-1"
+    assert captured["reference_audit"]["references"][0]["provenance"] == "immutable"

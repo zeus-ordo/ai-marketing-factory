@@ -70,6 +70,7 @@ from .context_assembler import (
     GenerationContextSnapshot,
     assemble_generation_context,
     build_generation_reference_payload,
+    build_regeneration_reference_metadata,
     build_structured_attribute_text,
     select_image_reference_items,
     select_image_reference_partitions,
@@ -2930,6 +2931,14 @@ Reference policy:
 """.strip()
 
 
+REGENERATION_REFERENCE_POLICY = """
+Regeneration reference policy:
+1. Immutable references (Brand Identity, Product, logos, real product images, and explicitly protected user references) are source-of-truth assets and must remain unchanged.
+2. Adjustable references (Style, Composition, Campaign Examples, and RAG visual anchors) may be adapted to satisfy the user's regeneration instructions.
+3. User regeneration instructions may affect adjustable references only; never redraw, replace, omit, or alter immutable references.
+""".strip()
+
+
 def build_image_generation_prompt(campaign: CampaignRecord) -> str:
     brief = campaign.brief
     parts = [
@@ -3103,6 +3112,15 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256",
         "analysis_version", "similarity", "role",
     ) if reference.get(key) is not None} for reference in audit_references]
+    partition_metadata = build_regeneration_reference_metadata(snapshot, run_id)
+    selected_provenance = {
+        item["reference_id"]: item["provenance"]
+        for partition in (partition_metadata["immutable"], partition_metadata["adjustable"])
+        for item in partition
+        if item.get("selected")
+    }
+    for reference in audit_references:
+        reference["provenance"] = selected_provenance.get(reference["reference_id"], "adjustable")
     audit = {
         "total_limit": 12,
         "selected_count": len(selected),
@@ -3110,6 +3128,13 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "failures": failures,
         "multimodal": bool(references),
         "references": audit_references,
+        "immutable_reference_ids": partition_metadata["immutable_reference_ids"],
+        "adjustable_reference_ids": partition_metadata["adjustable_reference_ids"],
+        "selected_reference_ids": partition_metadata["selected_reference_ids"],
+        "partitions": {
+            "immutable": partition_metadata["immutable"],
+            "adjustable": partition_metadata["adjustable"],
+        },
     }
     attribute_candidate_count = sum(1 for item in snapshot.items if item.source_type == "industry_attribute_rag")
     audit.update({
@@ -5889,7 +5914,23 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             **context_payload,
         }
     elif asset.asset_type == "image":
-        base_prompt = build_image_generation_prompt(campaign) + snapshot_context + instruction_block
+        reference_images, reference_audit = build_image_reference_payload(snapshot, run_id) if snapshot else ([], {})
+        blocking_failures = [failure for failure in reference_audit.get("failures", []) if failure.get("mandatory", True)]
+        if blocking_failures:
+            _capture_worker_payload(
+                {
+                    "campaign_id": asset.campaign_id,
+                    "task_id": asset.task_id,
+                    "generation_context_id": snapshot.generation_context_id if snapshot else "",
+                    "run_id": run_id,
+                    "reference_audit": reference_audit,
+                },
+                "image_generation",
+                asset.campaign_id,
+                asset.task_id,
+            )
+            raise HTTPException(status_code=422, detail={"message": "Selected Reference images could not be attached", "failures": blocking_failures})
+        base_prompt = build_image_generation_prompt(campaign) + "\n\n" + REGENERATION_REFERENCE_POLICY + snapshot_context + instruction_block
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,
@@ -5898,6 +5939,8 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "reject_reason": reject_reason,
             "sizes": ["1024x1024"],
             "style_profile": {"tone": campaign.brief.brand_tone},
+            "reference_images": reference_images,
+            "reference_audit": reference_audit,
             **context_payload,
         }
     elif asset.asset_type == "video":
