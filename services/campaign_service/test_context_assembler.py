@@ -895,6 +895,78 @@ def test_review_image_regeneration_reuses_snapshot_reference_images_and_audit(mo
     assert captured["reference_audit"]["references"][0]["provenance"] == "immutable"
 
 
+def test_asset_regeneration_sends_complete_v2_image_payload_and_sanitizes_audit(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
+    import importlib
+    from starlette.requests import Request
+    from app.schemas import AssetOutput
+
+    main = importlib.import_module("app.main")
+    brand_path = tmp_path / "brand.png"
+    style_path = tmp_path / "style.png"
+    brand_path.write_bytes(b"brand-image")
+    style_path.write_bytes(b"style-image")
+    snapshot = assemble_generation_context(
+        campaign(),
+        [
+            item("platform_default", "brand-1", "brand.png", pack_id="brand", pack_role="brand_identity", selection_mode="mandatory", mime_type="image/png", stored_path=str(brand_path)),
+            item("campaign_reference", "style-1", "style.png", mime_type="image/png", folder="Style", stored_path=str(style_path)),
+        ],
+        [],
+        [],
+        100,
+        run_id="run-v2",
+    )
+    main.generation_context_cache.clear()
+    main.generation_context_run_cache.clear()
+    main.cache_generation_context(snapshot, "run-v2")
+    asset = AssetOutput(
+        company_id="co-1", asset_id="asset-v2", campaign_id="camp-1", task_id="task-v2",
+        asset_type="image", url="https://old", created_at=datetime.now(timezone.utc), run_id="run-v2",
+    )
+    persisted = {}
+    outbound = {}
+
+    class Persistence:
+        def get_asset_output(self, asset_id): return asset
+        def get_review_item_by_asset(self, asset_id): return None
+        def list_asset_outputs(self, campaign_id): return [asset]
+        def save_asset_outputs(self, assets): pass
+        def save_llm_generation_payload(self, value): persisted.update(value)
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main.store, "get_campaign", lambda campaign_id: campaign())
+    monkeypatch.setattr(main, "post_json", lambda url, payload: outbound.update(payload) or {"image_assets": [{"url": "https://new", "size": "1024x1024"}], "task_id": "task-v2", "campaign_id": "camp-1"})
+    monkeypatch.setattr(main, "cache_generated_asset_url", lambda **kwargs: (kwargs["source_url"], {}))
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda *args: None)
+    monkeypatch.setattr(main, "finalize_campaign_workflow", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "append_trace_event", lambda *args, **kwargs: None)
+
+    main._perform_asset_regeneration(
+        Request({"type": "http", "headers": [(b"x-internal-api-key", b"test-key")]}),
+        "asset-v2",
+    )
+
+    assert outbound["brand_context"]["project_description"] == "Launch the seasonal drink campaign"
+    assert outbound["generation_context_id"] == snapshot.generation_context_id
+    assert outbound["run_id"] == "run-v2"
+    audit = outbound["reference_audit"]
+    assert audit["immutable_reference_ids"] == ["brand-1"]
+    assert audit["adjustable_reference_ids"] == ["style-1"]
+    assert audit["partitions"]["immutable"][0]["provenance"] == "immutable"
+    assert audit["partitions"]["adjustable"][0]["provenance"] == "adjustable"
+    assert audit["generation_context_id"] == snapshot.generation_context_id
+    assert audit["project_description"] == "Launch the seasonal drink campaign"
+    assert all("data" in reference for reference in outbound["reference_images"]), "provider image contract must remain intact"
+
+    audit_text = json.dumps(audit, default=str).casefold()
+    assert all(secret not in audit_text for secret in ("bytes", "base64", "private", "stored_path"))
+    persisted_text = json.dumps(persisted["context"], default=str).casefold()
+    assert "reference_images" not in persisted_text
+    assert all(secret not in persisted_text for secret in ("bytes", "base64", "private", str(tmp_path).casefold()))
+    assert persisted["context"]["reference_audit"] == audit
+
+
 def test_regeneration_uses_persisted_selected_reference_ids_instead_of_reselection(tmp_path):
     import importlib
 
