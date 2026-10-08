@@ -340,6 +340,40 @@ test("reference audit normalization exposes fixed quota partition counts", () =>
   });
 });
 
+test("reference audit normalization retains activity context and provenance partitions", () => {
+  assert.deepEqual(normalizeReferenceAudit({
+    generation_context_id: "gctx-1",
+    brand_context: { campaign_name: "Launch", project_description: "Seasonal launch" },
+    project_description: "Seasonal launch",
+    immutable_reference_ids: ["logo-1"],
+    adjustable_reference_ids: ["style-1"],
+    partitions: {
+      immutable: [{ reference_id: "logo-1", provenance: "immutable", selected: true }],
+      adjustable: [{ reference_id: "style-1", provenance: "adjustable", selected: true }],
+    },
+    selected_count: 2,
+    attached_count: 2,
+    multimodal: true,
+    failures: [],
+    references: [],
+  }), {
+    generationContextId: "gctx-1",
+    brandContext: { campaign_name: "Launch", project_description: "Seasonal launch" },
+    projectDescription: "Seasonal launch",
+    immutableReferenceIds: ["logo-1"],
+    adjustableReferenceIds: ["style-1"],
+    partitions: {
+      immutable: [{ referenceId: "logo-1", provenance: "immutable", selected: true }],
+      adjustable: [{ referenceId: "style-1", provenance: "adjustable", selected: true }],
+    },
+    selectedCount: 2,
+    attachedCount: 2,
+    multimodal: true,
+    failures: [],
+    references: [],
+  });
+});
+
 test("reference audit binary-data removal is recursive and preserves safe metadata", () => {
   const sanitized = removeBinaryData({ data: "root-bytes", nested: [{ data: "nested-bytes", file_name: "brand.png" }], reference_audit: { sha256: "abc123" } });
   assert.deepEqual(sanitized, { nested: [{ file_name: "brand.png" }], reference_audit: { sha256: "abc123" } });

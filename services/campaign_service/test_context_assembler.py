@@ -23,6 +23,7 @@ def campaign() -> CampaignRecord:
         brief=CampaignBrief(
             campaign_name="Test",
             product_name="New drink",
+            project_description="Launch the seasonal drink campaign",
             industry_category="Restaurant",
             objective="awareness",
             target_audience=TargetAudience(age_range="25-40", gender="all", persona="foodie"),
@@ -529,6 +530,10 @@ def test_image_payload_contains_reference_audit_and_sanitized_persisted_context(
 
     assert payload["reference_images"][0]["reference_id"] == "ref-1"
     assert payload["reference_images"][0]["data"]
+    assert payload["brand_context"]["project_description"] == "Launch the seasonal drink campaign"
+    assert payload["reference_audit"]["generation_context_id"] == snapshot.generation_context_id
+    assert payload["reference_audit"]["brand_context"] == payload["brand_context"]
+    assert payload["reference_audit"]["project_description"] == "Launch the seasonal drink campaign"
     assert payload["reference_audit"] == {
         "total_limit": 12,
         "selected_count": 1,
@@ -560,6 +565,9 @@ def test_image_payload_contains_reference_audit_and_sanitized_persisted_context(
         }],
         "immutable_reference_ids": [],
         "adjustable_reference_ids": ["ref-1"],
+        "generation_context_id": snapshot.generation_context_id,
+        "brand_context": payload["brand_context"],
+        "project_description": "Launch the seasonal drink campaign",
         "selected_reference_ids": ["ref-1"],
         "partitions": {
             "immutable": [],

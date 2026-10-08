@@ -2977,6 +2977,36 @@ REGENERATION_IMMUTABLE_REMINDER = (
 )
 
 
+def build_campaign_brand_context(campaign: CampaignRecord) -> dict[str, Any]:
+    brief = campaign.brief
+    return {
+        "campaign_name": brief.campaign_name,
+        "product_name": brief.product_name,
+        "industry_category": getattr(brief, "industry_category", ""),
+        "project_description": getattr(brief, "project_description", "") or getattr(brief, "description", ""),
+        "objective": brief.objective,
+        "platforms": brief.platforms,
+        "brand_tone": brief.brand_tone,
+        "target_audience": brief.target_audience.model_dump(mode="json"),
+        "budget": brief.budget,
+        "deadline": brief.deadline.isoformat() if hasattr(brief.deadline, "isoformat") else str(brief.deadline),
+    }
+
+
+def attach_image_activity_context(
+    campaign: CampaignRecord,
+    snapshot: GenerationContextSnapshot,
+    reference_audit: dict[str, Any],
+) -> dict[str, Any]:
+    brand_context = build_campaign_brand_context(campaign)
+    reference_audit.update({
+        "generation_context_id": snapshot.generation_context_id,
+        "brand_context": brand_context,
+        "project_description": brand_context["project_description"],
+    })
+    return brand_context
+
+
 def build_image_generation_prompt(campaign: CampaignRecord) -> str:
     brief = campaign.brief
     parts = [
@@ -3254,6 +3284,7 @@ def build_worker_payload_for_task(
     task_model = task.get("model") if isinstance(task, dict) else task.model
     task_run_id = task.get("run_id") if isinstance(task, dict) else task.run_id
     reference_images, reference_audit = build_image_reference_payload(snapshot, task_run_id) if task_type == "image_generation" and snapshot else ([], {})
+    brand_context = attach_image_activity_context(campaign, snapshot, reference_audit) if task_type == "image_generation" and snapshot else {}
     blocking_failures = [failure for failure in reference_audit.get("failures", []) if failure.get("mandatory", True)]
     if blocking_failures:
         _capture_worker_payload(
@@ -3307,6 +3338,7 @@ def build_worker_payload_for_task(
             "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
             "reference_images": reference_images,
             "reference_audit": reference_audit,
+            "brand_context": brand_context,
             **context_payload,
         }
     if task_type == "video_generation":
@@ -5985,6 +6017,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             run_id,
             snapshot_image_reference_selection(snapshot) if snapshot else None,
         ) if snapshot else ([], {})
+        brand_context = attach_image_activity_context(campaign, snapshot, reference_audit) if snapshot else {}
         blocking_failures = [failure for failure in reference_audit.get("failures", []) if failure.get("mandatory", True)]
         if blocking_failures:
             _capture_worker_payload(
@@ -6019,6 +6052,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             "style_profile": {"tone": campaign.brief.brand_tone},
             "reference_images": reference_images,
             "reference_audit": reference_audit,
+            "brand_context": brand_context,
             **context_payload,
         }
     elif asset.asset_type == "video":
