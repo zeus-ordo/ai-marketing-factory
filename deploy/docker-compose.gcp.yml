@@ -34,13 +34,28 @@ services:
       - MEMBERSHIP_API_BASE=http://membership-service:8095
     restart: unless-stopped
 
+  context-viewer:
+    build:
+      context: ../context-viewer
+      dockerfile: Dockerfile
+    env_file:
+      - /opt/ai-marketing-factory/.env.context-viewer
+    ports:
+      - "3010:3000"
+    restart: unless-stopped
+
   campaign-service:
     build: ../services/campaign_service
     env_file:
       - ../.env.local
+    environment:
+      - EXTERNAL_SEARCH_PROVIDER=${EXTERNAL_SEARCH_PROVIDER:-disabled}
+      - EXTERNAL_SEARCH_API_KEY=${EXTERNAL_SEARCH_API_KEY:-}
+      - EXTERNAL_SEARCH_ENGINE_ID=${EXTERNAL_SEARCH_ENGINE_ID:-}
     volumes:
       - campaign_references:/app/campaign_references
       - generated_assets:/app/generated_assets
+      - knowledge_uploads:/app/knowledge_uploads
     restart: unless-stopped
     depends_on:
       decision-service:
@@ -66,6 +81,8 @@ services:
     build: ../services/orchestrator
     env_file:
       - ../.env.local
+    environment:
+      - WORKER_ENRICHMENT_URL=http://worker-enrichment:8093
     restart: unless-stopped
 
   worker-copy:
@@ -95,7 +112,37 @@ services:
       - ../.env.local
     restart: unless-stopped
 
+  worker-enrichment:
+    build: ../services/worker_enrichment
+    expose:
+      - "8093"
+    volumes:
+      - knowledge_uploads:/app/knowledge_uploads:ro
+    env_file:
+      - ../.env.local
+    environment:
+      - CAMPAIGN_DATABASE_URL=${POSTGRES_DSN:?POSTGRES_DSN must be set}
+      - CHATBOT_INTERNAL_API_KEY=${CHATBOT_INTERNAL_API_KEY:?CHATBOT_INTERNAL_API_KEY must be set}
+      - IMAGE_ANALYSIS_PROVIDER=${IMAGE_ANALYSIS_PROVIDER:-}
+      - IMAGE_ANALYSIS_BASE_URL=${IMAGE_ANALYSIS_BASE_URL:-http://multimodal-provider:8080}
+      - IMAGE_ANALYSIS_MODEL=${IMAGE_ANALYSIS_MODEL:-vision-model}
+      - IMAGE_ANALYSIS_API_KEY=${IMAGE_ANALYSIS_API_KEY:-}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://embedding-provider:8080}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-embedding-model}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_ANALYSIS_MODEL=${GEMINI_ANALYSIS_MODEL:-gemini-3.8-flash}
+      - GEMINI_EMBEDDING_MODEL=${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
+      - GEMINI_API_BASE_URL=${GEMINI_API_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+      - IMAGE_ANALYSIS_VERSION=${IMAGE_ANALYSIS_VERSION:-image-rag-v1}
+    depends_on:
+      campaign-service:
+        condition: service_started
+    restart: unless-stopped
+
 volumes:
   caddy_data:
   campaign_references:
   generated_assets:
+  knowledge_uploads:

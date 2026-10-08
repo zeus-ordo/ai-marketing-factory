@@ -48,11 +48,12 @@ async def accept_invitation(req: InvitationAcceptRequest, token: str):
 
     # Verify and assign role
     from app.database import get_connection
-    async with get_connection() as conn:
-        await conn.execute(
-            "UPDATE members SET email_verified = TRUE WHERE member_id = $1",
-            member_id,
-        )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE members SET email_verified = TRUE WHERE member_id = %s",
+                (member_id,),
+            )
 
     await role_repo.assign_to_member(member_id, inv["role_id"])
     await invitation_repo.accept(token)

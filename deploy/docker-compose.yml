@@ -6,8 +6,8 @@ services:
     env_file:
       - ../.env.local
     environment:
-      - JWT_SECRET=mf_jwt_2026_5a9f8c4d71b24f0ab1c9d2e3f4a6b8c1
-      - MEMBERSHIP_DB_DSN=postgresql://app:password@postgres:5432/membership
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - MEMBERSHIP_DB_DSN=postgresql://app:${MEMBERSHIP_DB_PASSWORD:?MEMBERSHIP_DB_PASSWORD must be set}@postgres:5432/membership
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,11 +50,12 @@ services:
     volumes:
       - ../campaign_references:/app/campaign_references
       - ../generated_assets:/app/generated_assets
+      - ../knowledge_uploads:/app/knowledge_uploads
     env_file:
       - ../.env.example
       - ../.env.local
     environment:
-      - JWT_SECRET=mf_jwt_2026_5a9f8c4d71b24f0ab1c9d2e3f4a6b8c1
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,6 +93,8 @@ services:
     env_file:
       - ../.env.example
       - ../.env.local
+    environment:
+      - WORKER_ENRICHMENT_URL=http://worker-enrichment:8093
     depends_on:
       redis:
         condition: service_healthy
@@ -125,6 +128,7 @@ services:
     env_file:
       - ../.env.example
       - ../.env.local
+      - ../.env.video.local
 
   worker-ads:
     build: ../services/worker_ads
@@ -133,12 +137,46 @@ services:
     env_file:
       - ../.env.example
 
+  worker-enrichment:
+    build: ../services/worker_enrichment
+    expose:
+      - "8093"
+    volumes:
+      - ../knowledge_uploads:/app/knowledge_uploads:ro
+    env_file:
+      - ../.env.example
+      - ../.env.local
+    environment:
+      - CAMPAIGN_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/marketing_ai
+      - CHATBOT_INTERNAL_API_KEY=${CHATBOT_INTERNAL_API_KEY:?CHATBOT_INTERNAL_API_KEY must be set}
+      - IMAGE_ANALYSIS_PROVIDER=${IMAGE_ANALYSIS_PROVIDER:-}
+      - IMAGE_ANALYSIS_BASE_URL=${IMAGE_ANALYSIS_BASE_URL:-http://multimodal-provider:8080}
+      - IMAGE_ANALYSIS_MODEL=${IMAGE_ANALYSIS_MODEL:-vision-model}
+      - IMAGE_ANALYSIS_API_KEY=${IMAGE_ANALYSIS_API_KEY:-}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://embedding-provider:8080}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-embedding-model}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_ANALYSIS_MODEL=${GEMINI_ANALYSIS_MODEL:-gemini-3.8-flash}
+      - GEMINI_EMBEDDING_MODEL=${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
+      - GEMINI_API_BASE_URL=${GEMINI_API_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+      - IMAGE_ANALYSIS_VERSION=${IMAGE_ANALYSIS_VERSION:-image-rag-v1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      campaign-service:
+        condition: service_started
+    restart: unless-stopped
+
   postgres:
     image: postgres:16
     environment:
       POSTGRES_DB: marketing_ai
       POSTGRES_USER: app
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     expose:
       - "5432"
     volumes:
