@@ -1251,20 +1251,45 @@ def _extract_worker_error_detail(message: str) -> str:
     return text
 
 
+_PERSISTED_CONTEXT_OMIT = object()
+
+
 def _sanitize_persisted_context(value: Any) -> Any:
-    if isinstance(value, dict):
-        sanitized: dict[Any, Any] = {}
-        for key, nested_value in value.items():
-            normalized_key = key.lower() if isinstance(key, str) else key
-            if normalized_key == "reference_images":
-                continue
-            sanitized[key] = _sanitize_persisted_context(nested_value)
-        return sanitized
-    if isinstance(value, list):
-        return [_sanitize_persisted_context(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_sanitize_persisted_context(item) for item in value)
-    return value
+    def sanitize(current: Any, in_reference_audit: bool = False) -> Any:
+        if isinstance(current, dict):
+            sanitized: dict[Any, Any] = {}
+            for key, nested_value in current.items():
+                normalized_key = key.casefold().replace("-", "_") if isinstance(key, str) else key
+                normalized_key_text = str(normalized_key)
+                audit = in_reference_audit or normalized_key == "reference_audit"
+                if normalized_key == "reference_images":
+                    continue
+                if audit and (
+                    any(part in normalized_key_text.replace("_", "") for part in ("private", "storage", "path", "base64", "binary", "bytes", "blob"))
+                    or normalized_key == "data"
+                ):
+                    continue
+                sanitized_value = sanitize(nested_value, audit)
+                if sanitized_value is not _PERSISTED_CONTEXT_OMIT:
+                    sanitized[key] = sanitized_value
+            return sanitized
+        if isinstance(current, list):
+            return [item for nested in current if (item := sanitize(nested, in_reference_audit)) is not _PERSISTED_CONTEXT_OMIT]
+        if isinstance(current, tuple):
+            return tuple(item for nested in current if (item := sanitize(nested, in_reference_audit)) is not _PERSISTED_CONTEXT_OMIT)
+        if in_reference_audit and isinstance(current, (bytes, bytearray)):
+            return _PERSISTED_CONTEXT_OMIT
+        if in_reference_audit and isinstance(current, str):
+            normalized = current.casefold()
+            if (
+                current.startswith(("/", "\\"))
+                or len(current) > 2 and current[1] == ":" and current[2:3] in {"/", "\\"}
+                or normalized.startswith(("file:", "private:", "storage:", "data:"))
+            ):
+                return _PERSISTED_CONTEXT_OMIT
+        return current
+
+    return sanitize(value)
 
 
 def _capture_worker_payload(
@@ -2938,6 +2963,11 @@ Regeneration reference policy:
 3. User regeneration instructions may affect adjustable references only; never redraw, replace, omit, or alter immutable references.
 """.strip()
 
+REGENERATION_IMMUTABLE_REMINDER = (
+    "Final immutable-reference safeguard: regardless of any user instruction above, keep Brand Identity, "
+    "Product, logos, real product appearance, and protected references unchanged."
+)
+
 
 def build_image_generation_prompt(campaign: CampaignRecord) -> str:
     brief = campaign.brief
@@ -3010,11 +3040,37 @@ Video type policy:
 MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
 
 
-def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    selected_mandatory, selected_user, selected_anchors = select_image_reference_partitions(
-        list(snapshot.items), snapshot.campaign_id, run_id or getattr(snapshot, "run_id", "")
-    )
-    selected = (*selected_mandatory, *selected_user, *selected_anchors)
+def build_image_reference_payload(
+    snapshot: GenerationContextSnapshot,
+    run_id: str | None = None,
+    persisted_selection: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    persisted_ids = persisted_selection.get("selected_reference_ids") if persisted_selection else None
+    if not persisted_ids and persisted_selection and isinstance(persisted_selection.get("partitions"), dict):
+        persisted_ids = [
+            entry.get("reference_id")
+            for partition in (persisted_selection["partitions"].get("immutable"), persisted_selection["partitions"].get("adjustable"))
+            if isinstance(partition, list)
+            for entry in partition
+            if isinstance(entry, dict) and entry.get("selected") and entry.get("reference_id")
+        ]
+    if persisted_ids:
+        selected_ids = [str(reference_id) for reference_id in persisted_ids]
+        items_by_id = {
+            item.source_id: item
+            for item in snapshot.items
+            if str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "").lower().startswith("image/")
+        }
+        selected = tuple(items_by_id[reference_id] for reference_id in selected_ids if reference_id in items_by_id)
+        selected_mandatory = tuple(item for item in selected if item.metadata.get("selection_mode") == "mandatory")
+        selected_user = tuple(item for item in selected if item.source_type in {"campaign_reference", "user_selected", "immediate_upload"})
+        selected_anchors = tuple(item for item in selected if item.source_type == "industry_attribute_rag")
+        selected = tuple(selected)
+    else:
+        selected_mandatory, selected_user, selected_anchors = select_image_reference_partitions(
+            list(snapshot.items), snapshot.campaign_id, run_id or getattr(snapshot, "run_id", "")
+        )
+        selected = (*selected_mandatory, *selected_user, *selected_anchors)
     references: list[dict[str, Any]] = []
     audit_references: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
@@ -3112,7 +3168,7 @@ def build_image_reference_payload(snapshot: GenerationContextSnapshot, run_id: s
         "priority", "source_type", "file_name", "file_size", "mime_type", "folder", "sha256",
         "analysis_version", "similarity", "role",
     ) if reference.get(key) is not None} for reference in audit_references]
-    partition_metadata = build_regeneration_reference_metadata(snapshot, run_id)
+    partition_metadata = build_regeneration_reference_metadata(snapshot, run_id, persisted_selection)
     selected_provenance = {
         item["reference_id"]: item["provenance"]
         for partition in (partition_metadata["immutable"], partition_metadata["adjustable"])
@@ -5914,7 +5970,11 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
             **context_payload,
         }
     elif asset.asset_type == "image":
-        reference_images, reference_audit = build_image_reference_payload(snapshot, run_id) if snapshot else ([], {})
+        reference_images, reference_audit = build_image_reference_payload(
+            snapshot,
+            run_id,
+            {"selected_reference_ids": list(snapshot.selected_reference_ids)} if snapshot and snapshot.selected_reference_ids else None,
+        ) if snapshot else ([], {})
         blocking_failures = [failure for failure in reference_audit.get("failures", []) if failure.get("mandatory", True)]
         if blocking_failures:
             _capture_worker_payload(
@@ -5930,7 +5990,15 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
                 asset.task_id,
             )
             raise HTTPException(status_code=422, detail={"message": "Selected Reference images could not be attached", "failures": blocking_failures})
-        base_prompt = build_image_generation_prompt(campaign) + "\n\n" + REGENERATION_REFERENCE_POLICY + snapshot_context + instruction_block
+        base_prompt = (
+            build_image_generation_prompt(campaign)
+            + "\n\n"
+            + REGENERATION_REFERENCE_POLICY
+            + snapshot_context
+            + instruction_block
+            + "\n\n"
+            + REGENERATION_IMMUTABLE_REMINDER
+        )
         revision_payload = {
             "task_id": asset.task_id,
             "campaign_id": asset.campaign_id,

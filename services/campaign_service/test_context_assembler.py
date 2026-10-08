@@ -596,6 +596,35 @@ def test_persisted_context_removes_nested_reference_image_data(monkeypatch):
     }
 
 
+def test_persisted_reference_audit_removes_nested_private_values(monkeypatch):
+    import importlib
+
+    main = importlib.import_module("app.main")
+    captured = {}
+
+    class Persistence:
+        def save_llm_generation_payload(self, value):
+            captured.update(value)
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    main._capture_worker_payload({
+        "reference_audit": {
+            "references": [{
+                "file_name": "/private/brand.png",
+                "folder": "C:\\private\\folder",
+                "failure": {"stored_path": "/private/failure.png", "bytes": b"secret", "base64": "c2VjcmV0"},
+            }],
+            "failures": [{"file_name": "file:///private/failure.png", "folder": "data:image/png;base64,c2VjcmV0"}],
+        },
+        "reference_images": [{"reference_id": "brand", "data": "c2VjcmV0"}],
+    }, "image_generation", "camp-1", "task-image")
+
+    serialized = json.dumps(captured["context"], default=str)
+    assert "/private/" not in serialized
+    assert "c2VjcmV0" not in serialized
+    assert "secret" not in serialized
+
+
 def test_reference_attachment_failure_is_persisted_before_generation_raises(monkeypatch, tmp_path):
     import importlib
     from fastapi import HTTPException
@@ -822,3 +851,81 @@ def test_review_image_regeneration_reuses_snapshot_reference_images_and_audit(mo
 
     assert captured["reference_images"][0]["reference_id"] == "brand-1"
     assert captured["reference_audit"]["references"][0]["provenance"] == "immutable"
+
+
+def test_regeneration_uses_persisted_selected_reference_ids_instead_of_reselection(tmp_path):
+    import importlib
+
+    main = importlib.import_module("app.main")
+    old_path = tmp_path / "old.png"
+    new_path = tmp_path / "new.png"
+    old_path.write_bytes(b"old")
+    new_path.write_bytes(b"new")
+    snapshot = assemble_generation_context(
+        campaign(),
+        [
+            item("platform_default", "old-brand", "old.png", pack_id="brand", pack_role="brand_identity", selection_mode="mandatory", mime_type="image/png", stored_path=str(old_path)),
+            item("platform_default", "new-brand", "new.png", pack_id="brand", pack_role="brand_identity", selection_mode="mandatory", mime_type="image/png", stored_path=str(new_path)),
+        ],
+        [],
+        [],
+        100,
+    )
+
+    references, audit = main.build_image_reference_payload(
+        snapshot,
+        "different-run",
+        persisted_selection={
+            "partitions": {
+                "immutable": [{"reference_id": "old-brand", "selected": True, "provenance": "immutable"}],
+                "adjustable": [],
+            },
+        },
+    )
+
+    assert [reference["reference_id"] for reference in references] == ["old-brand"]
+    assert audit["selected_reference_ids"] == ["old-brand"]
+
+
+def test_regeneration_prompt_reasserts_immutable_policy_after_user_instruction(monkeypatch, tmp_path):
+    monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
+    import importlib
+    from starlette.requests import Request
+    from app.schemas import AssetOutput
+
+    main = importlib.import_module("app.main")
+    monkeypatch.setattr(main, "CHATBOT_INTERNAL_API_KEY", "test-key")
+    image_path = tmp_path / "brand.png"
+    image_path.write_bytes(b"brand")
+    snapshot = assemble_generation_context(
+        campaign(),
+        [item("platform_default", "brand-1", "brand.png", pack_id="brand", pack_role="brand_identity", selection_mode="mandatory", mime_type="image/png", stored_path=str(image_path))],
+        [], [], 100,
+    )
+    main.cache_generation_context(snapshot, "run-1")
+    asset = AssetOutput(company_id="co-1", asset_id="asset", campaign_id="camp-1", task_id="task", asset_type="image", url="https://old", created_at=datetime.now(timezone.utc), run_id="run-1")
+
+    class Persistence:
+        def get_asset_output(self, asset_id): return asset
+        def get_review_item_by_asset(self, asset_id): return None
+        def list_asset_outputs(self, campaign_id): return [asset]
+        def save_asset_outputs(self, assets): pass
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main.store, "get_campaign", lambda campaign_id: campaign())
+    captured = {}
+    monkeypatch.setattr(main, "post_json", lambda url, payload: captured.update(payload) or {"image_assets": [{"url": "https://new", "size": "1024x1024"}], "task_id": "task", "campaign_id": "camp-1"})
+    monkeypatch.setattr(main, "cache_generated_asset_url", lambda **kwargs: (kwargs["source_url"], {}))
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda *args: None)
+    monkeypatch.setattr(main, "finalize_campaign_workflow", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "append_trace_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "_capture_worker_payload", lambda *args, **kwargs: None)
+
+    main._perform_asset_regeneration(
+        Request({"type": "http", "headers": [(b"x-internal-api-key", b"test-key")]}),
+        "asset",
+        type("Payload", (), {"reject_reason": "quality", "user_instruction": "replace the logo and change the product appearance", "operator": "admin"})(),
+    )
+
+    prompt = captured["prompt"]
+    assert prompt.index("replace the logo") < prompt.rindex("Final immutable-reference safeguard")

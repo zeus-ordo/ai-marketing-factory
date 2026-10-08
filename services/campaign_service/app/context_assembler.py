@@ -154,12 +154,39 @@ def select_image_reference_partitions(
 def build_regeneration_reference_metadata(
     snapshot: GenerationContextSnapshot,
     run_id: str | None = None,
+    persisted_selection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the original image partitions without transient attachment data."""
-    mandatory, user, anchors = select_image_reference_partitions(
-        list(snapshot.items), snapshot.campaign_id, run_id or snapshot.run_id or ""
-    )
-    selected_ids = {item.source_id for item in (*mandatory, *user, *anchors)}
+    persisted_ids = persisted_selection.get("selected_reference_ids") if persisted_selection is not None else None
+    persisted_partitions = persisted_selection.get("partitions") if persisted_selection is not None else None
+    if not isinstance(persisted_ids, (list, tuple)) and isinstance(persisted_partitions, Mapping):
+        persisted_ids = [
+            entry.get("reference_id")
+            for partition in (persisted_partitions.get("immutable"), persisted_partitions.get("adjustable"))
+            if isinstance(partition, (list, tuple))
+            for entry in partition
+            if isinstance(entry, Mapping) and entry.get("selected") and entry.get("reference_id")
+        ]
+    if persisted_selection is not None and not isinstance(persisted_ids, (list, tuple)):
+        persisted_ids = list(snapshot.selected_reference_ids) if snapshot.selected_reference_ids else []
+    persisted_ids = [str(reference_id) for reference_id in (persisted_ids or []) if reference_id]
+    if persisted_ids:
+        selected_ids = set(persisted_ids)
+        selected_items = tuple(
+            item
+            for reference_id in persisted_ids
+            for item in snapshot.items
+            if item.source_id == reference_id
+            and str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "").lower().startswith("image/")
+        )
+        mandatory = tuple(item for item in selected_items if item.metadata.get("selection_mode") == "mandatory")
+        user = tuple(item for item in selected_items if item.source_type in {"campaign_reference", "user_selected", "immediate_upload"})
+        anchors = tuple(item for item in selected_items if item.source_type == "industry_attribute_rag")
+    else:
+        mandatory, user, anchors = select_image_reference_partitions(
+            list(snapshot.items), snapshot.campaign_id, run_id or snapshot.run_id or ""
+        )
+        selected_ids = {item.source_id for item in (*mandatory, *user, *anchors)}
     image_items = [
         item for item in snapshot.items
         if str(
@@ -215,12 +242,30 @@ def build_regeneration_reference_metadata(
     ]
     immutable = [item for item in described if item["provenance"] == "immutable"]
     adjustable = [item for item in described if item["provenance"] == "adjustable"]
+    if isinstance(persisted_partitions, Mapping):
+        partition_keys = {
+            "reference_id", "source_type", "file_name", "mime_type", "folder", "reference_pack_id",
+            "pack_role", "role", "analysis_version", "similarity", "selection_reason", "selected", "provenance",
+        }
+
+        def safe_partition(item: Any) -> dict[str, Any] | None:
+            if not isinstance(item, Mapping) or not item.get("reference_id"):
+                return None
+            safe_item = {
+                key: (item[key] if key in {"selected", "provenance"} else safe_metadata_value(item.get(key)))
+                for key in partition_keys
+                if key in item
+            }
+            return {key: value for key, value in safe_item.items() if value is not None}
+
+        immutable = [item for entry in persisted_partitions.get("immutable", ()) if (item := safe_partition(entry)) is not None]
+        adjustable = [item for entry in persisted_partitions.get("adjustable", ()) if (item := safe_partition(entry)) is not None]
     return {
         "immutable": immutable,
         "adjustable": adjustable,
         "immutable_reference_ids": [item["reference_id"] for item in immutable],
         "adjustable_reference_ids": [item["reference_id"] for item in adjustable],
-        "selected_reference_ids": [item.source_id for item in (*mandatory, *user, *anchors)],
+        "selected_reference_ids": persisted_ids or [item.source_id for item in (*mandatory, *user, *anchors)],
     }
 
 
