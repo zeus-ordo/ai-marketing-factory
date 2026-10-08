@@ -52,6 +52,9 @@ if (!page.includes('{!selectedPackId ? <p')) failures.push("page must guide user
 if (!page.includes('{selectedPackId ? <><div className="border-t border-slate-200 pt-3">')) failures.push("upload controls must remain conditional on selectedPackId");
 if (!page.includes("await uploadReferencePackItems(uploadPackId, uploadStates, 3")) failures.push("existing upload API call must remain unchanged");
 if (!page.includes("preflightCampaignReferenceFiles([file], uploadPolicy)")) failures.push("existing upload validation must remain unchanged");
+if (!page.includes('<span className="truncate text-slate-900">{pack.name}</span>')) failures.push("Pack names on white cards must use text-slate-900");
+if (!page.includes('<span className="text-xs text-slate-700">{pack.is_active ? t("referencePacks.active") : t("referencePacks.inactive")}</span>')) failures.push("Pack active state on white cards must use text-slate-700");
+if (!page.includes('<span className="mt-1 block text-xs text-slate-700">{t(`referencePacks.roles.${pack.role}`)} · {pack.industry || t("referencePacks.global")} · {t("referencePacks.imageCount", { count: packCounts[pack.pack_id] ?? 0 })}</span>')) failures.push("Pack role, industry, and image count on white cards must use text-slate-700");
 
 if (failures.length) {
   console.error("[check:reference-pack-form] Contract failures:");
