@@ -1001,6 +1001,27 @@ def test_regeneration_uses_persisted_selected_reference_ids_instead_of_reselecti
     assert audit["selected_reference_ids"] == ["old-brand"]
 
 
+def test_image_reference_audit_skips_sanitized_path_like_reference_id(tmp_path):
+    import importlib
+
+    main = importlib.import_module("app.main")
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"reference-image")
+    path_like_id = str(tmp_path / "reference.png")
+    snapshot = assemble_generation_context(
+        campaign(),
+        [item("campaign_reference", path_like_id, "", mime_type="image/png", stored_path=str(image_path))],
+        [],
+        [],
+        100,
+    )
+
+    references, audit = main.build_image_reference_payload(snapshot, "run-1")
+
+    assert references[0]["reference_id"] == path_like_id
+    assert audit["references"] == []
+
+
 def test_regeneration_prompt_reasserts_immutable_policy_after_user_instruction(monkeypatch, tmp_path):
     monkeypatch.setenv("CHATBOT_INTERNAL_API_KEY", "test-key")
     import importlib

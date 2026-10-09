@@ -3235,7 +3235,10 @@ def build_image_reference_payload(
         and str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "").lower().startswith("image/")
     )
     pack_selected = pack_candidate_count > 0
-    audit_references = [_sanitize_reference_audit_record(reference) for reference in audit_references]
+    audit_references = [
+        reference for reference in (_sanitize_reference_audit_record(reference) for reference in audit_references)
+        if reference.get("reference_id")
+    ]
     failures = [_sanitize_reference_audit_record(failure, _AUDIT_REFERENCE_KEYS) for failure in failures]
     partition_metadata = build_regeneration_reference_metadata(snapshot, run_id, persisted_selection)
     partition_metadata["immutable"] = [_sanitize_reference_audit_record(item) for item in partition_metadata["immutable"]]
@@ -3255,13 +3258,13 @@ def build_image_reference_payload(
         if reference_id in safe_partition_ids
     ]
     selected_provenance = {
-        item["reference_id"]: item["provenance"]
+        item.get("reference_id"): item["provenance"]
         for partition in (partition_metadata["immutable"], partition_metadata["adjustable"])
         for item in partition
-        if item.get("selected")
+        if item.get("selected") and item.get("reference_id")
     }
     for reference in audit_references:
-        reference["provenance"] = selected_provenance.get(reference["reference_id"], "adjustable")
+        reference["provenance"] = selected_provenance.get(reference.get("reference_id"), "adjustable")
     audit = {
         "total_limit": 12,
         "selected_count": len(selected),

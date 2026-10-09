@@ -11,7 +11,7 @@ function safeDisplayString(value: unknown, fallback: string, key: string) { cons
 function safeOptionalString(value: unknown, key: string) { const result = displayOptionalString(value); return result && !unsafeString(result, key) ? result : undefined; }
 function validCount(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value >= 0; }
 function displayOptionalNumber(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
-function displayIds(value: unknown) { return Array.isArray(value) ? value.filter(item => typeof item === "string" || typeof item === "number").map(String) : undefined; }
+function displayIds(value: unknown) { return Array.isArray(value) ? value.filter(item => typeof item === "string" || typeof item === "number").map(String).filter(item => !unsafeString(item, "reference_id")) : undefined; }
 function partition(value: unknown): ReferenceAuditPartition[] { return Array.isArray(value) ? value.filter(isRecord).map(item => ({ referenceId: safeDisplayString(item.reference_id, "Unknown reference", "reference_id"), ...(item.provenance === "immutable" || item.provenance === "adjustable" ? { provenance: item.provenance } : {}), ...(typeof item.selected === "boolean" ? { selected: item.selected } : {}) })) : []; }
 function provenance(value: Record<string, unknown>) {
   const packId = safeOptionalString(value.reference_pack_id, "reference_pack_id");

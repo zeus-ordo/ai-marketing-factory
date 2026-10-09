@@ -374,6 +374,21 @@ test("reference audit normalization retains activity context and provenance part
   });
 });
 
+test("reference audit ID lists remove unsafe path, data URI, and base64 values", () => {
+  const audit = normalizeReferenceAudit({
+    immutable_reference_ids: ["logo-1", "C:\\private\\logo.png", "data:image/png;base64,ZmFrZQ==", "cmF3LWJ5dGVzLWV4dHJh"],
+    adjustable_reference_ids: ["style-1", "/private/style.png", "data:text/plain,unsafe", "YWJjZGVmZ2hpamtsbW5vcA=="],
+    selected_count: 2,
+    attached_count: 2,
+    multimodal: true,
+    failures: [],
+    references: [],
+  });
+
+  assert.deepEqual(audit?.immutableReferenceIds, ["logo-1"]);
+  assert.deepEqual(audit?.adjustableReferenceIds, ["style-1"]);
+});
+
 test("reference audit binary-data removal is recursive and preserves safe metadata", () => {
   const sanitized = removeBinaryData({ data: "root-bytes", nested: [{ data: "nested-bytes", file_name: "brand.png" }], reference_audit: { sha256: "abc123" } });
   assert.deepEqual(sanitized, { nested: [{ file_name: "brand.png" }], reference_audit: { sha256: "abc123" } });
