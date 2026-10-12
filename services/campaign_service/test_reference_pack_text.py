@@ -76,6 +76,25 @@ def test_markdown_reference_pack_upload_persists_without_image_analysis(monkeypa
     assert persistence.items[-1]["reference_pack_id"] == "pack-2"
 
 
+def test_octet_stream_text_upload_normalizes_file_type_in_response_and_persistence(monkeypatch, tmp_path):
+    persistence = Persistence()
+    monkeypatch.setattr(main, "persistence", persistence)
+    monkeypatch.setattr(main, "KNOWLEDGE_UPLOADS_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
+    monkeypatch.setattr(main, "_get_pack_or_404", lambda _pack_id: object())
+
+    content = "# Campaign notes\n".encode("utf-8")
+    response = TestClient(main.app).post(
+        "/api/v1/reference-packs/pack-3/items/upload",
+        data={"title": "Campaign notes"},
+        files={"file": ("campaign-notes.md", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["file_type"] == "text/markdown"
+    assert persistence.items[-1]["metadata"]["file_type"] == "text/markdown"
+
+
 @pytest.mark.parametrize("name", ["brief.docx", "brief.pdf", "brief.exe"])
 def test_reference_pack_upload_rejects_unsupported_text_formats(monkeypatch, tmp_path, name):
     monkeypatch.setattr(main, "KNOWLEDGE_UPLOADS_DIR", str(tmp_path))

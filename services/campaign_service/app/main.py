@@ -6795,6 +6795,8 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
     upload_kind = _reference_pack_upload_kind(original_name, file_type)
     if upload_kind is None:
         raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
+    if upload_kind == "text" and file_type == "application/octet-stream":
+        file_type = "text/plain" if os.path.splitext(original_name)[1].lower() == ".txt" else "text/markdown"
     item_id = f"kh_{uuid4().hex[:12]}"
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", original_name).strip("._") or "reference.png"
     target_dir = os.path.abspath(os.path.join(KNOWLEDGE_UPLOADS_DIR, "platform"))
