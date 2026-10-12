@@ -1,0 +1,115 @@
+# Task 5 Rollout Report
+
+## Changed Files
+
+- `tests_e2e/test_image_generation_and_batch_upload.py`
+- `docs/release/deployment-checklist.md`
+- `docs/release/complete-campaign-flow-runbook.md`
+- `docs/release/image-generation-and-batch-upload-runbook.md`
+- `.superpowers/sdd/2026-09-06-image-generation-and-batch-upload-hardening/task-5-report.md`
+
+## Offline Commands And Results
+
+- `python -m pytest tests_e2e/test_image_generation_and_batch_upload.py -q` -> `7 passed, 2 warnings` (1-, 2-, and 10-file deterministic batches included).
+- `python -m pytest services/worker_image -q` -> `27 passed`.
+- `python -m pytest services/campaign_service -q` -> `141 passed, 1 skipped, 2 failed`.
+- `npm run lint` -> passed with 11 existing warnings, 0 errors.
+- `npm run build` -> passed; Next.js production build completed.
+- `git diff --check` -> passed with no whitespace errors.
+- `python -m pytest -q` -> collection failed with 6 import errors from service-local `app` module collisions.
+
+## Full-Suite Failures
+
+- `services/campaign_service/test_campaign_validation.py::test_invalid_campaign_is_not_persisted` returned 401 instead of 422 because the test request did not satisfy the current internal-auth path.
+- `services/campaign_service/test_context_assembler.py::test_review_regeneration_uses_snapshot_for_image_and_ads` attempted an unmocked `https://new` fetch and then had no saved asset.
+
+These failures were reported separately and were not hidden by narrowing the commands.
+
+The unscoped `python -m pytest -q` full-suite collection also failed because
+service-local `app` modules collide when pytest is run from the repository
+root. It reported six collection errors in orchestrator, worker-image, and
+E2E modules, including `ModuleNotFoundError`/wrong-module imports. This is a
+repository test-isolation limitation, not a passing full suite.
+
+## Backup And Deployment
+
+- Current approved branch commit observed before this task: `830a19530a63e96f70643631035d4ad641fef96c`.
+- Backup verification command: `gcloud sql backups list --project=market-factory --instance=ai-marketing-postgres --limit=1 --format="table(id,status,description)"`.
+- Latest existing backup observed: ID `1788632243840`, status `SUCCESSFUL`, description `permissions-folder-scope-pre-deploy-2026-09-06-fd3bfe6`.
+- Task-specific backup: not created. No production persistence/schema change or production deployment was performed because the worktree contains an unrelated uncommitted `services/campaign_service/app/persistence.py` change and no safe approved deployment handoff was available.
+- Deployed commit: not deployed.
+
+## Local Health And Smoke
+
+- `docker compose -f deploy/docker-compose.gcp.yml ps` -> all listed Compose services were `Up`; PostgreSQL and Redis were `healthy`.
+- Campaign, decision, orchestrator, and worker-image `/health` requests -> `{"status":"ok"}`.
+- `curl -fsS http://127.0.0.1/` -> public frontend response redirected unauthenticated traffic to `/dashboard`; no authenticated account smoke was run.
+- Neutral live provider smoke: not run. No safe provider/account smoke credentials and approved neutral account were supplied; no provider result is claimed.
+- 1-, 2-, and 10-file live upload batches: not run against production. Offline deterministic coverage verifies the failure/retry gate and restart readability.
+
+## Limitations
+
+Live GCP deployment, Cloud SQL task-specific backup creation, provider smoke, and authenticated upload batches remain pending an approved clean deployment commit and safe provider/account access. Local stores were preserved.
+
+## Review Remediation
+
+- Batch-blocking coverage now invokes the production `isCampaignStartEnabled` application seam through the TypeScript module. Partial failures cover 2- and 10-file batches; a separate 1-file successful upload case permits start.
+- Retry coverage performs real upload endpoint calls, retains the first successful reference ID, uploads only the failed logical file on retry, and verifies the production start gate permits the all-success state.
+- Valid image coverage reads the generated asset through the exposed download route and verifies persisted bytes, content type, and stored-path metadata.
+- Restart coverage uses an isolated SQLite file fixture and recreates the persistence object before listing metadata and downloading file bytes.
+- TDD evidence: the revised tests were run red before the fixture correction (`6 passed, 1 failed` due to the SQLite reserved table name), then green (`7 passed, 2 warnings`).
+- Latest TDD evidence: the batch-seam assertions were run red (`4 failed, 3 passed`) before adding the production `uploadBatchItems` harness; the corrected state-machine expectations then passed (`7 passed, 2 warnings`).
+- The 2- and 10-file scenarios now execute the production `uploadBatchItems` initial/retry state machine. Instrumented calls show the failed logical file is retried once and successful files are not re-uploaded; the original successful reference ID is retained.
+- Exact batch coverage: the 1-file case is an initial successful upload only; the 2- and 10-file cases each perform an initial partial failure, assert campaign start is blocked, retry the failed file through `uploadBatchItems`, and assert campaign start is allowed after all success. Both cases assert successful reference IDs are unchanged and retry calls contain only the failed file.
+- Latest TDD evidence: adding the 2/10 initial-blocked and post-retry assertions was red (`2 failed, 5 passed`) due to missing state snapshots; after adding those snapshots, the E2E suite was green (`7 passed, 2 warnings`).
+
+## Final Fix Wave
+
+- Removed provider `original_url` from generated image metadata. Remote image bytes are cached before persistence, and cache failure returns a failed result without persisting metadata. Cache logging excludes exception text that could contain signed query data.
+- Image generation now validates the complete selected asset list before caching and rejects the entire result if any asset is invalid or caching fails. Valid subsets are not persisted.
+- Removing the last failed reference or knowledge upload now invokes the existing start transition through `canStartAfterUploadRemoval`; the already-created campaign cannot remain silently dead after blocker removal.
+- Batch upload error normalization preserves `FILE_TOO_LARGE`, `UNSUPPORTED_FILE_TYPE`, `CAMPAIGN_ACCESS_DENIED`, `UPLOAD_TIMEOUT`, and `PERSISTENCE_ERROR` in per-file client state.
+- Added executable regressions for signed-query secrecy, mixed-asset atomic rejection, final-blocker removal startability, and all stable upload error codes.
+
+### Final Fix TDD Evidence
+
+- Image red: `2 failed, 11 passed`; failures were provider query metadata and mixed valid/invalid subset persistence.
+- Batch red: failed on stable-code preservation before the normalizer was added.
+- Generation-path red: `1 failed, 13 passed`; failure was the worker-generation mixed-asset path before whole-result validation.
+- Final focused green: `python -m pytest services/campaign_service/test_image_generation_contract.py services/campaign_service/test_batch_upload.py services/campaign_service/test_task6_routes.py -q` -> `49 passed, 2 warnings`.
+- Final contract green: `node scripts/test-batch-upload-contract.mjs` -> `22 assertions`, `6 scenarios`.
+
+### Final Verification
+
+- `python -m pytest tests_e2e/test_image_generation_and_batch_upload.py -q` -> `7 passed, 2 warnings`.
+- `python -m pytest services/worker_image -q` -> `27 passed`.
+- `python -m pytest services/campaign_service -q` -> `144 passed, 1 skipped, 2 failed`.
+- `node scripts/test-batch-upload-contract.mjs` -> passed, `22 assertions`, `6 scenarios`.
+- `npm run lint` -> passed, `0 errors`, `11 existing warnings`.
+- `npm run build` -> passed; TypeScript and production build completed. Existing multiple-lockfile workspace-root warning remains.
+- `python -m compileall -q services/campaign_service services/worker_image` -> passed.
+- `git diff --check` -> passed; Git emitted only existing LF-to-CRLF working-copy warnings.
+
+### Final Concerns
+
+- No deployment, live provider smoke, authenticated live upload batch, or production-readiness claim was made.
+- The unrelated dirty `services/campaign_service/app/persistence.py` was preserved and is excluded from the fix commit.
+- Full campaign-service failures remain the previously documented auth-ordering test and unmocked `https://new` regeneration test.
+- Existing lint, pytest deprecation, and Next.js workspace-root warnings remain.
+
+## Post-Review GCP Deployment Update
+
+- GitHub branch `feature/complete-campaign-flow` was pushed through commit
+  `ee97186f8df7fb3908348f0b606f8bed7a46cf9d`.
+- Cloud SQL backup created and verified before deployment:
+  `1788683723727`, `SUCCESSFUL`, description
+  `image-batch-hardening-pre-deploy-ee97186`.
+- VM `ai-marketing-factory` fetched and checked out the approved commit;
+  Compose config validation, image builds, and `docker compose -f
+  deploy/docker-compose.gcp.yml up -d` completed successfully.
+- Public route returned HTTP `307`; all listed Compose services reported `Up`.
+- Controlled neutral image smoke returned HTTP `200`, provider `Google AI
+  Studio`, model `gemini-3.1-flash-image`, and `asset_count: 1`.
+- No API keys or environment values were printed.
+- Authenticated live upload batches and restart persistence verification remain
+  pending because no safe production test account was used.

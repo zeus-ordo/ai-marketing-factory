@@ -94,9 +94,9 @@ class InMemoryStore:
         return planned
 
     def set_tasks(self, campaign_id: str, tasks: list[TaskRecord]) -> list[TaskRecord]:
-        self.tasks[campaign_id] = tasks
         if self.persistence is not None:
             self.persistence.set_tasks(campaign_id, tasks)
+        self.tasks[campaign_id] = tasks
         return tasks
 
     def get_tasks(self, campaign_id: str) -> list[TaskRecord]:

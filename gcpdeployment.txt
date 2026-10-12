@@ -235,7 +235,7 @@ Secret Manager; do not use the local password "password".
 
   gcloud sql users create app \
     --instance=ai-marketing-postgres \
-    --password="GENERATED_STRONG_DATABASE_PASSWORD"
+    --password="<DB_PASSWORD>"
 
 Recommended networking:
 
@@ -251,8 +251,8 @@ Obtain the private IP:
 
 The final DSNs will look like:
 
-  POSTGRES_DSN=postgresql://app:PASSWORD@CLOUD_SQL_PRIVATE_IP:5432/marketing_ai
-  MEMBERSHIP_DB_DSN=postgresql://app:PASSWORD@CLOUD_SQL_PRIVATE_IP:5432/membership
+  POSTGRES_DSN=postgresql://app:<DB_PASSWORD>@CLOUD_SQL_PRIVATE_IP:5432/marketing_ai
+  MEMBERSHIP_DB_DSN=postgresql://app:<DB_PASSWORD>@CLOUD_SQL_PRIVATE_IP:5432/membership
 
 The application startup code performs schema initialization/migrations. Still
 take a Cloud SQL backup before the first production start.
@@ -331,8 +331,8 @@ Minimum production values:
   API_PORT=8080
   CAMPAIGN_REQUIRE_POSTGRES=true
 
-  POSTGRES_DSN=postgresql://app:PASSWORD@CLOUD_SQL_PRIVATE_IP:5432/marketing_ai
-  MEMBERSHIP_DB_DSN=postgresql://app:PASSWORD@CLOUD_SQL_PRIVATE_IP:5432/membership
+  POSTGRES_DSN=postgresql://app:<DB_PASSWORD>@CLOUD_SQL_PRIVATE_IP:5432/marketing_ai
+  MEMBERSHIP_DB_DSN=postgresql://app:<DB_PASSWORD>@CLOUD_SQL_PRIVATE_IP:5432/membership
   REDIS_URL=redis://REDIS_PRIVATE_IP:6379/0
 
   JWT_SECRET=GENERATED_LONG_RANDOM_SECRET

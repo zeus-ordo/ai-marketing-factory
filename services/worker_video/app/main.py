@@ -179,8 +179,8 @@ def run_video_worker(payload: VideoRunRequest) -> VideoRunResponse:
             STUB_MODE_COUNT.inc()
             return VideoRunResponse(
                 task_id=payload.task_id,
-                provider="Google AI Studio",
-                model_name=f"{VEEO_VIDEO_MODEL}-stub",
+                provider=payload.provider or "Google AI Studio",
+                model_name=payload.model or f"{VEEO_VIDEO_MODEL}-stub",
                 video_url=f"stub://veo/{payload.campaign_id}/{payload.task_id}.mp4",
                 thumbnail_url=f"stub://veo/{payload.campaign_id}/{payload.task_id}_thumb.png",
             )
@@ -204,8 +204,8 @@ def run_video_worker(payload: VideoRunRequest) -> VideoRunResponse:
         REQUEST_COUNT.labels(status="success").inc()
         return VideoRunResponse(
             task_id=payload.task_id,
-            provider="Google AI Studio",
-            model_name=VEEO_VIDEO_MODEL,
+            provider=payload.provider or "Google AI Studio",
+            model_name=payload.model or VEEO_VIDEO_MODEL,
             video_url=video_url,
             thumbnail_url=thumbnail_url,
         )
@@ -219,8 +219,8 @@ def run_video_worker(payload: VideoRunRequest) -> VideoRunResponse:
         STUB_MODE_COUNT.inc()
         return VideoRunResponse(
             task_id=payload.task_id,
-            provider="MiniMax",
-            model_name=f"{MINIMAX_VIDEO_MODEL}-stub",
+            provider=payload.provider or "MiniMax",
+            model_name=payload.model or f"{MINIMAX_VIDEO_MODEL}-stub",
             video_url=f"stub://assets/{payload.campaign_id}/{payload.task_id}.mp4",
             thumbnail_url=f"stub://assets/{payload.campaign_id}/{payload.task_id}_thumb.png",
         )
@@ -281,8 +281,8 @@ def run_video_worker(payload: VideoRunRequest) -> VideoRunResponse:
     REQUEST_COUNT.labels(status="success").inc()
     return VideoRunResponse(
         task_id=payload.task_id,
-        provider="MiniMax",
-        model_name=MINIMAX_VIDEO_MODEL,
+        provider=payload.provider or "MiniMax",
+        model_name=payload.model or MINIMAX_VIDEO_MODEL,
         video_url=video_url,
         thumbnail_url=thumbnail_url,
     )

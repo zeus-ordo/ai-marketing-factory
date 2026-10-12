@@ -41,18 +41,21 @@ async def create_company(
     company = await company_repo.create(name=req.name, slug=req.slug)
 
     # Write audit log for company creation
-    async with get_connection() as conn:
-        await conn.execute(
-            """
-            INSERT INTO audit_logs (member_id, company_id, action, resource_type, resource_id, metadata)
-            VALUES (NULL, $1, $2, $3, $4, $5)
-            """,
-            company.company_id,
-            "company.create",
-            "company",
-            str(company.company_id),
-            _json.dumps({"name": company.name, "slug": company.slug}),
-        )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO audit_logs (member_id, company_id, action, resource_type, resource_id, metadata)
+                VALUES (NULL, %s, %s, %s, %s, %s)
+                """,
+                (
+                    company.company_id,
+                    "company.create",
+                    "company",
+                    str(company.company_id),
+                    _json.dumps({"name": company.name, "slug": company.slug}),
+                ),
+            )
 
     return CompanyResponse(
         company_id=company.company_id,
@@ -102,11 +105,12 @@ async def create_company_admin(
     )
 
     # Auto-verify email for admin created by developer
-    async with get_connection() as conn:
-        await conn.execute(
-            "UPDATE members SET email_verified = TRUE WHERE member_id = $1",
-            member_id,
-        )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE members SET email_verified = TRUE WHERE member_id = %s",
+                (member_id,),
+            )
 
     # Assign company_admin role
     admin_role = await role_repo.get_by_id(UUID("00000000-0000-0000-0000-000000000001"))
@@ -125,22 +129,26 @@ async def get_company_members(
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
 
-    async with get_connection() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM members WHERE company_id = $1 ORDER BY created_at DESC",
-            company_id,
-        )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM members WHERE company_id = %s ORDER BY created_at DESC",
+                (company_id,),
+            )
+            rows = cur.fetchall()
         items = []
         for row in rows:
-            role_rows = await conn.fetch(
-                """
-                SELECT r.role_id, r.company_id, r.name, r.is_system, r.permissions, r.created_at
-                FROM roles r
-                JOIN member_roles mr ON r.role_id = mr.role_id
-                WHERE mr.member_id = $1
-                """,
-                row["member_id"],
-            )
+            with conn.cursor() as role_cur:
+                role_cur.execute(
+                    """
+                    SELECT r.role_id, r.company_id, r.name, r.is_system, r.permissions, r.created_at
+                    FROM roles r
+                    JOIN member_roles mr ON r.role_id = mr.role_id
+                    WHERE mr.member_id = %s
+                    """,
+                    (row["member_id"],),
+                )
+                role_rows = role_cur.fetchall()
             roles = [
                 RoleResponse(
                     role_id=r["role_id"],
@@ -168,19 +176,23 @@ async def get_company_members(
 
 @router.get("/platform/members", response_model=MemberListResponse)
 async def list_all_members(_: dict = Depends(require_developer)):
-    async with get_connection() as conn:
-        rows = await conn.fetch("SELECT * FROM members ORDER BY created_at DESC")
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM members ORDER BY created_at DESC")
+            rows = cur.fetchall()
         items = []
         for row in rows:
-            role_rows = await conn.fetch(
-                """
-                SELECT r.role_id, r.company_id, r.name, r.is_system, r.permissions, r.created_at
-                FROM roles r
-                JOIN member_roles mr ON r.role_id = mr.role_id
-                WHERE mr.member_id = $1
-                """,
-                row["member_id"],
-            )
+            with conn.cursor() as role_cur:
+                role_cur.execute(
+                    """
+                    SELECT r.role_id, r.company_id, r.name, r.is_system, r.permissions, r.created_at
+                    FROM roles r
+                    JOIN member_roles mr ON r.role_id = mr.role_id
+                    WHERE mr.member_id = %s
+                    """,
+                    (row["member_id"],),
+                )
+                role_rows = role_cur.fetchall()
             roles = [
                 RoleResponse(
                     role_id=r["role_id"],
@@ -218,63 +230,51 @@ async def list_audit_logs(
     """List audit logs with optional filters. Requires platform admin key."""
     offset = (page - 1) * page_size
 
-    async with get_connection() as conn:
-        conditions = []
-        params: list = []
-        param_idx = 1
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            conditions = []
+            params: list = []
 
-        if action:
-            conditions.append(f"action = ${param_idx}")
-            params.append(action)
-            param_idx += 1
+            if action:
+                conditions.append("action = %s")
+                params.append(action)
+            if member_id:
+                conditions.append("member_id = %s")
+                params.append(member_id)
+            if company_id:
+                conditions.append("company_id = %s")
+                params.append(company_id)
 
-        if member_id:
-            conditions.append(f"member_id = ${param_idx}")
-            params.append(member_id)
-            param_idx += 1
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            count_query = f"SELECT COUNT(*) as total FROM audit_logs {where_clause}"
+            cur.execute(count_query, params)
+            count_row = cur.fetchone()
+            total = count_row["total"] if count_row else 0
 
-        if company_id:
-            conditions.append(f"company_id = ${param_idx}")
-            params.append(company_id)
-            param_idx += 1
+            query = f"""
+                SELECT log_id, member_id, company_id, action,
+                       resource_type, resource_id, ip_address, metadata, created_at
+                FROM audit_logs
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+            """
+            cur.execute(query, [*params, page_size, offset])
+            rows = cur.fetchall()
 
-        where_clause = ""
-        if conditions:
-            where_clause = "WHERE " + " AND ".join(conditions)
+            items = [
+                AuditLogEntry(
+                    log_id=row["log_id"],
+                    member_id=row["member_id"],
+                    company_id=row["company_id"],
+                    action=row["action"],
+                    resource_type=row["resource_type"],
+                    resource_id=row["resource_id"],
+                    ip_address=str(row["ip_address"]) if row["ip_address"] else None,
+                    metadata=_json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or None),
+                    created_at=str(row["created_at"]),
+                )
+                for row in rows
+            ]
 
-        count_query = f"SELECT COUNT(*) as total FROM audit_logs {where_clause}"
-        count_row = await conn.fetchrow(count_query, *params)
-        total = count_row["total"] if count_row else 0
-
-        query = f"""
-            SELECT log_id, member_id, company_id, action,
-                   resource_type, resource_id, ip_address, metadata, created_at
-            FROM audit_logs
-            {where_clause}
-            ORDER BY created_at DESC
-            LIMIT ${param_idx} OFFSET ${param_idx + 1}
-        """
-        params.extend([page_size, offset])
-        rows = await conn.fetch(query, *params)
-
-        items = [
-            AuditLogEntry(
-                log_id=row["log_id"],
-                member_id=row["member_id"],
-                company_id=row["company_id"],
-                action=row["action"],
-                resource_type=row["resource_type"],
-                resource_id=row["resource_id"],
-                ip_address=str(row["ip_address"]) if row["ip_address"] else None,
-                metadata=_json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or None),
-                created_at=str(row["created_at"]),
-            )
-            for row in rows
-        ]
-
-        return AuditLogListResponse(
-            items=items,
-            total=total,
-            page=page,
-            page_size=page_size,
-        )
+            return AuditLogListResponse(items=items, total=total, page=page, page_size=page_size)

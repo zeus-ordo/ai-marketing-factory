@@ -44,7 +44,7 @@ function RolesContent() {
   const { t, locale } = useI18n();
   const { user, isLoading: authLoading } = useAuth();
   const [roles, setRoles] = useState<RoleResponse[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadedCompanyId, setLoadedCompanyId] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPerms, setNewPerms] = useState<string[]>([]);
@@ -56,14 +56,24 @@ function RolesContent() {
 
   useEffect(() => {
     if (!user?.company_id || !canManageRoles) {
-      setLoading(false);
       return;
     }
-    listRoles(user.company_id)
-      .then(setRoles)
+    const companyId = user.company_id;
+    let active = true;
+    listRoles(companyId)
+      .then((nextRoles) => {
+        if (active) setRoles(nextRoles);
+      })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (active) setLoadedCompanyId(companyId);
+      });
+    return () => {
+      active = false;
+    };
   }, [user?.company_id, canManageRoles]);
+
+  const loading = authLoading || Boolean(user?.company_id && canManageRoles && loadedCompanyId !== user.company_id);
 
   function togglePerm(key: string, mode: "create" | "edit" = "create") {
     const setter = mode === "edit" ? setEditPerms : setNewPerms;
@@ -132,7 +142,7 @@ function RolesContent() {
   const systemRoles = roles.filter((r) => r.is_system);
   const customRoles = roles.filter((r) => !r.is_system);
 
-  if (authLoading || loading) {
+  if (loading) {
     return <p className="text-center text-slate-500">{t("system.loading")}</p>;
   }
 

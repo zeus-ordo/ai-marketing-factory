@@ -1,0 +1,941 @@
+AI Marketing Factory 完整測試手冊
+================================
+
+文件版本：1.0
+文件日期：2026-09-06
+適用版本：feature/complete-campaign-flow
+目前部署版本：4742168
+GCP Project：market-factory
+GCP VM：ai-marketing-factory / asia-east1-a
+
+重要安全規則
+------------
+1. 不要把 API key、JWT secret、密碼、cookie、authorization header 或完整 provider response 寫入測試結果。
+2. 測試輸出只保留 status、provider、model、attempts、asset count、error code 等安全欄位。
+3. 真實 provider 測試必須使用中性 prompt，不可使用客戶機密資料。
+4. production 測試前必須先建立並確認 Cloud SQL backup。
+5. 測試帳號、測試檔案、測試 campaign 必須使用可識別的 diag/test 前綴。
+6. 不可在未確認 company scope 的情況下使用另一家公司資料。
+
+
+一、測試目標與範圍
+==================
+
+本手冊涵蓋：
+
+- Authentication：註冊、登入、登出、email verification、忘記密碼、重設密碼。
+- Membership：公司、成員、公司角色、權限、成員角色編輯。
+- Permission：Manager Review、Company admin、Platform admin、wildcard、company isolation。
+- Review：review queue、diagnostics、approve、reject、revision、audit log、CSV export。
+- Folder：Platform folder、Company folder、讀取、使用、建立、編輯、刪除、隔離。
+- Campaign：建立、編輯、驗證、啟動、停止、重試、context snapshot。
+- Content：knowledge items、references、folder association、reference download。
+- Batch upload：多檔案上傳、部分失敗、failed-only retry、移除、campaign start gate。
+- Generation：copy、image、video、ads、provider failure、retry、DLQ。
+- Operations：health、queue、consumer group、retry、recovery、audit、diagnostics。
+- Localization：English、繁體中文、日本語。
+- Deployment：backup、Compose、GCP health、image smoke、restart persistence。
+
+測試層級：
+
+L0  靜態檢查：lint、compile、build、diff check。
+L1  單元／服務測試：Python pytest、Node contract tests。
+L2  離線 E2E：ASGI/TestClient、mock provider、deterministic test files。
+L3  Local Compose：真實 containers、local DB、local Redis。
+L4  GCP smoke：真實部署服務、中性 provider request、測試帳號操作。
+
+
+二、角色與測試帳號矩陣
+======================
+
+建立或準備以下測試角色。實際 email、密碼與 token 僅放在 password manager 或 secret store，不能寫入本文件。
+
+帳號 A：Platform admin
+- 可管理 Platform folders。
+- 可讀取所有 company scope 的管理資料。
+- 可執行平台維運操作。
+
+帳號 B：Company admin / Company A
+- 可管理 Company A 成員與 Company A roles。
+- 可建立、編輯、刪除 Company A folders（依授權）。
+- 可讀取與使用 Platform folders。
+- 不可修改或刪除 Platform folders。
+- 不可讀取 Company B 私有資料。
+
+帳號 C：Manager / Company A
+- 可進入 Review。
+- 可執行被授予的 review actions。
+- 可讀取與使用 Platform folders。
+- 不可預設取得 member:assign_role。
+- 不可修改或刪除 Platform folders。
+
+帳號 D：一般 Company A member
+- 只能使用被授權的功能。
+- 無 review:manage 時不可進入 Review。
+- 不可管理成員角色或 Platform folder。
+
+帳號 E：Company B member/admin
+- 用於驗證跨公司 isolation。
+- 不可讀取、修改或刪除 Company A 成員、folders、references、knowledge。
+
+測試角色檢查表：
+[ ] A Platform admin 建立完成
+[ ] B Company A admin 建立完成
+[ ] C Company A Manager 建立完成
+[ ] D Company A member 建立完成
+[ ] E Company B member/admin 建立完成
+[ ] 所有帳號均完成 email verification
+[ ] 所有帳號 company_id 已確認
+[ ] 沒有在測試紀錄中寫出密碼或 token
+
+
+三、測試資料與檔案
+==================
+
+建立下列不含機密的測試資料：
+
+- campaign：QA-CAMPAIGN-001
+- campaign：QA-CAMPAIGN-BATCH-001
+- campaign：QA-CAMPAIGN-IMAGE-001
+- Platform folder：QA-Platform-General
+- Company A folder：QA-CompanyA-General
+- Company B folder：QA-CompanyB-Private
+- 小型文字檔：qa-small.txt
+- 小型 PDF：qa-small.pdf
+- 小型 DOCX：qa-small.docx
+- 小型 PNG：qa-small.png
+- 不支援檔案：qa-invalid.exe
+- 超過限制檔案：qa-over-limit.bin
+- 1、2、10 檔案批量測試組
+
+每個測試檔案應記錄：
+- 檔案名稱
+- extension
+- MIME type
+- bytes
+- 預期結果
+
+不可使用真實客戶檔案或帶有真實 token 的 signed URL。
+
+
+四、測試前環境檢查
+==================
+
+4.1 Local worktree
+------------------
+
+從 approved worktree 執行：
+
+    git branch --show-current
+    git rev-parse HEAD
+    git status --short
+    git diff --check
+
+預期：
+- branch 為 feature/complete-campaign-flow 或指定 release branch。
+- revision 與測試報告一致。
+- 不應有未確認的程式碼變更。
+- 不應有 whitespace error。
+
+4.2 Secret 檢查
+----------------
+
+    git check-ignore .env.local
+    node scripts/check-secrets.mjs
+
+預期：
+- `.env.local` 必須被 ignore。
+- secret scanner 若因既有 local/test defaults 失敗，必須記錄為 limitation，不得輸出 secret 值。
+
+4.3 Local Compose
+-----------------
+
+    docker compose -f deploy/docker-compose.gcp.yml config --quiet
+    docker compose -f deploy/docker-compose.gcp.yml ps
+
+預期：
+- Compose config 成功。
+- 所有必要 services 顯示 Up。
+- PostgreSQL、Redis 顯示 healthy 或可連線。
+
+4.4 GCP 環境
+------------
+
+    gcloud config get-value project
+    gcloud compute instances describe ai-marketing-factory --zone=asia-east1-a --format="value(status)"
+    gcloud sql instances describe ai-marketing-postgres --format="value(state)"
+
+預期：
+- project 為 market-factory。
+- VM 為 RUNNING。
+- Cloud SQL 為 RUNNABLE。
+
+
+五、自動化測試總表
+==================
+
+5.1 Worker image
+----------------
+
+    python -m pytest services/worker_image -q
+
+必須覆蓋：
+- valid Gemini image response
+- empty steps
+- invalid base64
+- invalid MIME
+- invalid HTTP URL
+- malformed MiniMax response
+- 429 retry
+- 5xx retry
+- timeout/connection retry
+- 400/401/403/404 不 retry
+- numeric Retry-After
+- HTTP-date Retry-After
+- Retry delay cap
+- max attempts 不可超過 3
+- real mode 不回傳 fallback SVG
+- stub mode 明確標記 stub
+
+5.2 Campaign service image/batch
+--------------------------------
+
+    python -m pytest services/campaign_service/test_image_generation_contract.py services/campaign_service/test_batch_upload.py services/campaign_service/test_task6_routes.py -q
+
+必須覆蓋：
+- 空 image assets 失敗
+- 混合 valid/invalid image assets 整批失敗
+- cache/download 失敗不保存 provider URL
+- signed query 不進入 metadata
+- worker failure trace sanitized
+- valid image 寫入檔案並可讀取
+- upload authorization
+- cross-company upload denied
+- size/type/MIME validation
+- timeout、stream failure、directory failure
+- persistence failure cleanup
+- folder_id、reference_id 回傳
+- stable error codes
+
+5.3 Offline E2E
+---------------
+
+    python -m pytest tests_e2e/test_complete_campaign_flow.py -q
+    python -m pytest tests_e2e/test_permissions_and_folder_scope.py -q
+    python -m pytest tests_e2e/test_image_generation_and_batch_upload.py -q
+    python -m pytest tests_e2e/test_company_isolation_e2e.py -q
+
+5.4 Frontend contract
+----------------------
+
+    node scripts/test-permissions-contract.mjs
+    node scripts/test-members-contract.mjs
+    node scripts/test-folder-scope-contract.mjs
+    node scripts/test-folder-scope-review-contract.mjs
+    node scripts/test-batch-upload-contract.mjs
+    node scripts/test-campaign-flow-contract.mjs
+    node scripts/test-campaign-diagnostics.mjs
+
+5.5 Service regression
+----------------------
+
+    python -m pytest services/membership_service -q
+    python -m pytest services/orchestrator -q
+    python -m pytest services/campaign_service -q
+
+注意：campaign-service 目前可能有既有 auth-ordering 或未 mock provider 的 failure；不可把 failure 隱藏，必須在測試報告明確列出。
+
+5.6 Frontend build gate
+-----------------------
+
+    npm run lint
+    npm run build
+    git diff --check
+
+預期：
+- lint 0 errors；既有 warnings 可列為非阻擋項。
+- build 成功。
+- diff check 無 whitespace error。
+
+
+六、Authentication 與帳號功能測試
+=================================
+
+AUTH-001 註冊成功
+- 使用新的測試 email。
+- 填入合法名稱、email、密碼、company 資訊。
+- 送出註冊。
+- 預期：建立帳號，顯示 email verification 狀態。
+
+AUTH-002 重複 email
+- 使用已存在 email 再次註冊。
+- 預期：拒絕建立，不洩漏不必要的帳號資訊。
+
+AUTH-003 弱密碼
+- 使用低強度密碼。
+- 預期：前端與後端都拒絕。
+
+AUTH-004 Email verification
+- 開啟測試 verification link。
+- 預期：帳號變為 verified，重複使用 link 不會破壞狀態。
+
+AUTH-005 正常登入
+- 使用 verified 帳號登入。
+- 預期：取得 session，導向 dashboard。
+
+AUTH-006 錯誤密碼
+- 輸入錯誤密碼。
+- 預期：登入拒絕，錯誤訊息不洩漏密碼或內部細節。
+
+AUTH-007 登出
+- 登入後登出。
+- 預期：session 失效，受保護頁面需重新登入。
+
+AUTH-008 忘記密碼
+- 送出 verified email。
+- 預期：顯示安全的一致訊息，email 若可用則收到 reset link。
+
+AUTH-009 重設密碼
+- 使用一次性 reset link 設定新密碼。
+- 預期：新密碼可登入，舊密碼失效，link 不可重複使用。
+
+AUTH-010 未登入保護
+- 未登入直接開啟 `/dashboard`、`/campaigns`、`/review`、`/members`。
+- 預期：導向登入或回傳 401/403。
+
+
+七、Permission 與 Membership 測試
+=================================
+
+PERM-001 Manager Review access
+- 使用帳號 C 登入。
+- 開啟 Review page。
+- 預期：可進入 Review，side navigation 顯示 Review。
+
+PERM-002 無 review permission
+- 使用帳號 D 登入。
+- 嘗試開啟 Review、列出 review items、查看 diagnostics。
+- 預期：UI 隱藏或導向，API 回傳 403。
+
+PERM-003 Legacy review permission compatibility
+- 使用既有 `review:approve`／`review:reject`／`review:revision` 權限測試。
+- 預期：舊行為仍相容，新程式優先使用 `review:manage`。
+
+PERM-004 Wildcard permission
+- 使用擁有 `*` 的測試角色。
+- 預期：允許既定權限範圍，不繞過 company isolation。
+
+PERM-005 Company admin role editor
+- 使用帳號 B 編輯 Company A 成員角色。
+- 預期：同公司更新成功，角色清單不含 Platform/system role。
+
+PERM-006 Manager cannot assign roles
+- 使用帳號 C 嘗試編輯成員角色。
+- 預期：沒有 `member:assign_role` 時回傳 403。
+
+PERM-007 Cross-company member
+- 使用帳號 B 嘗試編輯 Company B 成員。
+- 預期：403，不寫入 role link、不產生成功 audit。
+
+PERM-008 Platform role assignment
+- 使用帳號 B 選擇 Platform/system role。
+- 預期：400/403/422，不能保存。
+
+PERM-009 Unknown role
+- 呼叫角色更新 API，傳入不存在 role ID。
+- 預期：404/422，沒有部分更新。
+
+PERM-010 Self-edit policy
+- 使用 admin 編輯自己的 roles。
+- 預期：符合目前明確 policy；若 policy 禁止，回傳 403 且 UI 顯示 localized error。
+
+PERM-011 Audit safety
+- 完成成功與失敗 role update。
+- 檢查 audit 只包含 actor/member/role/result。
+- 預期：沒有 password、token、JWT、secret。
+
+
+八、Review 與 Audit 測試
+========================
+
+REV-001 Review queue list
+- 使用帳號 C 開啟 Review。
+- 預期：只看到可見 company scope 的 review items。
+
+REV-002 Review diagnostics
+- 使用 `run_id` 查看 diagnostics。
+- 預期：只回傳指定 run，provider/model 可見但不含 key/header/raw response。
+
+REV-003 Approve
+- 對 pending item 執行 approve。
+- 預期：狀態變為 approved，audit 記錄 actor/action/result。
+
+REV-004 Reject
+- 執行 reject 並填寫原因。
+- 預期：狀態變為 rejected，reason 可讀，無 secret。
+
+REV-005 Revision
+- 執行 revision，填寫修改意見。
+- 預期：建立 revision task 或正確進入 retry/revision 狀態。
+
+REV-006 Cross-company audit isolation
+- 帳號 C 產生 Company A audit。
+- 帳號 E 嘗試讀取。
+- 預期：Company B 看不到 Company A audit。
+
+REV-007 Internal/platform audit bypass
+- 使用合法 internal/platform-admin path 測試。
+- 預期：只保留既定 bypass，不因 JWT company scope 而錯誤放寬一般使用者權限。
+
+REV-008 Audit export
+- 使用合法 filter 匯出 CSV。
+- 預期：欄位正確、無 token/API key/raw provider response。
+
+
+九、Folder 與資料隔離測試
+=========================
+
+FOLDER-001 Platform admin 建立 folder
+- 帳號 A 建立 Platform folder。
+- 預期：建立成功，scope=platform。
+
+FOLDER-002 Company admin 建立 folder
+- 帳號 B 建立 Company A folder。
+- 預期：建立成功，company_id=Company A。
+
+FOLDER-003 Platform read/use
+- 帳號 B/C/D 列出 Platform folders、選擇並引用。
+- 預期：可讀取與使用。
+
+FOLDER-004 Platform mutation denied
+- 帳號 B/C 嘗試編輯、搬移、刪除 Platform folder。
+- 預期：403，UI mutation control disabled/hidden。
+
+FOLDER-005 Company isolation
+- 帳號 B 嘗試讀取 Company B folder。
+- 預期：列表不出現，直接 ID 存取回 403/404。
+
+FOLDER-006 Duplicate names
+- 建立同名 Platform 與 Company folder。
+- 預期：UI 以 folder_id/scope/company_id 區分，不依 name 合併。
+
+FOLDER-007 Folder delete with associations
+- 建立 folder，加入 knowledge/reference。
+- 嘗試刪除。
+- 預期：拒絕刪除或安全解除 association，不留下 dangling folder_id。
+
+FOLDER-008 Legacy category fallback
+- 建立只有 legacy category/text 的 item。
+- 預期：唯一可推論時轉為 folder_id；General、Unfiled、歧義名稱保留 null fallback。
+
+FOLDER-009 Restart persistence
+- 寫入 folder、knowledge、reference。
+- 重啟 service 或重建 persistence object。
+- 預期：folder_id、metadata、file bytes 仍可讀。
+
+FOLDER-010 Folder API contract
+- 驗證 folder response 有 folder_id、scope、company_id、name、timestamps。
+- 預期：欄位完整且不含 local absolute path 或 secrets。
+
+
+十、Campaign 流程測試
+=====================
+
+CAM-001 建立 campaign
+- 填寫合法 campaign brief、target audience、budget、deliverables。
+- 預期：建立成功，campaign ID 可取得。
+
+CAM-002 必填欄位
+- project description、audience、goal 等必要欄位留白。
+- 預期：422，沒有建立半成品 campaign。
+
+CAM-003 Ads budget validation
+- ads strategy 大於 0，但 budget 非正數、NaN 或 Infinity。
+- 預期：422。
+
+CAM-004 編輯 campaign
+- 修改 brief、audience、deliverables。
+- 預期：資料保存且重新載入一致。
+
+CAM-005 Reference folder selection
+- 選擇 Platform 與 Company folder 上傳 reference。
+- 預期：folder_id 正確，Platform 顯示 read-only。
+
+CAM-006 開始 campaign
+- 無 pending/failed upload 時按 Start。
+- 預期：建立 run、context snapshot、任務進入 queued/running。
+
+CAM-007 Batch partial failure gate
+- 上傳 2 檔，其中 1 檔故意失敗。
+- 預期：campaign start disabled，失敗檔案可見。
+
+CAM-008 Batch failed-only retry
+- retry 失敗檔案。
+- 預期：成功檔案不重傳，成功後才可 Start。
+
+CAM-009 Batch 10 files
+- 執行 10 檔批量上傳。
+- 預期：並行數受限、UI 不凍結、每個檔案有最終狀態。
+
+CAM-010 Remove failed file
+- 移除最後一個 failed file。
+- 預期：campaign 不會留在無法操作的 dead state；UI 顯示明確下一步。
+
+CAM-011 Stop/cancel
+- run 中執行 stop/cancel。
+- 預期：狀態正確轉移，未完成 descendants 依 policy blocked/cancelled。
+
+CAM-012 Context snapshot
+- run 前修改 campaign reference。
+- 預期：run snapshot immutable，該 run 使用啟動當下 context。
+
+CAM-013 Restart recovery
+- service restart 後查看 pending tasks、consumer group、context hydration。
+- 預期：pending reclaim 正常，不重複 ack 已完成任務。
+
+
+十一、批量上傳專項測試
+======================
+
+BATCH-001 單檔成功
+- 上傳 qa-small.pdf。
+- 預期：success、reference_id、folder_id 存在。
+
+BATCH-002 兩檔全成功
+- 同時上傳兩個合法檔案。
+- 預期：兩檔 success，Start enabled。
+
+BATCH-003 十檔批量
+- 上傳 10 檔合法檔案。
+- 預期：最多三個 worker 同時工作，無無限 Promise.all。
+
+BATCH-004 超過大小限制
+- 上傳 qa-over-limit.bin。
+- 預期：`FILE_TOO_LARGE`，不寫入 orphan file/row。
+
+BATCH-005 不支援格式
+- 上傳 qa-invalid.exe。
+- 預期：`UNSUPPORTED_FILE_TYPE`，不開始 campaign。
+
+BATCH-006 MIME mismatch
+- 使用副檔名與 MIME 不一致的檔案。
+- 預期：後端拒絕；合法 office `application/octet-stream` 依明確 allowlist 處理。
+
+BATCH-007 Cross-company upload
+- Company B token 上傳到 Company A campaign。
+- 預期：`CAMPAIGN_ACCESS_DENIED`，寫入前拒絕。
+
+BATCH-008 Upload timeout
+- 使用受控慢速 stream。
+- 預期：`UPLOAD_TIMEOUT`，清除 partial file。
+
+BATCH-009 Persistence failure
+- 模擬 repository failure。
+- 預期：`PERSISTENCE_ERROR`，無 row、無 file、無 raw exception。
+
+BATCH-010 Retry only failed
+- 第一檔成功、第二檔失敗。
+- retry。
+- 預期：只有第二檔重新 request，第一檔 reference_id 不變。
+
+BATCH-011 Remove failure
+- 移除 failed item。
+- 預期：狀態重新計算，無 no-op retry。
+
+BATCH-012 Localized errors
+- 分別以 English、繁中、日本語執行 size/type/upload failure。
+- 預期：顯示對應語言，不直接顯示 raw API exception。
+
+
+十二、Copy 生成測試
+===================
+
+COPY-001 生成成功
+- 執行文案生成。
+- 預期：取得 title/body/cta，欄位非空。
+
+COPY-002 文案類型與長度
+- 測試宣傳文案、社群文章、公關稿。
+- 預期：符合 campaign prompt 的不同長度規則。
+
+COPY-003 Reference priority
+- 選擇 user uploaded reference。
+- 預期：生成 prompt 明確包含 reference context 與 proofreading policy。
+
+COPY-004 Provider error
+- mock provider 429/500/timeout。
+- 預期：依 retry policy 重試，最終 failure 有 sanitized trace。
+
+COPY-005 失敗後 retry
+- 故意讓第一次 generation failure。
+- 手動 retry。
+- 預期：不重複成功 task，不污染結果。
+
+COPY-006 JSON contract
+- 驗證 response 只有允許欄位與正確型別。
+- 預期：不回傳 null/empty required fields。
+
+
+十三、Image 生成測試
+====================
+
+IMAGE-001 Real valid image
+- 使用中性 prompt：A simple neutral product image on a plain background。
+- sizes 使用 1024x1024。
+- 預期：HTTP 200、asset_count > 0、可讀 image bytes。
+
+IMAGE-002 Empty provider result
+- mock provider HTTP 200 但無 image data。
+- 預期：視為 failure，不保存、不回傳成功。
+
+IMAGE-003 Invalid base64
+- provider 回傳錯誤 base64。
+- 預期：retryable typed failure，不保存。
+
+IMAGE-004 Invalid MIME
+- provider 回傳非 image MIME。
+- 預期：failure，不保存。
+
+IMAGE-005 Mixed assets
+- 多個 asset 中一個 valid、一個 invalid。
+- 預期：整批 atomic failure，不保存 valid subset。
+
+IMAGE-006 429
+- mock 429，設定 Retry-After。
+- 預期：最多三次、尊重 bounded delay。
+
+IMAGE-007 5xx
+- mock 500/502/503/504。
+- 預期：retry，耗盡後 task failed/DLQ。
+
+IMAGE-008 4xx
+- mock 400/401/403/404。
+- 預期：不 retry，安全回報錯誤。
+
+IMAGE-009 Timeout/connection
+- mock timeout/connection failure。
+- 預期：retry，最後 failure trace 有 attempts。
+
+IMAGE-010 No fallback SVG in real mode
+- strict real mode 下 provider 無 image。
+- 預期：不可看到 stub/fallback SVG 作為成功結果。
+
+IMAGE-011 Stub mode
+- strict mode 關閉且沒有 real key。
+- 預期：可回傳 stub，但 provider/model 明確標示 stub。
+
+IMAGE-012 Security
+- provider URL 帶 signed query。
+- 預期：只保存 local safe path，不保存 query secret。
+
+
+十四、Video 與 Ads 生成測試
+===========================
+
+VIDEO-001 短影音
+- 測試 10 秒短影音。
+- 預期：建立 video task，狀態可追蹤。
+
+VIDEO-002 宣傳短片
+- 測試 15 秒類型。
+- 預期：prompt 包含指定 duration/type。
+
+VIDEO-003 網路廣告
+- 測試 30 秒類型。
+- 預期：prompt 與輸出 metadata 正確。
+
+VIDEO-004 Provider timeout/retry
+- mock timeout 與 retry。
+- 預期：不產生假成功，完成或 failure 狀態明確。
+
+ADS-001 Ads strategy generation
+- 建立含 ads strategy 的 campaign。
+- 預期：產生 strategy 結果與可追蹤 task。
+
+ADS-002 Budget validation
+- budget 為 0、負數、NaN、Infinity。
+- 預期：campaign create/run 被拒絕。
+
+ADS-003 Ads failure descendants
+- mock ads task failure。
+- 預期：相關 descendants blocked，無關 tasks 可依 policy 繼續。
+
+
+十五、Diagnostics、Queue、Recovery 測試
+=======================================
+
+OPS-001 Health
+- 檢查 campaign、membership、decision、orchestrator、workers health。
+- 預期：JSON status ok 或 HTTP 200。
+
+OPS-002 Queue overview
+- 查看 queue、consumer group、pending count。
+- 預期：數量與實際任務一致。
+
+OPS-003 Automatic retry
+- 觸發可 retry failure。
+- 預期：orchestrator MAX_RETRY=2，delay 有上限。
+
+OPS-004 Manual retry
+- 使用 single-task retry endpoint。
+- 預期：遵守 MANUAL_RETRY_MAX_ATTEMPTS，並有 audit。
+
+OPS-005 DLQ
+- 讓 task retry 耗盡。
+- 預期：進入 DLQ，不標記 success。
+
+OPS-006 Recovery pending
+- 模擬 dispatch 後 persistence/reconciliation failure。
+- 預期：顯示 recovery_pending，不當作成功。
+
+OPS-007 Restart recovery
+- 重啟 orchestrator/worker。
+- 預期：pending messages 被正確 reclaim，已完成任務不重播。
+
+OPS-008 Diagnostics run scope
+- 使用 run_id A 查詢，不可看到 run_id B。
+- 預期：diagnostics 嚴格依 run_id scope。
+
+OPS-009 Audit fields
+- 執行 operator action。
+- 預期：audit 有 operator/action/result/time，無 credentials。
+
+OPS-010 Alert safety
+- 觸發 retry exhaustion、DLQ、persistence error。
+- 預期：alert payload 只有 ID 與 sanitized classification。
+
+
+十六、Localization 與 UI 測試
+=============================
+
+I18N-001 English
+- 語言切換至 English。
+- 檢查登入、members、review、folder、batch error、campaign start。
+- 預期：無 mojibake、無 raw key。
+
+I18N-002 繁體中文
+- 切換至 Traditional Chinese。
+- 檢查同上流程。
+- 預期：文字為正常繁中編碼。
+
+I18N-003 日本語
+- 切換至 Japanese。
+- 檢查同上流程。
+- 預期：文字為正常日文編碼。
+
+I18N-004 Missing translation
+- 觸發新 error code。
+- 預期：顯示安全 fallback，不顯示 undefined 或 raw exception。
+
+UI-001 Desktop
+- 1440px 寬度執行主要流程。
+- 預期：無 layout overflow。
+
+UI-002 Tablet
+- 768px 寬度執行 upload、review、members。
+- 預期：controls 可操作，無遮擋。
+
+UI-003 Mobile
+- 390px 寬度檢查 login、campaign、batch error。
+- 預期：主要 action 可見且可操作。
+
+UI-004 Loading/error/success states
+- 檢查 uploading、failed、retrying、success。
+- 預期：狀態即時更新，成功項不會暫時消失。
+
+
+十七、API 安全與負面測試
+=========================
+
+SEC-001 無 token
+- 移除 Authorization header 呼叫 protected API。
+- 預期：401。
+
+SEC-002 錯誤 token
+- 使用無效 JWT。
+- 預期：401，不洩漏驗證細節。
+
+SEC-003 Company mismatch
+- JWT company_id 與 URL/company 不一致。
+- 預期：403 或安全的 404。
+
+SEC-004 Platform mutation
+- 一般 company JWT 修改 Platform folder/role。
+- 預期：403。
+
+SEC-005 Path traversal
+- filename 嘗試 `../secret`、絕對路徑、特殊字元。
+- 預期：安全 normalize，不可寫出 upload root。
+
+SEC-006 Oversized body
+- 傳送超過限制 body。
+- 預期：穩定錯誤，不耗盡記憶體，不留下 partial file。
+
+SEC-007 Error injection
+- provider／filename／folder name 放入 URL、HTML、control chars。
+- 預期：response、audit、log 經過 sanitize。
+
+SEC-008 Secret scanner
+- 執行 secret scanner。
+- 預期：新程式碼、test fixture、report 不含 live secret。
+
+
+十八、GCP 部署與生產驗證
+========================
+
+18.1 Backup
+-----------
+
+    COMMIT="$(git rev-parse HEAD)"
+    gcloud sql backups create --project=market-factory --instance=ai-marketing-postgres --description="test-manual-pre-deploy-${COMMIT}"
+    gcloud sql backups list --project=market-factory --instance=ai-marketing-postgres --filter="description=test-manual-pre-deploy-${COMMIT}" --format="table(id,status,description)"
+
+預期：backup status=SUCCESSFUL，記錄 ID，不記錄 credentials。
+
+18.2 Deploy
+-----------
+
+    git fetch origin feature/complete-campaign-flow
+    git rev-parse HEAD
+    docker compose -f deploy/docker-compose.gcp.yml config --quiet
+    docker compose -f deploy/docker-compose.gcp.yml build
+    docker compose -f deploy/docker-compose.gcp.yml up -d
+    docker compose -f deploy/docker-compose.gcp.yml ps
+
+預期：
+- VM checkout approved commit。
+- Compose config、build、up 成功。
+- 所有 services Up。
+
+18.3 Health
+-----------
+
+    curl -fsS http://127.0.0.1/
+    docker compose -f deploy/docker-compose.gcp.yml ps
+
+檢查：
+- frontend/Caddy
+- campaign-service
+- membership-service
+- decision-service
+- orchestrator
+- worker-copy
+- worker-image
+- worker-video
+- worker-ads
+- PostgreSQL
+- Redis
+
+18.4 Image smoke
+----------------
+
+使用中性 prompt，只記錄：
+- HTTP status
+- provider
+- model
+- attempts
+- asset_count
+
+預期：HTTP 200、asset_count > 0、可讀 image bytes。
+
+禁止記錄：
+- API key
+- request headers
+- full prompt
+- full provider response
+- signed URL query
+
+18.5 Authenticated batch smoke
+------------------------------
+
+使用獨立 QA 帳號執行：
+
+1. 上傳 1 個合法檔案，確認成功。
+2. 上傳 2 個合法檔案，確認兩個成功。
+3. 上傳 10 個合法檔案，確認 bounded concurrency。
+4. 上傳 2 個檔案，其中 1 個故意超過大小限制。
+5. 確認 campaign start 被阻止。
+6. retry 失敗檔案。
+7. 確認只有失敗檔案重傳。
+8. 確認成功 reference_id 不變。
+9. 確認全部成功後 campaign start 可用。
+
+18.6 Restart persistence
+------------------------
+
+1. 記錄 folder_id、reference_id、knowledge item ID、file metadata。
+2. Restart campaign-service／相關 worker。
+3. 重新列出資料。
+4. 下載 reference/image bytes。
+5. 比較 restart 前後 metadata、size、content type、bytes。
+
+預期：資料一致且可讀。
+
+
+十九、測試結果紀錄表
+====================
+
+測試日期：
+測試人員：
+Git commit：
+環境：Local / Compose / GCP
+API base URL：
+Frontend URL：
+Backup ID：
+
+案例 ID | 結果(PASS/FAIL/BLOCKED) | 實際結果 | 證據位置 | 缺陷 ID
+--------|-------------------------|----------|----------|--------
+        |                         |          |          |
+        |                         |          |          |
+        |                         |          |          |
+
+失敗案例必須記錄：
+- 重現步驟
+- request/response status（遮蔽敏感欄位）
+- timestamp
+- campaign/task/reference ID
+- service/container
+- log correlation ID
+- 預期與實際差異
+- 是否可重現
+
+
+二十、缺陷分級
+==============
+
+P0：資料外洩、跨公司讀取、production 全面不可用、資料損毀。
+P1：核心流程不能完成、圖片生成假成功、batch failure 仍可啟動 campaign、權限繞過。
+P2：非核心功能錯誤、可 workaround 的 UI/API 問題、部分語系錯誤。
+P3：文字、排版、低風險 warning、非阻擋改善。
+
+Release blocker：
+- P0 或 P1 未修復。
+- image empty result 被標記成功。
+- batch failed file 仍可啟動 campaign。
+- cross-company isolation 失敗。
+- secret 出現在 log、trace、DB 或 response。
+- backup 失敗或無法確認。
+- migration 後 persistence/readability 未驗證。
+
+
+二十一、Release Sign-off
+========================
+
+[ ] 自動化測試結果已附上
+[ ] 手動案例全部完成或明確標記 BLOCKED
+[ ] P0/P1 缺陷為 0
+[ ] Permission/company isolation 通過
+[ ] Image empty/502/retry 通過
+[ ] Batch partial failure/start gate 通過
+[ ] Folder/reference persistence 通過
+[ ] Backup ID/status 已記錄
+[ ] GCP revision 已記錄
+[ ] Health/Compose status 已記錄
+[ ] Secrets 未進入報告或 log
+[ ] 已知 warnings/failures 已明確列出
+
+QA 簽核：
+產品簽核：
+工程簽核：
+維運簽核：
+最終上線決策：

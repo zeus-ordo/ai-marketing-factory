@@ -1,0 +1,325 @@
+AI Marketing Factory
+System Reference Packs
+平台管理員操作流程手冊
+
+版本：2026-10
+
+======================================================================
+一、登入
+======================================================================
+
+前往：
+
+http://35.221.249.149/content-studio
+
+使用平台管理員帳號登入。
+
+只有具備 Platform Admin 權限的使用者，才能看到並管理：
+
+System Reference Packs
+
+======================================================================
+二、建立 Reference Pack
+======================================================================
+
+1. 進入 Content Studio。
+2. 捲動至 System Reference Packs。
+3. 點選 New Pack。
+4. 填寫 Pack 資訊。
+5. 點選 Save。
+
+Pack Name 建議使用清楚的命名方式：
+
+- Global Brand Identity
+- Global Product References
+- Food Visual Style
+- Food Campaign Examples
+
+Role 使用方式：
+
+Brand Identity
+  Logo、品牌識別、品牌色、品牌字體示意。
+
+Product
+  產品外觀、包裝、產品細節、使用方式。
+
+Style
+  色彩、氛圍、材質、攝影風格、視覺語氣。
+
+Composition
+  構圖、版型、留白、畫面比例、視覺層級。
+
+Campaign Examples
+  過往廣告、社群貼文、活動主視覺、Banner 範例。
+
+Industry 設定：
+
+- 留白：所有產業可使用。
+- 填寫產業：只有該產業活動使用。
+
+範例：
+
+food
+beauty
+retail
+
+Selection Mode：
+
+- Mandatory：生成時優先使用。
+- Optional：有適合空間時才使用。
+
+建議設定：
+
+- Brand Identity：Mandatory
+- Product：Mandatory
+- Style：Optional
+- Composition：Optional
+- Campaign Examples：Optional
+
+Max Images 建議設定：
+
+- Brand Identity：2
+- Product：2
+- Style：1～2
+- Composition：1
+- Campaign Examples：1
+
+Priority 數字越高，優先級越高。
+
+建議設定：
+
+- Brand Identity：100
+- Product：90
+- Style：70
+- Composition：60
+- Campaign Examples：50
+
+======================================================================
+三、上傳 Pack 圖片
+======================================================================
+
+1. 在 Pack 清單點選剛建立的 Pack。
+2. 點選 Choose Images。
+3. 選擇 PNG、JPG、JPEG 或 WebP 圖片。
+4. 點選 Upload。
+5. 等待圖片逐張完成分析。
+
+建議檔名：
+
+- brand-logo.png
+- brand-color-palette.jpg
+- product-front.jpg
+- product-package.jpg
+- food-style-warm.jpg
+- campaign-example-01.jpg
+
+建議每個 Pack 先上傳 3～10 張高品質圖片。
+
+不要一次上傳大量相似圖片，也不要上傳客戶不希望送給 AI 模型的機密文件或個人資料。
+
+======================================================================
+四、圖片分析狀態
+======================================================================
+
+Pending
+  圖片已成功上傳，等待背景分析。
+
+Processing
+  系統正在使用 Gemini 分析圖片。
+
+Ready
+  圖片已完成分析，可以被新的 RAG 流程使用。
+
+Failed
+  分析失敗。
+
+Failed 處理方式：
+
+1. 確認圖片格式正確。
+2. 確認圖片沒有損壞。
+3. 點選 Retry。
+4. 等待重新分析。
+
+只有 Ready 的圖片會被新的 RAG 流程使用。
+
+Ready 後請檢查：
+
+- 圖片描述
+- 顏色
+- 主要物件
+- 構圖
+- 視覺風格
+- 產業標籤
+
+======================================================================
+五、推薦的 Pack 組織方式
+======================================================================
+
+Global Brand Identity
+  內容：Logo、品牌主色、品牌字體、品牌識別規則。
+  Industry：留白。
+  Selection Mode：Mandatory。
+  Max Images：2。
+
+Global Product References
+  內容：產品正面圖、產品側面圖、產品包裝、產品使用方式。
+  Industry：留白。
+  Selection Mode：Mandatory。
+  Max Images：2。
+
+Food Visual Style
+  內容：餐飲場景、食物攝影、桌面材質、暖色調氛圍。
+  Industry：food。
+  Selection Mode：Optional。
+  Max Images：2。
+
+Food Campaign Examples
+  內容：過往廣告、社群貼文、活動主視覺、Banner 範例。
+  Industry：food。
+  Selection Mode：Optional。
+  Max Images：1～2。
+
+======================================================================
+六、管理原則
+======================================================================
+
+1. 不要把所有圖片都設成 Mandatory。
+2. Brand Identity 與 Product 建議設為 Mandatory。
+3. Style、Composition、Campaign Examples 建議設為 Optional。
+4. 每個 Pack 保持單一用途。
+5. 不要把 Logo、產品圖、風格圖全部放進同一個 Pack。
+6. 圖片要清楚、主體明確、能代表品牌特徵。
+7. 避免模糊、重複或互相衝突的參考圖片。
+8. 只有 Ready 的圖片才算有效 RAG 資料。
+
+======================================================================
+七、確認 Pack 是否正常使用
+======================================================================
+
+1. 建立一個測試 Campaign。
+2. 指定對應產業。
+3. 執行文案或圖片生成。
+4. 開啟 Context Viewer：
+
+http://35.221.249.149:3010/login
+
+5. 查看該次生成使用的來源資訊。
+
+確認：
+
+- Pack 名稱正確。
+- Pack role 正確。
+- source type 正確。
+- selected count 合理。
+- Ready 圖片有被選中。
+- 沒有 private path 或系統內部資料。
+
+圖片生成限制：
+
+- Enriched visual anchors 不超過 3 張。
+- 全部送給圖片模型的圖片不超過 6 張。
+
+======================================================================
+八、常見問題
+======================================================================
+
+問題：Pack 建立後沒有圖片被使用。
+
+檢查：
+
+- 圖片是否為 Ready。
+- Pack 是否為 Active。
+- Industry 是否與 Campaign 一致。
+- Mandatory／Optional 是否設定正確。
+- Max Images 是否大於 0。
+
+問題：圖片顯示 Failed。
+
+處理：
+
+- 確認檔案格式為 PNG、JPG、JPEG 或 WebP。
+- 確認圖片沒有損壞。
+- 確認圖片大小沒有超過限制。
+- 按 Retry 重新分析。
+
+問題：AI 沒有使用指定圖片風格。
+
+處理：
+
+1. 確認圖片狀態為 Ready。
+2. 在 Context Viewer 查看該圖片是否被選取。
+3. 減少參考圖片數量。
+4. 保留最相關的 1～3 張風格圖片。
+
+問題：產品外觀生成錯誤。
+
+處理：
+
+1. 增加清楚的產品正面圖。
+2. 在 Campaign brief 中寫明：保留產品原始外觀、比例與包裝。
+3. 確認 Product Pack 為 Mandatory。
+
+問題：結果風格混亂。
+
+處理：
+
+1. 減少 Optional Style 圖片數量。
+2. 移除互相衝突的風格圖。
+3. 保留一致的品牌色與構圖圖片。
+
+問題：不同產業使用到錯誤圖片。
+
+檢查：
+
+- Pack Industry 是否設定正確。
+- Global Pack 是否真的應該所有產業使用。
+- 特定產業圖片是否誤放到 Global Pack。
+
+======================================================================
+九、每日管理檢查清單
+======================================================================
+
+[ ] 新上傳圖片是否完成 Ready。
+[ ] Failed 圖片是否已 Retry 或刪除。
+[ ] Brand Identity Pack 是否正確。
+[ ] Product Pack 是否正確。
+[ ] Pack 是否保持 Active。
+[ ] Industry 設定是否正確。
+[ ] Max Images 是否合理。
+[ ] 最近生成是否使用正確 Pack。
+[ ] Context Viewer 是否能看到來源。
+[ ] 是否有重複或過時圖片。
+
+======================================================================
+十、推薦初始設定
+======================================================================
+
+Global Brand Identity
+  Role：Brand Identity
+  Selection：Mandatory
+  Max Images：2
+  Priority：100
+
+Global Product References
+  Role：Product
+  Selection：Mandatory
+  Max Images：2
+  Priority：90
+
+Food Visual Style
+  Role：Style
+  Industry：food
+  Selection：Optional
+  Max Images：2
+  Priority：70
+
+Food Campaign Examples
+  Role：Campaign Examples
+  Industry：food
+  Selection：Optional
+  Max Images：1
+  Priority：50
+
+管理原則：
+
+少量、高品質、角色清楚、產業正確、全部等待 Ready。

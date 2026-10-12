@@ -7,6 +7,7 @@ from app.repositories.role import RoleRepository
 from app.repositories.invitation import InvitationRepository
 from app.services.email import send_email, EmailType
 from app.config import settings
+from app.permissions import require_any_permission, require_permission
 
 router = APIRouter()
 member_repo = MemberRepository()
@@ -15,23 +16,24 @@ invitation_repo = InvitationRepository()
 
 
 def check_permission(payload: dict, permission: str) -> None:
-    if permission not in (payload.get("permissions") or []):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    require_permission(payload, permission)
 
 
 async def get_member_roles(member_id: UUID) -> list[RoleResponse]:
     # Get roles from DB via member_roles join
     from app.database import get_connection
-    async with get_connection() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT r.role_id, r.company_id, r.name, r.is_system, r.permissions, r.created_at
-            FROM roles r
-            JOIN member_roles mr ON r.role_id = mr.role_id
-            WHERE mr.member_id = $1
-            """,
-            member_id,
-        )
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT r.role_id, r.company_id, r.name, r.is_system, r.permissions, r.created_at
+                FROM roles r
+                JOIN member_roles mr ON r.role_id = mr.role_id
+                WHERE mr.member_id = %s
+                """,
+                (member_id,),
+            )
+            rows = cur.fetchall()
         return [
             RoleResponse(
                 role_id=row["role_id"],
@@ -88,15 +90,18 @@ async def list_members(
     company_id: UUID,
     payload: dict = Depends(require_auth),
 ):
-    check_permission(payload, "member:manage")
+    require_any_permission(payload, "member:assign_role", "member:manage")
     if str(payload.get("company_id")) != str(company_id):
         raise HTTPException(status_code=403, detail="Cannot view members of another company")
 
-    async with __import__("app.database", fromlist=["get_connection"]).get_connection() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM members WHERE company_id = $1 ORDER BY created_at DESC",
-            company_id,
-        )
+    from app.database import get_connection
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM members WHERE company_id = %s ORDER BY created_at DESC",
+                (company_id,),
+            )
+            rows = cur.fetchall()
         items = []
         for row in rows:
             roles = await get_member_roles(row["member_id"])
@@ -125,11 +130,19 @@ async def remove_member(
     if str(payload.get("company_id")) != str(company_id):
         raise HTTPException(status_code=403, detail="Cannot remove members of another company")
 
-    async with __import__("app.database", fromlist=["get_connection"]).get_connection() as conn:
-        await conn.execute(
-            "UPDATE members SET company_id = NULL, is_active = FALSE WHERE member_id = $1",
-            member_id,
-        )
+    from app.database import get_connection
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT company_id FROM members WHERE member_id = %s", (member_id,))
+            target = cur.fetchone()
+            if not target:
+                raise HTTPException(status_code=404, detail="Member not found")
+            if target["company_id"] is None or str(target["company_id"]) != str(company_id):
+                raise HTTPException(status_code=403, detail="Cannot remove a member of another company")
+            cur.execute(
+                "UPDATE members SET company_id = NULL, is_active = FALSE WHERE member_id = %s AND company_id = %s",
+                (member_id, company_id),
+            )
 
 
 @router.put("/members/{member_id}/roles")
@@ -140,9 +153,30 @@ async def update_member_roles(
     req: MemberRoleUpdateRequest,
     payload: dict = Depends(require_auth),
 ):
-    check_permission(payload, "member:manage")
+    require_any_permission(payload, "member:assign_role", "member:manage")
     if str(payload.get("company_id")) != str(company_id):
         raise HTTPException(status_code=403, detail="Cannot update members of another company")
 
-    await role_repo.set_member_roles(member_id, req.role_ids)
+    target = await member_repo.get_by_id(member_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Member not found")
+    if target.company_id is None or str(target.company_id) != str(company_id):
+        raise HTTPException(status_code=403, detail="Cannot update a member of another company")
+
+    role_ids = list(dict.fromkeys(req.role_ids))
+    for role_id in role_ids:
+        role = await role_repo.get_by_id(role_id)
+        if not role:
+            raise HTTPException(status_code=404, detail="Role not found")
+        if role.is_system or role.company_id is None:
+            raise HTTPException(status_code=422, detail="Cannot assign platform roles")
+        if str(role.company_id) != str(company_id):
+            raise HTTPException(status_code=403, detail="Cannot assign roles from another company")
+
+    await role_repo.set_member_roles(
+        member_id,
+        role_ids,
+        actor_id=UUID(payload["sub"]),
+        company_id=company_id,
+    )
     return {"message": "Roles updated"}

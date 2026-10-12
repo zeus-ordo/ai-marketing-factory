@@ -331,6 +331,16 @@ ENVEOF
 chmod 600 /opt/ai-marketing-factory/.env.local
 echo ".env.local done"
 
+echo "[4b/7] Writing context viewer environment..."
+cat > /opt/ai-marketing-factory/.env.context-viewer << 'VIEWEREOF'
+DATABASE_URL=postgresql://app:{db_password}@{sql_ip}:5432/marketing_ai
+VIEWER_USERNAME=admin
+VIEWER_PASSWORD={plat_admin}
+SESSION_SECRET={jwt_secret}
+VIEWEREOF
+chmod 600 /opt/ai-marketing-factory/.env.context-viewer
+echo "Context viewer environment done"
+
 echo "[5/7] Starting services..."
 cd /opt/ai-marketing-factory
 (docker compose -f deploy/docker-compose.gcp.yml down --remove-orphans 2>/dev/null || true)
@@ -430,7 +440,7 @@ Write-Host ""
 Write-Info "NEXT STEPS:"
 Write-Info "  1. Set DNS A record -> $vmIp"
 Write-Info "  2. Open http://$vmIp"
-Write-Info "  3. Login: regression.admin@example.com / Regress!2026Pass#A"
+Write-Info "  3. Use the administrator credentials configured in /opt/ai-marketing-factory/.env.context-viewer"
 Write-Host ""
 Write-Info "VM commands:"
 Write-Info "  SSH   : gcloud compute ssh $VmName --zone=$Zone"

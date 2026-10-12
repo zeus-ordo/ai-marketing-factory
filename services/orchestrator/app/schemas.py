@@ -9,10 +9,16 @@ class OrchestratorTask(BaseModel):
     depends_on: list[str]
     priority: int
     acceptance: list[str]
-    status: Literal["pending", "planned", "running", "validating", "passed", "failed", "retrying"] = "planned"
+    status: Literal["pending", "planned", "running", "validating", "passed", "failed", "blocked", "retrying"] = "planned"
     company_id: str = ""
     run_id: str = ""
     worker_payload: dict[str, Any] = Field(default_factory=dict)
+    retry_count: int = 0
+    error_class: str | None = None
+    error_detail: str | None = None
+    blocked_by_task_id: str | None = None
+    blocked_reason: str | None = None
+    next_retry_at: str | None = None
 
 
 class DispatchRequest(BaseModel):

@@ -96,14 +96,14 @@ export function ReviewQueueTable({
                   {statusLabel(item.status, t)}
                 </span>
               </td>
-              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{rejectReason(item)}</td>
+              <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-300">{rejectReason(item, t)}</td>
               <td className="px-4 py-3 whitespace-nowrap">
                 <div className="flex flex-nowrap items-center gap-2 whitespace-nowrap">
                   <button
                     onClick={() => onPreview(item.asset_id)}
                     className="inline-flex shrink-0 whitespace-nowrap rounded-md bg-slate-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-700 dark:bg-slate-700"
                   >
-                    預覽
+                    {t("review.previewTitle")}
                   </button>
                   <button
                     onClick={() => onApprove(item)}
@@ -165,9 +165,9 @@ function assetTypeLabel(item: ReviewItem, t: ReturnType<typeof useI18n>["t"]) {
   if (item.asset_id.startsWith("img_") || item.asset_id.startsWith("image_")) return t("assets.type.image");
   if (item.asset_id.startsWith("vid_") || item.asset_id.startsWith("video_")) return t("assets.type.video");
   if (item.asset_id.startsWith("ads_")) return t("assets.type.ads");
-  return "—";
+  return t("common.notAvailable");
 }
 
-function rejectReason(item: ReviewItem) {
-  return item.reject_reason || item.rejected_reason || item.reason || "—";
+function rejectReason(item: ReviewItem, t: ReturnType<typeof useI18n>["t"]) {
+  return item.reject_reason || item.rejected_reason || item.reason || t("common.notAvailable");
 }

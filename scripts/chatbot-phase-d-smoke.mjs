@@ -15,7 +15,7 @@ const ACTOR_ID = process.env.CHATBOT_SMOKE_ACTOR_ID ?? "chatbot-smoke";
 const ACTOR_ROLE = process.env.CHATBOT_SMOKE_ROLE ?? "admin";
 const ACTOR_TOKEN_SECRET =
   process.env.CHAT_ACTOR_TOKEN_SECRET ?? process.env.NEXTAUTH_SECRET ?? process.env.JWT_SECRET ?? "";
-const AUDIT_API_KEY = process.env.CHAT_AUDIT_API_KEY ?? "change_me_audit_key";
+const AUDIT_API_KEY = process.env.CHAT_AUDIT_API_KEY ?? "";
 
 function getAuditHeaders() {
   return {

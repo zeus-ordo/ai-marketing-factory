@@ -8,6 +8,8 @@ class VideoRunRequest(BaseModel):
     prompt: str
     duration: int = 6
     aspect_ratio: str = "9:16"
+    provider: str | None = None
+    model: str | None = None
 
 
 class VideoRunResponse(BaseModel):
@@ -28,3 +30,5 @@ class RevisionRequest(BaseModel):
     reject_reason: str
     duration: int = 6
     aspect_ratio: str = "9:16"
+    provider: str | None = None
+    model: str | None = None

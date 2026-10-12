@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n/context";
 
 type Props = {
@@ -13,14 +13,21 @@ type Props = {
 export function ReviewActionModal({ open, busy, onClose, onSubmit }: Props) {
   const { t } = useI18n();
   const [reason, setReason] = useState("");
+  const titleId = "review-reject-title";
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (open) reasonRef.current?.focus();
+  }, [open]);
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-labelledby={titleId}>
       <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-xl dark:bg-slate-900">
-        <h3 className="text-lg font-semibold">{t("review.rejectReason")}</h3>
+        <h3 id={titleId} className="text-lg font-semibold">{t("review.rejectReason")}</h3>
         <textarea
+          ref={reasonRef}
           value={reason}
           onChange={(event) => setReason(event.target.value)}
           placeholder={t("review.rejectReasonPlaceholder")}
