@@ -1061,8 +1061,8 @@ REFERENCE_ALLOWED_MIME_TYPES = {
 }
 REFERENCE_EXTENSION_MIME_TYPES = {
     ".pdf": {"application/pdf"},
-    ".txt": {"text/plain"},
-    ".md": {"text/markdown", "text/plain"},
+    ".txt": {"text/plain", "application/octet-stream"},
+    ".md": {"text/markdown", "application/octet-stream"},
     ".doc": {"application/msword", "application/octet-stream"},
     ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/octet-stream"},
     ".ppt": {"application/vnd.ms-powerpoint", "application/octet-stream"},
@@ -1078,7 +1078,7 @@ REFERENCE_EXTENSION_MIME_TYPES = {
     ".mkv": {"video/x-matroska"},
     ".webm": {"video/webm"},
 }
-REFERENCE_OCTET_STREAM_EXTENSIONS = {".doc", ".docx", ".ppt", ".pptx"}
+REFERENCE_OCTET_STREAM_EXTENSIONS = {".txt", ".md", ".doc", ".docx", ".ppt", ".pptx"}
 os.makedirs(CAMPAIGN_REFERENCES_DIR, exist_ok=True)
 os.makedirs(GENERATED_ASSETS_DIR, exist_ok=True)
 
@@ -3400,7 +3400,7 @@ def build_worker_payload_for_task(
             "task_id": task_id,
             "campaign_id": campaign_id,
             "company_id": company_id,
-            "prompt": image_prompt + context_text,
+            "prompt": image_prompt,
             "sizes": image_sizes_for_count(campaign.brief.deliverables.image_assets),
             "style_profile": {"preset": "infographic" if "comparison infographic" in image_prompt else "photographic"},
             "reference_images": reference_images,
@@ -6885,7 +6885,17 @@ def delete_reference_pack_item(req: Request, pack_id: str, item_id: str) -> Refe
     _require_platform_admin(req)
     _get_pack_or_404(pack_id)
     if persistence is not None and callable(getattr(persistence, "delete_reference_pack_item", None)):
+        if callable(getattr(persistence, "list_reference_pack_items", None)):
+            rows = persistence.list_reference_pack_items(pack_id)
+        elif callable(getattr(persistence, "list_knowledge_items", None)):
+            rows = [row for row in persistence.list_knowledge_items("platform") if row.get("reference_pack_id") == pack_id]
+        else:
+            rows = []
+        matching = next((row for row in rows if str(row.get("item_id")) == item_id), None)
+        stored_path = matching.get("metadata", {}).get("stored_path") if isinstance(matching, dict) and isinstance(matching.get("metadata"), dict) else None
         deleted = bool(persistence.delete_reference_pack_item(pack_id, item_id))
+        if deleted and isinstance(stored_path, str):
+            cleanup_reference_upload(stored_path)
     elif persistence is not None:
         deleted = False
     else:

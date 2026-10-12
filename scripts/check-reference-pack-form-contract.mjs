@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 const page = readFileSync(new URL("../app/content-studio/page.tsx", import.meta.url), "utf8");
+const batchUpload = readFileSync(new URL("../lib/api/batch-upload.ts", import.meta.url), "utf8");
 const translations = readFileSync(new URL("../lib/i18n/translations.ts", import.meta.url), "utf8");
 
 const requiredKeys = [
@@ -48,6 +49,9 @@ for (const id of requiredIds) {
 }
 
 if (!page.includes('htmlFor="reference-pack-file-input"')) failures.push("file input must have a matching label");
+if (!batchUpload.includes('"application/octet-stream"')) failures.push("shared preflight must support application/octet-stream");
+if (!batchUpload.includes('extension === ".txt" || extension === ".md"')) failures.push("shared preflight must apply text MIME compatibility by extension");
+if (!batchUpload.includes("const allowedMimeTypes = policy.mimeTypes[extension] ?? []")) failures.push("shared preflight must preserve policy-specific image MIME validation");
 const expectedAccept = 'accept="image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,application/octet-stream,.txt,.md"';
 if (!page.includes(expectedAccept)) failures.push("file input must accept image, text, and octet-stream reference formats");
 if (!page.includes("onChange={(event) =>") || !page.includes("const referenceFiles = selected.map((file)") || !page.includes("isTextReferenceFile(file)")) failures.push("file input must classify selected files in its actual selection handler");

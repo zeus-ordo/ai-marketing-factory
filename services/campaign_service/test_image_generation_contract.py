@@ -61,6 +61,24 @@ def test_copy_payload_has_attributes_without_image_parts(tmp_path):
     assert payload["legacy_references"] == []
 
 
+def test_image_prompt_does_not_include_text_reference_context(tmp_path):
+    campaign, _ = pack_snapshot(tmp_path, "optional")
+    text_reference = ContextSourceItem(
+        "platform_default", "text-pack-item", "brand-notes.md", "KEEP THIS OUT OF IMAGE PROMPT",
+        {"file_type": "text/markdown", "pack_id": "pack-text", "pack_name": "Text Pack"},
+    )
+    snapshot = assemble_generation_context(campaign, [text_reference], [], [], 100)
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    assert "KEEP THIS OUT OF IMAGE PROMPT" not in payload["prompt"]
+    assert "KEEP THIS OUT OF IMAGE PROMPT" not in str(payload["reference_images"])
+    assert payload["context_sources"][0]["text"] == "KEEP THIS OUT OF IMAGE PROMPT"
+    assert payload["text_references"] == []
+
+
 def test_image_payload_caps_enriched_anchors_and_keeps_pack_precedence(tmp_path):
     campaign, _ = pack_snapshot(tmp_path, "optional")
     pack_path = tmp_path / "pack.png"

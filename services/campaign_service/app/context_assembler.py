@@ -372,7 +372,7 @@ def build_generation_reference_payload(
         }
         for item in legacy
     ]
-    text_references = [
+    text_references = [] if task_type == "image_generation" else [
         {
             "source_id": item.source_id,
             "source_type": item.source_type,

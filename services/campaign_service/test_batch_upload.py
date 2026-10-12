@@ -263,22 +263,20 @@ def test_mismatched_mime_returns_unsupported_file_type(configured):
     assert list(tmp_path.rglob("*")) == []
 
 
-def test_octet_stream_must_match_explicit_safe_extension_allowlist(configured):
-    campaign, persistence, tmp_path = configured
+@pytest.mark.parametrize("name", ["guide.txt", "guide.md"])
+def test_octet_stream_text_upload_matches_backend_contract(configured, name):
+    campaign, persistence, _ = configured
 
-    with pytest.raises(HTTPException) as exc:
-        main.upload_campaign_reference(
-            campaign.campaign_id,
-            request(),
-            upload(name="guide.txt", content_type="application/octet-stream"),
-            operator=None,
-            folder_id=None,
-        )
+    result = main.upload_campaign_reference(
+        campaign.campaign_id,
+        request(),
+        upload(name=name, content_type="application/octet-stream"),
+        operator=None,
+        folder_id=None,
+    )
 
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "UNSUPPORTED_FILE_TYPE"
-    assert persistence.rows == {}
-    assert list(tmp_path.rglob("*")) == []
+    assert result.file_name == name
+    assert persistence.saved[0]["file_type"] == "application/octet-stream"
 
 
 def test_partial_database_persistence_is_deleted_after_failure(configured, monkeypatch):

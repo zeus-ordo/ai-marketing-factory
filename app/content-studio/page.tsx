@@ -39,7 +39,11 @@ type KnowledgeTab = "all" | "ai" | "manual";
 const MAX_BATCH_UPLOAD_FILES = 20;
 function isTextReferenceFile(file: File): boolean {
   const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
-  return [".txt", ".md"].includes(extension) && (!file.type || ["text/plain", "text/markdown", "application/octet-stream"].includes(file.type));
+  return extension === ".txt"
+    ? !file.type || ["text/plain", "application/octet-stream"].includes(file.type)
+    : extension === ".md"
+      ? !file.type || ["text/markdown", "application/octet-stream"].includes(file.type)
+      : false;
 }
 
 function isTextReferenceItem(item: ReferencePackItemRecord): boolean {

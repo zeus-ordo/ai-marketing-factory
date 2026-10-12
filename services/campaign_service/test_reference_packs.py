@@ -291,6 +291,23 @@ def test_pack_item_delete_removes_matching_in_memory_knowledge_item(monkeypatch)
     assert main.knowledge_items["platform"] == []
 
 
+def test_persistent_pack_item_delete_removes_stored_file(configured, tmp_path):
+    stored_path = tmp_path / "reference.png"
+    stored_path.write_bytes(b"reference")
+    pack = main.create_reference_pack(req(), main.ReferencePackCreateRequest(name="Pack", role="style"))
+    configured.items = [{
+        "item_id": "item-persistent",
+        "company_id": "platform",
+        "reference_pack_id": pack.pack_id,
+        "metadata": {"stored_path": str(stored_path)},
+    }]
+
+    result = main.delete_reference_pack_item(req(), pack.pack_id, "item-persistent")
+
+    assert result.deleted is True
+    assert not stored_path.exists()
+
+
 def test_in_memory_pack_delete_removes_linked_items_from_platform_listing(monkeypatch):
     monkeypatch.setattr(main, "persistence", None)
     monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)

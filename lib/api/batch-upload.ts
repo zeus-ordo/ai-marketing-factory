@@ -30,8 +30,11 @@ function stableUploadErrorCode(reason: unknown): string {
 export function preflightCampaignReferenceFiles(files: File[], policy: UploadPolicy): BatchUploadFileState<File>[] {
   return files.map((file) => {
     const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+    const allowedMimeTypes = policy.mimeTypes[extension] ?? [];
+    const compatibleTextMime = (extension === ".txt" || extension === ".md") && file.type === "application/octet-stream";
     const errorCode = file.size > policy.maxBytes ? "FILE_TOO_LARGE" : !policy.allowedExtensions.includes(extension)
-      ? "UNSUPPORTED_FILE_TYPE" : file.type && !(policy.mimeTypes[extension] ?? []).includes(file.type)
+      ? "UNSUPPORTED_FILE_TYPE" : file.type && !allowedMimeTypes.includes(file.type)
+        && !compatibleTextMime
         ? "UNSUPPORTED_FILE_TYPE" : undefined;
     return { file, status: errorCode ? "failed" : "pending", errorCode };
   });
