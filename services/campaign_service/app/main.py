@@ -6653,6 +6653,17 @@ def _is_image_upload(file_name: str, content_type: str) -> bool:
     return content_type.startswith("image/") and os.path.splitext(file_name)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
+def _reference_pack_upload_kind(file_name: str, content_type: str) -> str | None:
+    extension = os.path.splitext(file_name)[1].lower()
+    if extension in {".png", ".jpg", ".jpeg", ".webp", ".gif"} and content_type.startswith("image/"):
+        return "image"
+    if extension == ".txt" and content_type in {"text/plain", "application/octet-stream"}:
+        return "text"
+    if extension == ".md" and content_type in {"text/markdown", "application/octet-stream"}:
+        return "text"
+    return None
+
+
 def _create_pending_analysis(item: dict[str, Any]) -> dict[str, Any] | None:
     if not _is_image_upload(str(item.get("metadata", {}).get("file_name", "")), str(item.get("metadata", {}).get("file_type", ""))):
         return None
@@ -6781,7 +6792,8 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
         raise HTTPException(status_code=400, detail="title is required")
     original_name = os.path.basename(file.filename or "reference.png")
     file_type = (file.content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
-    if not file_type.startswith("image/") or os.path.splitext(original_name)[1].lower() not in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+    upload_kind = _reference_pack_upload_kind(original_name, file_type)
+    if upload_kind is None:
         raise HTTPException(status_code=400, detail="UNSUPPORTED_FILE_TYPE")
     item_id = f"kh_{uuid4().hex[:12]}"
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", original_name).strip("._") or "reference.png"
@@ -6793,7 +6805,8 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
     size = 0
     sha256 = hashlib.sha256()
     try:
-        validate_reference_upload(original_name, file_type, 0)
+        if upload_kind == "image":
+            validate_reference_upload(original_name, file_type, 0)
         deadline = time.monotonic() + REFERENCE_UPLOAD_TIMEOUT_SECONDS
         with open(stored_path, "wb") as output:
             while True:
@@ -6809,10 +6822,19 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
                     raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
                 output.write(chunk)
                 sha256.update(chunk)
-        validate_reference_upload(original_name, file_type, size)
+        if upload_kind == "image":
+            validate_reference_upload(original_name, file_type, size)
+        elif size > REFERENCE_MAX_SIZE_BYTES:
+            raise HTTPException(status_code=400, detail="FILE_TOO_LARGE")
+        else:
+            with open(stored_path, "rb") as uploaded_text:
+                uploaded_text.read().decode("utf-8", errors="strict")
     except HTTPException:
         cleanup_reference_upload(stored_path)
         raise
+    except UnicodeDecodeError as exc:
+        cleanup_reference_upload(stored_path)
+        raise HTTPException(status_code=400, detail="INVALID_UTF8") from exc
     except TimeoutError as exc:
         cleanup_reference_upload(stored_path)
         raise HTTPException(status_code=504, detail="UPLOAD_TIMEOUT") from exc
