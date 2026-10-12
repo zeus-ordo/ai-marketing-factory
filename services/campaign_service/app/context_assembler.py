@@ -372,6 +372,20 @@ def build_generation_reference_payload(
         }
         for item in legacy
     ]
+    text_references = [
+        {
+            "source_id": item.source_id,
+            "source_type": item.source_type,
+            "file_name": item.label,
+            "mime_type": dict(item.metadata).get("mime_type") or dict(item.metadata).get("file_type"),
+            "pack_id": dict(item.metadata).get("pack_id"),
+            "pack_role": dict(item.metadata).get("pack_role"),
+        }
+        for item in snapshot.items
+        if item.source_type in {"platform_default", "industry_default"}
+        and str(dict(item.metadata).get("mime_type") or dict(item.metadata).get("file_type") or "").lower()
+        in {"text/plain", "text/markdown"}
+    ]
     anchors = select_visual_anchor_items(enriched) if task_type == "image_generation" else ()
     visual_anchors = [
         {
@@ -386,7 +400,12 @@ def build_generation_reference_payload(
         }
         for item in anchors
     ]
-    return {"attributes": attributes, "visual_anchors": visual_anchors, "legacy_references": legacy_references}
+    return {
+        "attributes": attributes,
+        "visual_anchors": visual_anchors,
+        "legacy_references": legacy_references,
+        "text_references": text_references,
+    }
 
 
 def build_structured_attribute_text(attributes: dict[str, Any]) -> str:

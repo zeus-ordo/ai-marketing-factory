@@ -266,6 +266,63 @@ def test_generation_context_sanitizes_pack_path_but_keeps_runtime_attachment_pat
     assert source.transient_stored_path == str(image_path)
 
 
+def test_platform_text_reference_enters_rag_context_without_image_quota_usage(monkeypatch, tmp_path):
+    import importlib
+
+    main = importlib.import_module("app.main")
+    text_path = tmp_path / "guidelines.md"
+    text_path.write_text("Use the approved seasonal brand tone.", encoding="utf-8")
+    image_path = tmp_path / "brand.png"
+    image_path.write_bytes(b"brand-image")
+
+    class Persistence:
+        def list_reference_packs(self, **kwargs):
+            return [{
+                "pack_id": "pack-1", "name": "Brand Pack", "role": "brand_identity",
+                "scope": "platform", "industry": None, "selection_mode": "mandatory",
+                "max_images": 1, "priority": 1, "is_active": True,
+            }]
+
+        def list_reference_pack_items(self, pack_id):
+            return [
+                {
+                    "item_id": "text-1", "title": "guidelines.md", "description": "",
+                    "metadata": {
+                        "file_name": "guidelines.md", "file_type": "text/markdown",
+                        "stored_path": str(text_path), "reference_pack_id": pack_id,
+                    },
+                },
+                {
+                    "item_id": "image-1", "title": "brand.png", "description": "",
+                    "metadata": {
+                        "file_name": "brand.png", "file_type": "image/png",
+                        "stored_path": str(image_path), "reference_pack_id": pack_id,
+                    },
+                },
+            ]
+
+    monkeypatch.setattr(main, "persistence", Persistence())
+    snapshot = main.create_generation_context(campaign(), "run-1")
+    payload = main.build_worker_payload_for_task(
+        campaign(), {"task_id": "copy-task", "task_type": "copywriting", "run_id": "run-1"}, snapshot,
+    )
+
+    assert "Use the approved seasonal brand tone." in payload["prompt"]
+    assert any(source["source_id"] == "text-1" and source["text"] == "Use the approved seasonal brand tone."
+               for source in payload["context_sources"])
+    assert any(reference["source_id"] == "text-1" for reference in payload["text_references"])
+    assert snapshot.image_reference_ids == ("image-1",)
+    assert payload["visual_anchors"] == []
+
+    image_payload = main.build_worker_payload_for_task(
+        campaign(), {"task_id": "image-task", "task_type": "image_generation", "run_id": "run-1"}, snapshot,
+    )
+    assert [reference["reference_id"] for reference in image_payload["reference_images"]] == ["image-1"]
+    assert image_payload["reference_audit"]["candidate_count"] == 1
+    assert image_payload["reference_audit"]["selected_count"] == 1
+    assert all(reference["reference_id"] != "text-1" for reference in image_payload["reference_audit"]["references"])
+
+
 def test_cache_loss_rehydrates_runtime_pack_path_without_persisting_it(monkeypatch, tmp_path):
     import importlib
 

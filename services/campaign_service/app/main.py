@@ -2393,6 +2393,19 @@ def safe_reference_excerpt(stored_path: str | None, file_type: str | None, max_c
         return ""
 
 
+def safe_platform_text_excerpt(stored_path: str | None, file_type: str | None, max_chars: int = 1200) -> str:
+    """Read only supported platform reference text while keeping storage paths transient."""
+    if (file_type or "").lower() not in {"text/plain", "text/markdown"}:
+        return ""
+    if not stored_path or not os.path.isfile(stored_path):
+        return ""
+    try:
+        with open(stored_path, "r", encoding="utf-8") as source:
+            return source.read(max_chars).strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
 def list_campaign_reference_context(campaign: CampaignRecord, limit: int = 8) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if persistence is not None:
@@ -2725,7 +2738,9 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
             str(row.get("source_type") or "platform_default"),
             str(row.get("item_id") or ""),
             str(row.get("title") or row.get("file_name") or "reference pack item"),
-            str(row.get("description") or ""),
+            str(row.get("description") or "") or safe_platform_text_excerpt(
+                str(row.get("stored_path") or ""), str(row.get("file_type") or "")
+            ),
             row,
         )
         for row in list_reference_pack_context(campaign)
@@ -3228,6 +3243,10 @@ def build_image_reference_payload(
                 failure.update({key: value for key, value in failure_metadata.items() if value is not None})
                 failure["mandatory"] = bool(is_pack and str(metadata.get("selection_mode")) == "mandatory")
             failures.append(failure)
+    image_candidate_count = sum(
+        1 for item in snapshot.items
+        if str(item.metadata.get("mime_type") or item.metadata.get("file_type") or item.metadata.get("content_type") or "").lower().startswith("image/")
+    )
     pack_candidate_count = sum(
         1 for item in snapshot.items
         if item.source_type in {"platform_default", "industry_default"}
@@ -3282,7 +3301,7 @@ def build_image_reference_payload(
     }
     attribute_candidate_count = sum(1 for item in snapshot.items if item.source_type == "industry_attribute_rag")
     audit.update({
-        "candidate_count": len(snapshot.items),
+        "candidate_count": image_candidate_count,
         "pack_candidate_count": pack_candidate_count,
         "enriched_candidate_count": attribute_candidate_count,
         "candidate_attribute_count": attribute_candidate_count,
@@ -3326,7 +3345,7 @@ def build_worker_payload_for_task(
     } if snapshot else {}
     context_payload.update(
         build_generation_reference_payload(snapshot, str(task_type))
-        if snapshot else {"attributes": [], "visual_anchors": [], "legacy_references": []}
+        if snapshot else {"attributes": [], "visual_anchors": [], "legacy_references": [], "text_references": []}
     )
     task_provider = task.get("provider") if isinstance(task, dict) else task.provider
     task_model = task.get("model") if isinstance(task, dict) else task.model
