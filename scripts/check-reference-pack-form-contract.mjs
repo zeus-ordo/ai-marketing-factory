@@ -14,10 +14,10 @@ const requiredKeys = [
   "maxImagesLabel",
   "priorityLabel",
   "activeLabel",
-  "chooseImagesLabel",
+  "chooseFilesLabel",
   "selectedFilesLabel",
-  "uploadLabel",
-  "noPackSelected",
+  "uploadFilesLabel",
+  "noPackSelectedText",
 ];
 
 const requiredIds = [
@@ -48,17 +48,32 @@ for (const id of requiredIds) {
 }
 
 if (!page.includes('htmlFor="reference-pack-file-input"')) failures.push("file input must have a matching label");
-if (!page.includes('const REFERENCE_PACK_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,.txt,.md"')) failures.push("file input must accept image and text reference formats");
-if (!page.includes("isTextReferenceFile")) failures.push("page must classify text reference files separately");
+const expectedAccept = 'accept="image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,application/octet-stream,.txt,.md"';
+if (!page.includes(expectedAccept)) failures.push("file input must accept image, text, and octet-stream reference formats");
+if (!page.includes("onChange={(event) =>") || !page.includes("const referenceFiles = selected.map((file)") || !page.includes("isTextReferenceFile(file)")) failures.push("file input must classify selected files in its actual selection handler");
+if (!page.includes('"application/octet-stream"')) failures.push("text classifier must accept application/octet-stream");
 if (!page.includes("referencePacks.supportedFormatsLabel")) failures.push("page must show supported reference file formats");
 if (!page.includes("referencePacks.textItemLabel")) failures.push("page must label text reference items");
-if (!page.includes("referencePacks.chooseFilesLabel") || !page.includes("referencePacks.uploadFilesLabel")) failures.push("page must use neutral file upload labels");
-for (const key of ["supportedFormatsLabel", "textItemLabel"]) {
+if (!page.includes("referencePacks.chooseFilesLabel") || !page.includes("referencePacks.uploadFilesLabel") || !page.includes("referencePacks.noFilesLabel") || !page.includes("referencePacks.uploadSuccessLabel") || !page.includes("referencePacks.uploadFailedLabel") || !page.includes("referencePacks.deleteItemConfirmLabel") || !page.includes("referencePacks.deleteItemFailedLabel")) failures.push("page must use neutral file upload, status, and delete labels");
+for (const key of ["supportedFormatsLabel", "textItemLabel", "chooseFilesLabel", "uploadFilesLabel", "noFilesLabel", "uploadSuccessLabel", "uploadFailedLabel", "deleteConfirmLabel", "deleteItemConfirmLabel", "deleteItemFailedLabel", "selectPackLabel"]) {
   const occurrences = translations.match(new RegExp(`\\b${key}:`, "g"))?.length ?? 0;
   if (occurrences !== 3) failures.push(`translation key ${key} must exist in all three locales (found ${occurrences})`);
   if (!page.includes(`referencePacks.${key}`)) failures.push(`page must use referencePacks.${key}`);
 }
 if (!page.includes("item.file_type") || !page.includes("item.file_size")) failures.push("page must render text item file metadata");
+for (const oldCopy of [
+  'accept="image/png,image/jpeg,image/webp,image/gif"',
+  't("referencePacks.chooseImagesLabel")',
+  't("referencePacks.uploadLabel")',
+  't("referencePacks.noFiles")',
+  't("referencePacks.noPackSelected")',
+  't("referencePacks.uploaded")',
+  't("referencePacks.uploadFailed")',
+  't("referencePacks.deleteConfirm")',
+  't("referencePacks.deleteItemConfirm")',
+  't("referencePacks.deleteItemFailed")',
+  't("referencePacks.selectPack")',
+]) if (page.includes(oldCopy)) failures.push(`old image-only JSX/copy remains: ${oldCopy}`);
 if (!page.includes('{!selectedPackId ? <p')) failures.push("page must guide users when no Pack is selected");
 if (!page.includes('{selectedPackId ? <><div className="border-t border-slate-200 pt-3">')) failures.push("upload controls must remain conditional on selectedPackId");
 if (!page.includes("await uploadReferencePackItems(uploadPackId, uploadStates, 3")) failures.push("existing upload API call must remain unchanged");
