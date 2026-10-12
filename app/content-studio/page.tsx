@@ -37,6 +37,16 @@ import { FilePreviewModal } from "@/components/files/file-preview-modal";
 
 type KnowledgeTab = "all" | "ai" | "manual";
 const MAX_BATCH_UPLOAD_FILES = 20;
+const REFERENCE_PACK_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,.txt,.md";
+
+function isTextReferenceFile(file: File): boolean {
+  const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
+  return [".txt", ".md"].includes(extension) && (!file.type || ["text/plain", "text/markdown"].includes(file.type));
+}
+
+function isTextReferenceItem(item: ReferencePackItemRecord): boolean {
+  return ["text/plain", "text/markdown"].includes(item.file_type) || /\.(txt|md)$/i.test(item.file_name);
+}
 
 export default function ContentStudioPage() {
   const { t, locale } = useI18n();
@@ -530,6 +540,39 @@ function SystemReferencePacksSection() {
   }, [t]);
   useEffect(() => { if (selectedPackId) void loadItems(selectedPackId); else setItems([]); }, [loadItems, selectedPackId]);
   useEffect(() => {
+    const noPackMessage = Array.from(document.querySelectorAll("p")).find((element) => element.textContent === t("referencePacks.noPackSelected"));
+    if (noPackMessage) noPackMessage.textContent = t("referencePacks.noPackSelectedText");
+    const input = document.getElementById("reference-pack-file-input") as HTMLInputElement | null;
+    if (!input) return;
+    input.accept = REFERENCE_PACK_ACCEPT;
+    const label = input.parentElement?.querySelector("label[for='reference-pack-file-input']");
+    if (label) label.textContent = t("referencePacks.chooseFilesLabel");
+    const uploadButton = input.parentElement?.querySelector("button");
+    if (uploadButton) uploadButton.textContent = t("referencePacks.uploadFilesLabel");
+    const onChange = (event: Event) => {
+      event.stopImmediatePropagation();
+      const selected = Array.from((event.currentTarget as HTMLInputElement).files ?? []);
+      if (selected.length > MAX_BATCH_UPLOAD_FILES) {
+        setMessage(t("campaigns.form.maxBatchFiles", { count: MAX_BATCH_UPLOAD_FILES }));
+        clearPackUploadState();
+        return;
+      }
+      if (!uploadPolicy) {
+        setMessage(t("referencePacks.policyLoadFailed"));
+        return;
+      }
+      const referenceFiles = selected.map((file) => {
+        const state = preflightCampaignReferenceFiles([file], uploadPolicy)[0];
+        const isImage = /\.((png|jpe?g|webp|gif))$/i.test(file.name) && file.type.startsWith("image/");
+        return isImage || isTextReferenceFile(file) ? state : { ...state, status: "failed" as const, errorCode: "UNSUPPORTED_FILE_TYPE" };
+      });
+      setFiles(selected);
+      setUploadStates(referenceFiles);
+    };
+    input.addEventListener("change", onChange, true);
+    return () => input.removeEventListener("change", onChange, true);
+  }, [selectedPackId, t, uploadPolicy]);
+  useEffect(() => {
     if (!selectedPack) return;
     setName(selectedPack.name); setRole(selectedPack.role); setIndustry(selectedPack.industry ?? ""); setMode(selectedPack.selection_mode);
     setMaxImages(selectedPack.max_images); setPriority(selectedPack.priority); setIsActive(selectedPack.is_active);
@@ -603,7 +646,8 @@ function SystemReferencePacksSection() {
   }
 
   return <section className="space-y-4 rounded-2xl border border-indigo-200 bg-indigo-50/40 p-4 dark:border-indigo-900 dark:bg-indigo-950/20">
-    {selectedPackId ? <div data-testid="pack-analysis-items">{items.map((item) => <ImageAnalysisSummary key={item.item_id} analysis={item.analysis} onRetry={() => void retryPackItemAnalysis(item.item_id)} retrying={busy} />)}</div> : null}
+     <p className="text-xs text-slate-500">{t("referencePacks.supportedFormatsLabel")}</p>
+    {selectedPackId ? <><div data-testid="pack-analysis-items">{items.map((item) => isTextReferenceItem(item) ? <div key={item.item_id} className="rounded-lg border border-slate-200 bg-white p-2 text-xs text-slate-700"><span className="font-medium">{t("referencePacks.textItemLabel")}</span><span className="ml-2">{item.file_name}</span><span className="ml-2 text-slate-500">{item.file_type} · {Math.ceil(item.file_size / 1024)} KB</span></div> : <ImageAnalysisSummary key={item.item_id} analysis={item.analysis} onRetry={() => void retryPackItemAnalysis(item.item_id)} retrying={busy} />)}</div></> : null}
     <header><h2 className="text-lg font-semibold">{t("referencePacks.title")}</h2><p className="text-sm text-slate-500 dark:text-slate-300">{t("referencePacks.subtitle")}</p></header>
     {message ? <p role="alert" className="rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-700">{message}</p> : null}
     <div className="grid gap-2 md:grid-cols-3">

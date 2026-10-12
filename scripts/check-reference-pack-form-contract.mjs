@@ -48,6 +48,17 @@ for (const id of requiredIds) {
 }
 
 if (!page.includes('htmlFor="reference-pack-file-input"')) failures.push("file input must have a matching label");
+if (!page.includes('const REFERENCE_PACK_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,text/plain,text/markdown,.txt,.md"')) failures.push("file input must accept image and text reference formats");
+if (!page.includes("isTextReferenceFile")) failures.push("page must classify text reference files separately");
+if (!page.includes("referencePacks.supportedFormatsLabel")) failures.push("page must show supported reference file formats");
+if (!page.includes("referencePacks.textItemLabel")) failures.push("page must label text reference items");
+if (!page.includes("referencePacks.chooseFilesLabel") || !page.includes("referencePacks.uploadFilesLabel")) failures.push("page must use neutral file upload labels");
+for (const key of ["supportedFormatsLabel", "textItemLabel"]) {
+  const occurrences = translations.match(new RegExp(`\\b${key}:`, "g"))?.length ?? 0;
+  if (occurrences !== 3) failures.push(`translation key ${key} must exist in all three locales (found ${occurrences})`);
+  if (!page.includes(`referencePacks.${key}`)) failures.push(`page must use referencePacks.${key}`);
+}
+if (!page.includes("item.file_type") || !page.includes("item.file_size")) failures.push("page must render text item file metadata");
 if (!page.includes('{!selectedPackId ? <p')) failures.push("page must guide users when no Pack is selected");
 if (!page.includes('{selectedPackId ? <><div className="border-t border-slate-200 pt-3">')) failures.push("upload controls must remain conditional on selectedPackId");
 if (!page.includes("await uploadReferencePackItems(uploadPackId, uploadStates, 3")) failures.push("existing upload API call must remain unchanged");
