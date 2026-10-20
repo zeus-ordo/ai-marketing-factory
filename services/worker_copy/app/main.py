@@ -109,7 +109,7 @@ def _parse_copy_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
     cta = str(parsed.get("cta") or "")
     if not title or len(title) > 30:
         raise ValueError("title must be non-empty and at most 30 chars")
-    if not body_length_is_valid(body, minimum, maximum):
+    if not body or not body_length_is_valid(body, minimum, maximum):
         raise ValueError(f"body length must be between {minimum} and {maximum} chars")
     if not cta or len(cta) > 15:
         raise ValueError("cta must be non-empty and at most 15 chars")

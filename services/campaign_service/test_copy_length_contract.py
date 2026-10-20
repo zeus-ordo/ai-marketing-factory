@@ -168,3 +168,38 @@ def test_review_revision_copy_dispatch_contains_body_length_contract(monkeypatch
     assert captured["reject_reason"] == "Needs revision"
     assert captured["variants"] == 3
     assert captured["brand_context"] == {}
+
+
+def test_review_revision_dispatch_retries_transient_worker_failure(monkeypatch):
+    item = campaign("public relations announcement")
+    attempts = []
+
+    def post_json(_url, _payload):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("Request failed: HTTP Error 503: unavailable")
+        return {}
+
+    monkeypatch.setattr(main, "store", type("Store", (), {"get_campaign": lambda self, _id: item})())
+    monkeypatch.setattr(main, "require_review_action_access", lambda _req: None)
+    monkeypatch.setattr(main, "require_campaign_access", lambda _req, _campaign: None)
+    monkeypatch.setattr(main, "post_json", post_json)
+    monkeypatch.setattr(main, "_capture_worker_payload", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "append_trace_event", lambda **kwargs: None)
+    monkeypatch.setattr(main, "WORKER_RETRY_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(main, "WORKER_RETRY_BACKOFF_SECONDS", 0)
+
+    result = main.submit_revision_request(
+        main.RevisionRequestPayload(
+            review_id="review-1",
+            campaign_id="campaign-1",
+            task_id="copy-task",
+            asset_id="asset-1",
+            asset_type="copy",
+            reject_reason="Needs revision",
+        ),
+        object(),
+    )
+
+    assert result == {"status": "ok"}
+    assert len(attempts) == 2

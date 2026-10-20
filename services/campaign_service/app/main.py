@@ -6167,13 +6167,14 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
         raise HTTPException(status_code=400, detail=f"Unknown asset type: {asset.asset_type}")
 
     try:
-        _capture_worker_payload(
+        worker_response = _worker_post_json(
+            f"{worker_url}/internal/workers/{asset.asset_type}/regenerate",
             revision_payload,
             {"copy": "copywriting", "image": "image_generation", "video": "video_generation", "ads": "ads_strategy"}[asset.asset_type],
             asset.campaign_id,
             asset.task_id,
+            company_id,
         )
-        worker_response = post_json(f"{worker_url}/internal/workers/{asset.asset_type}/regenerate", revision_payload)
         # Save the regenerated asset directly
         task_type_map = {
             "copy": "copywriting",
@@ -8767,13 +8768,14 @@ def submit_revision_request(payload: RevisionRequestPayload, req: Request) -> di
         revision_payload["platforms"] = getattr(payload, "platforms", [])
 
     try:
-        _capture_worker_payload(
+        _worker_post_json(
+            f"{worker_url}/internal/workers/{payload.asset_type}/regenerate",
             revision_payload,
             {"copy": "copywriting", "image": "image_generation", "video": "video_generation", "ads": "ads_strategy"}[payload.asset_type],
             payload.campaign_id,
             payload.task_id,
+            campaign.company_id,
         )
-        post_json(f"{worker_url}/internal/workers/{payload.asset_type}/regenerate", revision_payload)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=f"Revision dispatch failed: {exc}") from exc
 

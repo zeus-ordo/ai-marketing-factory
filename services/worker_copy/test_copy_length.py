@@ -181,6 +181,16 @@ def test_stub_rejects_impossible_non_empty_zero_length_contract(monkeypatch):
     assert "non-empty" in exc_info.value.detail.lower()
 
 
+@pytest.mark.parametrize("minimum, maximum", [(0, 100), (80, 200), (300, 500)])
+def test_parse_copy_variant_rejects_empty_body_for_every_contract(minimum, maximum):
+    with pytest.raises(ValueError, match="body length"):
+        main._parse_copy_variant(
+            json.dumps({"title": "Valid", "body": "", "cta": "Read"}),
+            minimum,
+            maximum,
+        )
+
+
 @pytest.mark.parametrize("invalid_field", ["title", "cta"])
 def test_title_and_cta_limits_are_validated_and_repaired(monkeypatch, invalid_field):
     invalid = {"title": "Valid", "body": "A" * 80, "cta": "Read"}
