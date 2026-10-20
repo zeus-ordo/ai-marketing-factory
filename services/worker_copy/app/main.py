@@ -53,7 +53,24 @@ def _has_real_key(value: str) -> bool:
     return token.lower() not in {"replace-me", "changeme", "change_me", "your_api_key"}
 
 
-def build_copy_prompt(prompt: str, brand_context: dict[str, object], variant_no: int) -> str:
+def copy_field_rules(minimum: int, maximum: int) -> str:
+    return (
+        f'Field rules: "title" max 30 chars, "body" {minimum}-{maximum} chars, '
+        '"cta" max 15 chars. Do NOT use null, None, or empty strings for any field.'
+    )
+
+
+def body_length_is_valid(body: str, minimum: int, maximum: int) -> bool:
+    return minimum <= len(body) <= maximum
+
+
+def build_copy_prompt(
+    prompt: str,
+    brand_context: dict[str, object],
+    variant_no: int,
+    minimum: int = 80,
+    maximum: int = 200,
+) -> str:
     context_parts = []
     if brand_context:
         for key, val in brand_context.items():
@@ -68,9 +85,89 @@ def build_copy_prompt(prompt: str, brand_context: dict[str, object], variant_no:
             "Output ONLY valid JSON with these exact keys; keep title max 30 chars and CTA max 15 chars, "
             "and do not override the campaign prompt's selected body length range. "
             '{"title": "string", "body": "string", "cta": "string"}. '
-            "Do NOT use null or empty strings for any field."
+            + copy_field_rules(minimum, maximum)
         )
     )
+
+
+def _parse_copy_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
+    import json as _json
+
+    parsed = _json.loads(raw)
+    title = str(parsed.get("title") or "")
+    body = str(parsed.get("body") or "")
+    cta = str(parsed.get("cta") or "")
+    if not title or len(title) > 30:
+        raise ValueError("title must be non-empty and at most 30 chars")
+    if not body_length_is_valid(body, minimum, maximum):
+        raise ValueError(f"body length must be between {minimum} and {maximum} chars")
+    if not cta or len(cta) > 15:
+        raise ValueError("cta must be non-empty and at most 15 chars")
+    return {"title": title, "body": body, "cta": cta}
+
+
+def _request_copy_raw(
+    user_prompt: str,
+    field_rules: str,
+    model: str,
+    company_id: str,
+    usage_model: str,
+) -> str:
+    raw = None
+    last_exc: Exception | None = None
+    for _attempt in range(2):
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(
+                    f"{DEEPSEEK_BASE_URL}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": user_prompt + "\n\nRespond ONLY with valid JSON. " + field_rules}],
+                        "response_format": {"type": "json_object"},
+                        "thinking": {"type": "disabled"},
+                        "temperature": 0.8,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                raw = data["choices"][0]["message"]["content"].strip()
+                usage = data.get("usage", {})
+                if usage and company_id:
+                    _report_usage(company_id, usage_model, "deepseek", usage)
+                return raw
+        except Exception as exc:
+            last_exc = exc
+    raise RuntimeError(f"DeepSeek copy generation failed: {last_exc}") from last_exc
+
+
+def _generate_copy_variant(
+    user_prompt: str,
+    company_id: str,
+    minimum: int,
+    maximum: int,
+    model: str,
+    usage_model: str,
+) -> CopyVariant:
+    rules = copy_field_rules(minimum, maximum)
+    raw = _request_copy_raw(user_prompt, rules, model, company_id, usage_model)
+    try:
+        parsed = _parse_copy_variant(raw, minimum, maximum)
+    except Exception as exc:
+        repair_prompt = (
+            f"{user_prompt}\n\nThe previous JSON was invalid: {exc}. "
+            f"Repair it so body is exactly within {minimum}-{maximum} characters. "
+            'Return ONLY valid JSON with exactly these keys: {"title": "string", "body": "string", "cta": "string"}. '
+        )
+        repair_raw = _request_copy_raw(repair_prompt, rules, model, company_id, usage_model)
+        try:
+            parsed = _parse_copy_variant(repair_raw, minimum, maximum)
+        except Exception as repair_exc:
+            raise ValueError(f"invalid copy body length after one repair: {repair_exc}") from repair_exc
+    return CopyVariant(**parsed)
 
 
 def _report_usage(company_id: str, model: str, provider: str, usage: dict[str, int]) -> None:
@@ -128,8 +225,8 @@ def run_copy_worker(payload: CopyRunRequest) -> CopyRunResponse:
             no = index + 1
             variants.append(
                 CopyVariant(
-                    title=f"[stub] {payload.prompt} - Variant {no}",
-                    body=f"Premium campaign copy variant {no} for {payload.campaign_id}.",
+                    title=f"Stub {no}",
+                    body="x" * max(1, payload.body_min_length),
                     cta="Learn More",
                 )
             )
@@ -145,75 +242,22 @@ def run_copy_worker(payload: CopyRunRequest) -> CopyRunResponse:
 
     for index in range(payload.variants):
         variant_no = index + 1
-        user_prompt = build_copy_prompt(payload.prompt, payload.brand_context, variant_no)
-
-        raw = None
-        last_exc: Exception | None = None
-        for attempt in range(2):
-            try:
-                with httpx.Client(timeout=60.0) as client:
-                    resp = client.post(
-                        f"{DEEPSEEK_BASE_URL}/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "model": DEEPSEEK_MODEL,
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        f"{user_prompt}\n\n"
-                                        "Respond ONLY with valid JSON. "
-                                        'Field rules: "title" max 30 chars, "body" 80-200 chars, "cta" max 15 chars. '
-                                        'Do NOT use null, None, or empty strings for any field.'
-                                    ),
-                                }
-                            ],
-                            "response_format": {"type": "json_object"},
-                            "thinking": {"type": "disabled"},
-                            "temperature": 0.8,
-                        },
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    raw = data["choices"][0]["message"]["content"].strip()
-                    usage = data.get("usage", {})
-                    if usage and payload.company_id:
-                        _report_usage(payload.company_id, DEEPSEEK_MODEL, "deepseek", usage)
-                    break
-            except Exception as exc:
-                last_exc = exc
-                continue
-
-        if raw is None:
-            REQUEST_LATENCY.observe(time.perf_counter() - t0)
-            REQUEST_COUNT.labels(status="error").inc()
-            raise HTTPException(
-                status_code=502,
-                detail=f"DeepSeek copy generation failed: {last_exc}",
-            ) from last_exc
-
-        import json as _json
-
         try:
-            parsed = _json.loads(raw)
-        except Exception:
+            user_prompt = build_copy_prompt(
+                payload.prompt, payload.brand_context, variant_no,
+                payload.body_min_length, payload.body_max_length,
+            )
+            variants.append(_generate_copy_variant(
+                user_prompt, payload.company_id,
+                payload.body_min_length, payload.body_max_length, DEEPSEEK_MODEL, DEEPSEEK_MODEL,
+            ))
+        except Exception as exc:
             REQUEST_LATENCY.observe(time.perf_counter() - t0)
             REQUEST_COUNT.labels(status="error").inc()
             raise HTTPException(
                 status_code=502,
-                detail=f"DeepSeek returned non-JSON: {raw[:200]}",
-            )
-
-        variants.append(
-            CopyVariant(
-                title=str(parsed["title"]) if parsed.get("title") else f"Variant {variant_no}",
-                body=str(parsed["body"]) if parsed.get("body") else f"Copy variant {variant_no} for {payload.campaign_id}.",
-                cta=str(parsed["cta"]) if parsed.get("cta") else "Learn More",
-            )
-        )
+                detail=f"DeepSeek copy generation failed: {exc}",
+            ) from exc
 
     REQUEST_LATENCY.observe(time.perf_counter() - t0)
     REQUEST_COUNT.labels(status="success").inc()
@@ -243,8 +287,8 @@ def regenerate_copy(payload: RevisionRequest) -> CopyRunResponse:
             no = index + 1
             variants.append(
                 CopyVariant(
-                    title=f"[stub-rev] {payload.prompt} - Revision {no}",
-                    body=f"Revised copy ({payload.reject_reason[:50]}) for {payload.campaign_id}.",
+                    title=f"Revision {no}",
+                    body="x" * max(1, payload.body_min_length),
                     cta="Learn More",
                 )
             )
@@ -259,75 +303,23 @@ def regenerate_copy(payload: RevisionRequest) -> CopyRunResponse:
 
     for index in range(payload.variants):
         variant_no = index + 1
-        user_prompt = build_copy_prompt(revised_prompt, payload.brand_context, variant_no)
-
-        raw = None
-        last_exc: Exception | None = None
-        for attempt in range(2):
-            try:
-                with httpx.Client(timeout=60.0) as client:
-                    resp = client.post(
-                        f"{DEEPSEEK_BASE_URL}/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "model": DEEPSEEK_MODEL,
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        f"{user_prompt}\n\n"
-                                        "Respond ONLY with valid JSON. "
-                                        'Field rules: "title" max 30 chars, "body" 80-200 chars, "cta" max 15 chars. '
-                                        'Do NOT use null, None, or empty strings for any field.'
-                                    ),
-                                }
-                            ],
-                            "response_format": {"type": "json_object"},
-                            "thinking": {"type": "disabled"},
-                            "temperature": 0.8,
-                        },
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    raw = data["choices"][0]["message"]["content"].strip()
-                    usage = data.get("usage", {})
-                    if usage and payload.company_id:
-                        _report_usage(payload.company_id, f"{DEEPSEEK_MODEL}-rev", "deepseek", usage)
-                    break
-            except Exception as exc:
-                last_exc = exc
-                continue
-
-        if raw is None:
-            REQUEST_LATENCY.observe(time.perf_counter() - t0)
-            REGENERATE_COUNT.labels(status="error").inc()
-            raise HTTPException(
-                status_code=502,
-                detail=f"DeepSeek copy regeneration failed: {last_exc}",
-            ) from last_exc
-
-        import json as _json
-
         try:
-            parsed = _json.loads(raw)
-        except Exception:
+            user_prompt = build_copy_prompt(
+                revised_prompt, payload.brand_context, variant_no,
+                payload.body_min_length, payload.body_max_length,
+            )
+            variants.append(_generate_copy_variant(
+                user_prompt, payload.company_id,
+                payload.body_min_length, payload.body_max_length, DEEPSEEK_MODEL,
+                f"{DEEPSEEK_MODEL}-rev",
+            ))
+        except Exception as exc:
             REQUEST_LATENCY.observe(time.perf_counter() - t0)
             REGENERATE_COUNT.labels(status="error").inc()
             raise HTTPException(
                 status_code=502,
-                detail=f"DeepSeek returned non-JSON: {raw[:200]}",
-            )
-
-        variants.append(
-            CopyVariant(
-                title=str(parsed["title"]) if parsed.get("title") else f"Revision {variant_no}",
-                body=str(parsed["body"]) if parsed.get("body") else f"Revised copy for {payload.campaign_id}.",
-                cta=str(parsed["cta"]) if parsed.get("cta") else "Learn More",
-            )
-        )
+                detail=f"DeepSeek copy regeneration failed: {exc}",
+            ) from exc
 
     REQUEST_LATENCY.observe(time.perf_counter() - t0)
     REGENERATE_COUNT.labels(status="success").inc()
