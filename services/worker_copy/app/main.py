@@ -64,6 +64,16 @@ def body_length_is_valid(body: str, minimum: int, maximum: int) -> bool:
     return minimum <= len(body) <= maximum
 
 
+def _stub_body(prefix: str, minimum: int, maximum: int) -> str:
+    if maximum < 1:
+        raise ValueError("stub mode cannot produce a non-empty body for a 0..0 contract")
+    body = prefix
+    if len(body) < minimum:
+        body = (body + " ") * ((minimum // (len(body) + 1)) + 1)
+        body = body[:minimum]
+    return body[:maximum]
+
+
 def build_copy_prompt(
     prompt: str,
     brand_context: dict[str, object],
@@ -112,10 +122,11 @@ def _request_copy_raw(
     model: str,
     company_id: str,
     usage_model: str,
+    max_attempts: int = 2,
 ) -> str:
     raw = None
     last_exc: Exception | None = None
-    for _attempt in range(2):
+    for _attempt in range(max_attempts):
         try:
             with httpx.Client(timeout=60.0) as client:
                 resp = client.post(
@@ -162,7 +173,7 @@ def _generate_copy_variant(
             f"Repair it so body is exactly within {minimum}-{maximum} characters. "
             'Return ONLY valid JSON with exactly these keys: {"title": "string", "body": "string", "cta": "string"}. '
         )
-        repair_raw = _request_copy_raw(repair_prompt, rules, model, company_id, usage_model)
+        repair_raw = _request_copy_raw(repair_prompt, rules, model, company_id, usage_model, max_attempts=1)
         try:
             parsed = _parse_copy_variant(repair_raw, minimum, maximum)
         except Exception as repair_exc:
@@ -223,13 +234,18 @@ def run_copy_worker(payload: CopyRunRequest) -> CopyRunResponse:
             raise HTTPException(status_code=503, detail="DEEPSEEK_V3_API_KEY is required when WORKER_STRICT_REAL_MODE=true")
         for index in range(payload.variants):
             no = index + 1
-            variants.append(
-                CopyVariant(
-                    title=f"Stub {no}",
-                    body="x" * max(1, payload.body_min_length),
+            try:
+                variants.append(CopyVariant(
+                    title=f"[stub] {payload.prompt} - Variant {no}"[:30],
+                    body=_stub_body(
+                        f"Premium campaign copy variant {no} for {payload.campaign_id}.",
+                        payload.body_min_length,
+                        payload.body_max_length,
+                    ),
                     cta="Learn More",
-                )
-            )
+                ))
+            except ValueError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
         REQUEST_LATENCY.observe(time.perf_counter() - t0)
         REQUEST_COUNT.labels(status="stub").inc()
         STUB_MODE_COUNT.inc()
@@ -285,13 +301,18 @@ def regenerate_copy(payload: RevisionRequest) -> CopyRunResponse:
             raise HTTPException(status_code=503, detail="DEEPSEEK_V3_API_KEY is required when WORKER_STRICT_REAL_MODE=true")
         for index in range(payload.variants):
             no = index + 1
-            variants.append(
-                CopyVariant(
-                    title=f"Revision {no}",
-                    body="x" * max(1, payload.body_min_length),
+            try:
+                variants.append(CopyVariant(
+                    title=f"[stub-rev] {payload.prompt} - Revision {no}"[:30],
+                    body=_stub_body(
+                        f"Revised copy ({payload.reject_reason[:50]}) for {payload.campaign_id}.",
+                        payload.body_min_length,
+                        payload.body_max_length,
+                    ),
                     cta="Learn More",
-                )
-            )
+                ))
+            except ValueError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
         REQUEST_LATENCY.observe(time.perf_counter() - t0)
         REGENERATE_COUNT.labels(status="stub").inc()
         return CopyRunResponse(

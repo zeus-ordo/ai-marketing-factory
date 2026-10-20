@@ -38,7 +38,18 @@ class FakeClient:
 
     def post(self, _url: str, **kwargs) -> object:
         self.requests.append(kwargs["json"])
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class FailingResponse:
+    def raise_for_status(self) -> None:
+        raise RuntimeError("repair transport failed")
+
+    def json(self) -> dict:
+        return {}
 
 
 def run_payload(**overrides) -> CopyRunRequest:
@@ -132,6 +143,57 @@ def test_invalid_repair_returns_502_after_one_repair(monkeypatch):
 
     assert exc_info.value.status_code == 502
     assert "body length" in exc_info.value.detail.lower()
+    assert len(FakeClient.requests) == 2
+
+
+def test_repair_transport_failure_makes_exactly_one_repair_request(monkeypatch):
+    FakeClient.responses = [
+        response({"title": "Launch", "body": "short", "cta": "Read"}),
+        FailingResponse(),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.run_copy_worker(run_payload(body_min_length=300, body_max_length=500))
+
+    assert exc_info.value.status_code == 502
+    assert len(FakeClient.requests) == 2
+
+
+def test_stub_preserves_useful_body_for_ordinary_range(monkeypatch):
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "")
+
+    result = main.run_copy_worker(run_payload(body_min_length=80, body_max_length=200))
+
+    assert 80 <= len(result.variants[0].body) <= 200
+    assert "Premium campaign copy variant" in result.variants[0].body
+
+
+def test_stub_rejects_impossible_non_empty_zero_length_contract(monkeypatch):
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "")
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.run_copy_worker(run_payload(body_min_length=0, body_max_length=0))
+
+    assert exc_info.value.status_code == 502
+    assert "non-empty" in exc_info.value.detail.lower()
+
+
+@pytest.mark.parametrize("invalid_field", ["title", "cta"])
+def test_title_and_cta_limits_are_validated_and_repaired(monkeypatch, invalid_field):
+    invalid = {"title": "Valid", "body": "A" * 80, "cta": "Read"}
+    invalid[invalid_field] = "X" * (31 if invalid_field == "title" else 16)
+    FakeClient.responses = [response(invalid), response({"title": "Valid", "body": "B" * 80, "cta": "Read"})]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload())
+
+    assert result.variants[0].title == "Valid"
+    assert result.variants[0].cta == "Read"
     assert len(FakeClient.requests) == 2
 
 
