@@ -3071,6 +3071,20 @@ Copy type policy:
     )
 
 
+def get_copy_body_length_contract(campaign: CampaignRecord) -> dict[str, int]:
+    description = (
+        getattr(campaign.brief, "project_description", "")
+        or getattr(campaign.brief, "description", "")
+    ).casefold()
+    if any(term in description for term in ("公關稿", "新聞稿", "press release", "public relations")):
+        return {"body_min_length": 300, "body_max_length": 500}
+    if any(term in description for term in ("社群", "social", "social media", "post", "caption")):
+        return {"body_min_length": 100, "body_max_length": 200}
+    if any(term in description for term in ("宣傳", "文宣", "promotional", "promotion", "advertising", "advertisement")):
+        return {"body_min_length": 0, "body_max_length": 100}
+    return {"body_min_length": 80, "body_max_length": 200}
+
+
 def build_video_generation_prompt(campaign: CampaignRecord) -> str:
     return "\n\n".join(
         [
@@ -3392,6 +3406,7 @@ def build_worker_payload_for_task(
                 "deadline": campaign.brief.deadline.isoformat() if hasattr(campaign.brief.deadline, "isoformat") else str(campaign.brief.deadline),
             },
             "variants": min(10, max(0, int(campaign.brief.deliverables.copy_variants or 0))),
+            **get_copy_body_length_contract(campaign),
             **context_payload,
         }
     if task_type == "image_generation":
@@ -3547,6 +3562,7 @@ def generate_outputs_via_workers(
                             "deadline": campaign.brief.deadline.isoformat() if hasattr(campaign.brief.deadline, "isoformat") else str(campaign.brief.deadline),
                         },
                         "variants": min(10, max(0, int(campaign.brief.deliverables.copy_variants or 0))),
+                        **get_copy_body_length_contract(campaign),
                         **worker_context,
                     },
                     "copywriting",
@@ -6076,6 +6092,7 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
                 "target_audience": campaign.brief.target_audience.model_dump(mode="json"),
             },
             "variants": 1,
+            **get_copy_body_length_contract(campaign),
             **context_payload,
         }
     elif asset.asset_type == "image":
@@ -8737,6 +8754,7 @@ def submit_revision_request(payload: RevisionRequestPayload, req: Request) -> di
     if payload.asset_type == "copy":
         revision_payload["brand_context"] = {}
         revision_payload["variants"] = 3
+        revision_payload.update(get_copy_body_length_contract(campaign))
     elif payload.asset_type == "image":
         revision_payload["sizes"] = getattr(payload, "sizes", ["1024x1024"])
         revision_payload["style_profile"] = {}
