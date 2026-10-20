@@ -38,3 +38,26 @@ Implemented Task 1 in `campaign-service`.
 
 - Pytest reports existing FastAPI and pytest-asyncio deprecation warnings; they are unrelated to this task.
 - The brief does not enumerate every possible social or promotional synonym, so the helper uses the explicit required press terms plus common English/Chinese social and promotional terms covered by the new tests.
+
+## Review-Fix Report
+
+Added focused regression coverage without changing implementation behavior:
+
+- Exercised `submit_revision_request` for copy revisions and asserted `body_min_length` and `body_max_length`.
+- Asserted representative existing initial payload fields remain present.
+- Asserted the natural-language Copy type policy remains in the initial prompt.
+- Confirmed no `worker_copy` files were modified.
+
+Command:
+
+```text
+python -m pytest -q services/campaign_service/test_copy_length_contract.py
+```
+
+Output:
+
+```text
+11 passed, 2 warnings in 0.84s
+```
+
+The warnings are the existing FastAPI `on_event` and pytest-asyncio fixture-loop deprecations.

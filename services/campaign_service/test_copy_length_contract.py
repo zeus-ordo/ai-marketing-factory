@@ -65,6 +65,13 @@ def test_initial_copy_worker_payload_contains_body_length_contract():
 
     assert payload["body_min_length"] == 300
     assert payload["body_max_length"] == 500
+    assert payload["task_id"] == "copy-task"
+    assert payload["campaign_id"] == "campaign-1"
+    assert payload["company_id"] == "company-1"
+    assert payload["variants"] == 1
+    assert payload["brand_context"]["product_name"] == "Product"
+    assert "Copy type policy:" in payload["prompt"]
+    assert "公關稿（300-500 字）" in payload["prompt"]
 
 
 def test_initial_copy_dispatch_contains_body_length_contract(monkeypatch):
@@ -128,3 +135,36 @@ def test_copy_asset_regeneration_payload_contains_body_length_contract(monkeypat
 
     assert captured["body_min_length"] == 0
     assert captured["body_max_length"] == 100
+
+
+def test_review_revision_copy_dispatch_contains_body_length_contract(monkeypatch):
+    item = campaign("public relations announcement")
+    captured = {}
+    monkeypatch.setattr(main, "store", type("Store", (), {"get_campaign": lambda self, _id: item})())
+    monkeypatch.setattr(main, "require_review_action_access", lambda _req: None)
+    monkeypatch.setattr(main, "require_campaign_access", lambda _req, _campaign: None)
+    monkeypatch.setattr(main, "post_json", lambda _url, payload: captured.update(payload) or {})
+    monkeypatch.setattr(main, "_capture_worker_payload", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "append_trace_event", lambda **kwargs: None)
+
+    result = main.submit_revision_request(
+        main.RevisionRequestPayload(
+            review_id="review-1",
+            campaign_id="campaign-1",
+            task_id="copy-task",
+            asset_id="asset-1",
+            asset_type="copy",
+            reject_reason="Needs revision",
+        ),
+        object(),
+    )
+
+    assert result == {"status": "ok"}
+    assert captured["body_min_length"] == 300
+    assert captured["body_max_length"] == 500
+    assert captured["task_id"] == "copy-task"
+    assert captured["campaign_id"] == "campaign-1"
+    assert captured["company_id"] == "company-1"
+    assert captured["reject_reason"] == "Needs revision"
+    assert captured["variants"] == 3
+    assert captured["brand_context"] == {}
