@@ -940,7 +940,14 @@ def process_task(campaign_id: str, task_id: str) -> bool:
             if not persist_campaign_task_state(campaign_id, campaign_tasks):
                 durable = False
                 logger.error("persistence_error: terminal failure for task %s is not durable", task_id)
-            publish_dlq(campaign_id, task, task.error_detail or "worker failure")
+            try:
+                publish_dlq(campaign_id, task, task.error_detail or "worker failure")
+            except Exception as dlq_exc:
+                logger.error(
+                    "Orchestrator: failed to publish terminal task %s to DLQ: %s",
+                    task_id,
+                    sanitize_error_detail(str(dlq_exc)),
+                )
             failed_result = {
                 "status": "failed",
                 "task_id": task.task_id,

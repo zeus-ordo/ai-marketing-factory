@@ -101,6 +101,55 @@ def test_failed_worker_result_finalizes_campaign_as_failed(monkeypatch):
     assert tasks[0].error_class == "invalid_copy_length"
 
 
+def test_invalid_copy_length_worker_result_rejects_manual_retry():
+    updated = apply_worker_result_state([task("copy", "copywriting", status="running")], "copy", {
+        "status": "failed", "error": "invalid copy body length after two repairs",
+    })
+
+    assert updated[0].error_class == "invalid_copy_length"
+    assert updated[0].retryable is False
+    assert not manual_retry_allowed(updated[0])
+
+
+def test_successful_worker_result_saves_assets_and_keeps_review_pending_campaign_running(monkeypatch):
+    from app import main
+    from types import SimpleNamespace
+
+    campaign = SimpleNamespace(campaign_id="camp-1", company_id="co-1", status="running")
+    tasks = [task("copy", "copywriting", status="running")]
+    saved_assets = []
+
+    class Store:
+        def get_tasks(self, campaign_id):
+            return tasks
+
+        def set_tasks(self, campaign_id, updated):
+            tasks[:] = updated
+
+    class Persistence:
+        def list_review_items(self, campaign_id):
+            return [{"asset_id": "asset-1", "status": "review_pending", "metadata": {}}]
+
+    monkeypatch.setattr(main, "store", Store())
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main, "save_assets_and_validations", lambda assets, validations: saved_assets.extend(assets))
+    monkeypatch.setattr(main, "require_internal_api_key_for_worker", lambda req: None)
+
+    result = ingest_worker_result(
+        main.WorkerResultRequest(task_type="copywriting", result={
+            "campaign_id": "camp-1", "task_id": "copy", "run_id": "run-1",
+            "status": "passed", "variants": [{"body": "usable copy", "headline": "Headline"}],
+        }),
+        SimpleNamespace(),
+    )
+
+    assert result["status"] == "accepted"
+    assert len(saved_assets) == 1
+    assert tasks[0].status == "passed"
+    assert main.campaign_has_pending_reviews("camp-1")
+    assert campaign.status == "running"
+
+
 def test_normalize_preserves_blocked_task_diagnostics():
     normalized = normalize_task_payload({
         "task_id": "video", "task_type": "video_generation", "status": "blocked",

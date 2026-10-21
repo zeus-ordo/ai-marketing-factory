@@ -1214,10 +1214,12 @@ def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dic
         status = "failed"
         result = {**result, "status": status, "error": "worker returned no displayable assets"}
     if status in {"failed", "error"} or result.get("error"):
+        error_class = classify_worker_error(RuntimeError(str(result.get("error", "worker failure"))))
         current = current.model_copy(update={
             "status": "failed",
-            "error_class": classify_worker_error(RuntimeError(str(result.get("error", "worker failure")))),
+            "error_class": error_class,
             "error_detail": sanitize_worker_error_detail(str(result.get("error", "worker failure"))),
+            "retryable": False if error_class == "invalid_copy_length" else current.retryable,
             "provider": result.get("provider") or current.provider,
             "model": result.get("model") or result.get("model_name") or current.model,
         })

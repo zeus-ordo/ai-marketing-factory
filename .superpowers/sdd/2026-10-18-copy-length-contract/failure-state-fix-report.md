@@ -25,3 +25,19 @@ Implemented and committed as `fix: propagate terminal worker failures`.
 ## Concerns
 
 - Full campaign-service suite is not clean due to the unrelated order-dependent failure above. No frontend files were changed.
+
+## Review Follow-Up
+
+Implemented and verified:
+
+- `invalid_copy_length` worker results now persist `retryable=False`; `manual_retry_allowed` rejects them.
+- Added an ingestion regression proving successful copy results save a displayable asset and leave a review-pending campaign running.
+- Terminal reporting is isolated from DLQ publication failures; DLQ errors are sanitized and logged, while the campaign-service report still executes.
+- Added regression coverage proving terminal report payloads redact token secrets.
+
+Follow-up tests:
+
+- Focused campaign-service review regressions: `3 passed`.
+- Focused orchestrator terminal-report regressions: `2 passed`.
+- Full orchestrator suite: `33 passed`.
+- Full campaign-service suite: `285 passed, 5 skipped, 1 unrelated failure`; the same existing order-dependent JWT fixture failure passes in isolation.

@@ -61,6 +61,25 @@ def test_terminal_copy_length_failure_reports_failed_worker_result(monkeypatch):
     assert reported[0][2:] == (campaign_id, "company-1", "run-1")
 
 
+def test_terminal_failure_reports_even_when_dlq_publication_fails(monkeypatch):
+    campaign_id = "campaign-dlq-failure"
+    task_value = task("copy", "copywriting", status="planned")
+    task_value.company_id = "company-1"
+    task_value.run_id = "run-1"
+    orchestrator.task_state[campaign_id] = {"copy": task_value}
+    reported = []
+    monkeypatch.setattr(orchestrator, "run_worker", lambda *_: (_ for _ in ()).throw(RuntimeError("invalid copy body length token=secret-token")))
+    monkeypatch.setattr(orchestrator, "_report_worker_result_to_campaign_service", lambda *args: reported.append(args))
+    monkeypatch.setattr(orchestrator, "publish_dlq", lambda *_: (_ for _ in ()).throw(RuntimeError("redis unavailable")))
+    monkeypatch.setattr(orchestrator, "persist_campaign_task_state", lambda *_: True)
+
+    process_task(campaign_id, "copy")
+
+    assert len(reported) == 1
+    assert "secret-token" not in reported[0][1]["error"]
+    assert "[REDACTED]" in reported[0][1]["error"]
+
+
 def test_normal_worker_dispatch_captures_exact_payload_before_call(monkeypatch):
     captured = []
     dispatched = []
