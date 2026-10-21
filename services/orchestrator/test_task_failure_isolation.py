@@ -29,6 +29,38 @@ def test_classifies_quota_timeout_and_provider_failures():
     assert classify_worker_error(RuntimeError("provider returned 503")) == "provider_error"
 
 
+def test_copy_length_failure_is_non_retryable():
+    assert classify_worker_error(RuntimeError("invalid copy body length after two repairs")) == "invalid_copy_length"
+
+
+def test_terminal_copy_length_failure_reports_failed_worker_result(monkeypatch):
+    campaign_id = "campaign-copy-length"
+    task_value = task("copy", "copywriting", status="planned")
+    task_value.company_id = "company-1"
+    task_value.run_id = "run-1"
+    orchestrator.task_state[campaign_id] = {"copy": task_value}
+    reported = []
+    published = []
+    monkeypatch.setattr(orchestrator, "run_worker", lambda *_: (_ for _ in ()).throw(RuntimeError("invalid copy body length after two repairs")))
+    monkeypatch.setattr(orchestrator, "_report_worker_result_to_campaign_service", lambda *args: reported.append(args))
+    monkeypatch.setattr(orchestrator, "publish_task", lambda *args: published.append(args))
+    monkeypatch.setattr(orchestrator, "publish_dlq", lambda *_: None)
+    monkeypatch.setattr(orchestrator, "persist_campaign_task_state", lambda *_: True)
+
+    process_task(campaign_id, "copy")
+
+    assert published == []
+    assert len(reported) == 1
+    assert reported[0][0] == "copywriting"
+    assert reported[0][1] == {
+        "status": "failed",
+        "task_id": "copy",
+        "error": "invalid copy body length after two repairs",
+        "error_class": "invalid_copy_length",
+    }
+    assert reported[0][2:] == (campaign_id, "company-1", "run-1")
+
+
 def test_normal_worker_dispatch_captures_exact_payload_before_call(monkeypatch):
     captured = []
     dispatched = []

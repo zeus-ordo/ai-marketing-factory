@@ -14,7 +14,7 @@ if loaded_app_main is None or "campaign_service" not in str(getattr(loaded_app_m
             del sys.modules[module_name]
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app.main import apply_worker_result_state, classify_worker_error, generation_diagnostics, manual_retry_allowed, normalize_task_payload, sanitize_worker_error_detail
+from app.main import apply_worker_result_state, classify_worker_error, generation_diagnostics, ingest_worker_result, manual_retry_allowed, normalize_task_payload, sanitize_worker_error_detail
 from app.context_assembler import ContextSourceItem, GenerationContextSnapshot
 from app.schemas import CampaignBrief, CampaignRecord
 from datetime import datetime
@@ -52,6 +52,53 @@ def test_error_detail_redacts_secrets():
     assert "secret-token" not in detail
     assert "hunter2" not in detail
     assert classify_worker_error(RuntimeError("HTTP 429 quota exceeded")) == "quota"
+
+
+@pytest.mark.parametrize("message", [
+    "invalid copy body length after two repairs",
+    "body length must be between 600 and 700 chars",
+])
+def test_copy_length_failure_is_non_retryable(message):
+    assert classify_worker_error(RuntimeError(message)) == "invalid_copy_length"
+
+
+def test_failed_worker_result_finalizes_campaign_as_failed(monkeypatch):
+    from app import main
+    from types import SimpleNamespace
+
+    campaign = SimpleNamespace(campaign_id="camp-1", company_id="co-1", status="running")
+    tasks = [task("copy", "copywriting", status="running")]
+
+    class Store:
+        def get_tasks(self, campaign_id):
+            return tasks
+
+        def set_tasks(self, campaign_id, updated):
+            tasks[:] = updated
+
+        def get_campaign(self, campaign_id):
+            return campaign
+
+        def set_campaign_status(self, campaign_id, status):
+            campaign.status = status
+            return campaign
+
+    monkeypatch.setattr(main, "store", Store())
+    monkeypatch.setattr(main, "require_internal_api_key_for_worker", lambda req: None)
+    monkeypatch.setattr(main, "list_campaign_runs_raw", lambda campaign_id: [])
+    monkeypatch.setattr(main, "append_trace_event", lambda **kwargs: None)
+
+    result = ingest_worker_result(
+        main.WorkerResultRequest(task_type="copywriting", result={
+            "campaign_id": "camp-1", "task_id": "copy", "run_id": "run-1",
+            "status": "failed", "error": "invalid copy body length after two repairs",
+        }),
+        SimpleNamespace(),
+    )
+
+    assert result["status"] == "failed"
+    assert campaign.status == "failed"
+    assert tasks[0].error_class == "invalid_copy_length"
 
 
 def test_normalize_preserves_blocked_task_diagnostics():

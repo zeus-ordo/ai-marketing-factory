@@ -1110,6 +1110,8 @@ def get_json(url: str) -> dict[str, Any]:
 
 def _classify_worker_error(message: str) -> str:
     text = (message or "").lower()
+    if "invalid copy body length" in text or "body length must be between" in text:
+        return "invalid_copy_length"
     if "timeout" in text:
         return "WORKER_TIMEOUT"
     if "503" in text:
@@ -1125,6 +1127,8 @@ def _classify_worker_error(message: str) -> str:
 
 def classify_worker_error(exc: Exception) -> str:
     text = str(exc).lower()
+    if "invalid copy body length" in text or "body length must be between" in text:
+        return "invalid_copy_length"
     if "429" in text or "quota" in text or "rate limit" in text:
         return "quota" if "quota" in text or "429" in text else "rate_limit"
     if isinstance(exc, TimeoutError) or "timeout" in text or "timed out" in text:
@@ -9426,7 +9430,12 @@ def ingest_worker_result(payload: WorkerResultRequest, req: Request) -> dict[str
     if task_type not in ASSET_WORKER_TASK_TYPES:
         raise HTTPException(status_code=400, detail=f"Unknown task type: {task_type}")
     if not worker_result_has_displayable_assets(task_type, result):
-        result = {**result, "status": "failed", "error": "worker returned no displayable assets", "displayable_asset_count": 0}
+        result = {
+            **result,
+            "status": "failed",
+            "error": result.get("error") or "worker returned no displayable assets",
+            "displayable_asset_count": 0,
+        }
         response = {"status": "failed", "assets_saved": "0", "asset_ids": "", "error": result["error"]}
     elif task_type == "copywriting":
         response = _save_copy_worker_result(result, now)
@@ -9446,6 +9455,14 @@ def ingest_worker_result(payload: WorkerResultRequest, req: Request) -> dict[str
         updated_tasks = apply_worker_result_state(current_tasks, task_id, result)
         if updated_tasks != current_tasks:
             store.set_tasks(campaign_id, updated_tasks)
+            updated_task = next((task for task in updated_tasks if task.task_id == task_id), None)
+            if updated_task is not None and updated_task.status == "failed":
+                finalize_campaign_workflow(
+                    campaign_id,
+                    run_id=str(result.get("run_id") or updated_task.run_id or "") or None,
+                    tasks=updated_tasks,
+                    reason="worker_result_failed",
+                )
     return response
 
 

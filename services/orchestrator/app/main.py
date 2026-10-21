@@ -436,6 +436,8 @@ DLQ_TOPIC = "task.dlq"
 def classify_worker_error(exc: Exception) -> str:
     text = str(exc).lower()
     code = getattr(exc, "code", None)
+    if "invalid copy body length" in text or "body length must be between" in text:
+        return "invalid_copy_length"
     if code == 429 or any(term in text for term in ("quota", "rate limit", "rate_limit", "too many requests")):
         return "quota" if code == 429 or "quota" in text else "rate_limit"
     if isinstance(exc, (TimeoutError,)) or "timeout" in text or "timed out" in text:
@@ -939,6 +941,23 @@ def process_task(campaign_id: str, task_id: str) -> bool:
                 durable = False
                 logger.error("persistence_error: terminal failure for task %s is not durable", task_id)
             publish_dlq(campaign_id, task, task.error_detail or "worker failure")
+            failed_result = {
+                "status": "failed",
+                "task_id": task.task_id,
+                "error": task.error_detail or "worker failure",
+                "error_class": error_class,
+            }
+            for field in ("provider", "model"):
+                value = task.worker_payload.get(field)
+                if value:
+                    failed_result[field] = value
+            _report_worker_result_to_campaign_service(
+                task.task_type,
+                failed_result,
+                campaign_id,
+                task.company_id,
+                task.run_id,
+            )
     # Persistence is attempted before publishing or updating the shared state.
     with task_state_lock:
         task_state[campaign_id] = campaign_tasks
