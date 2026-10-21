@@ -844,7 +844,8 @@ class PostgresPersistence:
                     SET status = 'retrying', retry_count = retry_count + 1,
                         retryable = TRUE, next_retry_at = NULL
                     WHERE campaign_id = %s AND task_id = %s
-                      AND status = 'failed' AND COALESCE(retryable, TRUE) = TRUE
+                      AND status = 'failed'
+                      AND (COALESCE(retryable, TRUE) = TRUE OR error_class = 'invalid_copy_length')
                       AND retry_count < %s
                     RETURNING task_id, campaign_id, company_id, task_type, status, priority,
                               depends_on_json, acceptance_json, retry_count, error_class,

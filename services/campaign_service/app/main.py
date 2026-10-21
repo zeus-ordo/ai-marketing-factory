@@ -1248,7 +1248,11 @@ def apply_worker_result_state(tasks: list[TaskRecord], task_id: str, result: dic
 
 
 def manual_retry_allowed(task: TaskRecord, max_attempts: int = 3) -> bool:
-    return task.status == "failed" and task.retryable is not False and task.retry_count < max_attempts
+    return (
+        task.status == "failed"
+        and (task.retryable is not False or task.error_class == "invalid_copy_length")
+        and task.retry_count < max_attempts
+    )
 
 
 def _extract_worker_error_detail(message: str) -> str:

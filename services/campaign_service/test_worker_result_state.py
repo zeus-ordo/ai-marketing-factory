@@ -101,14 +101,17 @@ def test_failed_worker_result_finalizes_campaign_as_failed(monkeypatch):
     assert tasks[0].error_class == "invalid_copy_length"
 
 
-def test_invalid_copy_length_worker_result_rejects_manual_retry():
+def test_invalid_copy_length_worker_result_allows_manual_retry_within_max_attempts():
     updated = apply_worker_result_state([task("copy", "copywriting", status="running")], "copy", {
         "status": "failed", "error": "invalid copy body length after two repairs",
     })
 
     assert updated[0].error_class == "invalid_copy_length"
     assert updated[0].retryable is False
-    assert not manual_retry_allowed(updated[0])
+    assert manual_retry_allowed(updated[0], max_attempts=3)
+
+    exhausted = updated[0].model_copy(update={"retry_count": 3})
+    assert not manual_retry_allowed(exhausted, max_attempts=3)
 
 
 def test_successful_worker_result_saves_assets_and_keeps_review_pending_campaign_running(monkeypatch):
