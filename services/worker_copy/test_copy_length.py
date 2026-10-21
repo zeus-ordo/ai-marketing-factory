@@ -129,10 +129,33 @@ def test_invalid_normal_output_gets_exactly_one_bounded_repair(monkeypatch):
     assert result.variants[0].body == "A" * 300
 
 
-def test_invalid_repair_returns_502_after_one_repair(monkeypatch):
+def test_invalid_normal_output_gets_at_most_two_repairs(monkeypatch):
+    FakeClient.responses = [
+        response({"title": "Launch", "body": "A" * 600, "cta": "Read"}),
+        response({"title": "Launch", "body": "B" * 700, "cta": "Read"}),
+        response({"title": "Launch", "body": "C" * 300, "cta": "Read"}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=300, body_max_length=500))
+
+    assert len(FakeClient.requests) == 3
+    first_repair = FakeClient.requests[1]["messages"][0]["content"]
+    second_repair = FakeClient.requests[2]["messages"][0]["content"]
+    assert "current body length: 600" in first_repair
+    assert "current body length: 700" in second_repair
+    assert "300-500" in first_repair
+    assert "300-500" in second_repair
+    assert result.variants[0].body == "C" * 300
+
+
+def test_invalid_repair_returns_502_after_two_repairs(monkeypatch):
     FakeClient.responses = [
         response({"title": "Launch", "body": "short", "cta": "Read"}),
         response({"title": "Launch", "body": "still short", "cta": "Read"}),
+        response({"title": "Launch", "body": "still too short", "cta": "Read"}),
     ]
     FakeClient.requests = []
     monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
@@ -143,7 +166,7 @@ def test_invalid_repair_returns_502_after_one_repair(monkeypatch):
 
     assert exc_info.value.status_code == 502
     assert "body length" in exc_info.value.detail.lower()
-    assert len(FakeClient.requests) == 2
+    assert len(FakeClient.requests) == 3
 
 
 def test_repair_transport_failure_makes_exactly_one_repair_request(monkeypatch):

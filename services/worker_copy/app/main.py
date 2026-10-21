@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import time
 from fastapi import FastAPI, HTTPException
@@ -168,16 +169,27 @@ def _generate_copy_variant(
     try:
         parsed = _parse_copy_variant(raw, minimum, maximum)
     except Exception as exc:
-        repair_prompt = (
-            f"{user_prompt}\n\nThe previous JSON was invalid: {exc}. "
-            f"Repair it so body is exactly within {minimum}-{maximum} characters. "
-            'Return ONLY valid JSON with exactly these keys: {"title": "string", "body": "string", "cta": "string"}. '
-        )
-        repair_raw = _request_copy_raw(repair_prompt, rules, model, company_id, usage_model, max_attempts=1)
-        try:
-            parsed = _parse_copy_variant(repair_raw, minimum, maximum)
-        except Exception as repair_exc:
-            raise ValueError(f"invalid copy body length after one repair: {repair_exc}") from repair_exc
+        repair_raw = raw
+        last_exc = exc
+        for _repair_attempt in range(2):
+            try:
+                current_length = len(str(json.loads(repair_raw).get("body") or ""))
+            except Exception:
+                current_length = "unknown"
+            repair_prompt = (
+                f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
+                f"Its current body length: {current_length}; the required body length is {minimum}-{maximum}. "
+                f"Repair it so body is exactly within {minimum}-{maximum} characters. "
+                'Return ONLY valid JSON with exactly these keys: {"title": "string", "body": "string", "cta": "string"}. '
+            )
+            repair_raw = _request_copy_raw(repair_prompt, rules, model, company_id, usage_model, max_attempts=1)
+            try:
+                parsed = _parse_copy_variant(repair_raw, minimum, maximum)
+                break
+            except Exception as repair_exc:
+                last_exc = repair_exc
+        else:
+            raise ValueError(f"invalid copy body length after two repairs: {last_exc}") from last_exc
     return CopyVariant(**parsed)
 
 
