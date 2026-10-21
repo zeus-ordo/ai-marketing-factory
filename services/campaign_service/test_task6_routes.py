@@ -109,6 +109,56 @@ def test_retry_route_concurrent_requests_claim_one_attempt(monkeypatch):
     assert sum(getattr(result, "status_code", None) == 409 for result in results) == 1
 
 
+def test_invalid_copy_length_manual_retry_uses_persistence_claim_within_bound(monkeypatch):
+    item = campaign("camp-copy-length-retry")
+    failed = TaskRecord(
+        company_id="co-1", campaign_id=item.campaign_id, task_id="copy-retry",
+        task_type="copywriting", status="failed", priority=1, retry_count=1,
+        error_class="invalid_copy_length", retryable=False, acceptance=[],
+    )
+    tasks = [failed]
+    claimed = []
+    dispatched = []
+
+    class Persistence:
+        def claim_manual_task_retry(self, campaign_id, task_id, max_attempts):
+            assert (campaign_id, task_id, max_attempts) == (item.campaign_id, failed.task_id, 3)
+            claimed.append(True)
+            return failed.model_copy(update={"status": "retrying", "retry_count": 2, "retryable": True})
+
+        def record_task_attempt(self, task):
+            assert task.task_id == failed.task_id
+
+    store = Store(item)
+    store.get_tasks = lambda _campaign_id: list(tasks)
+    store.set_tasks = lambda _campaign_id, updated: tasks.__setitem__(slice(None), updated)
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setattr(main, "require_review_action_access", lambda req: None)
+    monkeypatch.setattr(main, "require_campaign_access", lambda req, campaign: None)
+    monkeypatch.setattr(
+        main, "_dispatch_worker_for_task",
+        lambda _campaign, task: dispatched.append(task) or ([AssetOutput(
+            company_id="co-1", asset_id="copy-asset", campaign_id=item.campaign_id,
+            task_id=task.task_id, asset_type="copy", url="https://example.com/copy",
+            metadata={"variant": {"body": "manual retry copy"}},
+            created_at=datetime.utcnow(),
+        )], []),
+    )
+    monkeypatch.setattr(main, "dispatch_ready_retry_descendants", lambda *args, **kwargs: [])
+    monkeypatch.setattr(main, "append_trace_event", lambda **kwargs: None)
+    monkeypatch.setattr(main, "_notify_webhook", lambda **kwargs: None)
+
+    result = main.retry_worker_task(
+        item.campaign_id, RetryWorkerTaskRequest(task_id=failed.task_id), object()
+    )
+
+    assert result["status"] == "passed"
+    assert claimed == [True]
+    assert dispatched[0].retry_count == 2
+    assert dispatched[0].status == "retrying"
+
+
 def test_retry_descendant_dispatch_is_limited_to_review_run(monkeypatch):
     item = campaign("camp-mixed")
     selected = TaskRecord(company_id="co-1", campaign_id=item.campaign_id, task_id="image-old", task_type="image_generation", status="passed", priority=1, run_id="run-old", acceptance=[])
