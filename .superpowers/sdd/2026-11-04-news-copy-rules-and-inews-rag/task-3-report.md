@@ -43,3 +43,19 @@ Fix verification command:
 Fix verification result: `6 passed in 0.19s`
 
 Production was not called.
+
+## Fix Report: Review Findings
+
+- Added a malformed-DOCX regression test proving conversion failure is recorded for that file while a valid neighboring file uploads successfully.
+- Added assertions that the source DOCX bytes are unchanged and no `.txt` conversion artifact is written.
+- Updated the manual to list `metadata` and sanitized `error` report fields and to state that rerun matching requires existing title/provenance, or SHA-256 when exposed by the API.
+
+Command:
+
+`python -m pytest scripts/test_import_inews_references.py -q`
+
+Output:
+
+`7 passed in 0.20s`
+
+Production API was not called.

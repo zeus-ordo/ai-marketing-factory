@@ -170,12 +170,13 @@ python scripts/import_inews_references.py --source-dir <資料夾> --api-base-ur
 
 預設 Pack 名稱為「iNews 新聞稿參考資料」。需要指定其他名稱時使用
 --pack-name。每個檔案會獨立記錄成功、已存在或失敗狀態；失敗項目可在修正
-網路或檔案問題後重跑。報告只保留檔名、SHA-256、item id、上傳狀態及
-Ready 狀態，不要把 token、API key 或本機完整路徑放入報告。
+網路或檔案問題後重跑。報告欄位包括檔名、SHA-256、item id、上傳狀態、
+Ready 狀態、metadata 及 sanitized error；error 只能保留安全的錯誤摘要，
+不可包含 token、API key、response body 或本機完整路徑。
 
 每個 TXT 內容開頭會保留 source、reference_type、usage、原始檔名與
-SHA-256 provenance headers，供向量化內容辨識來源。重跑時會利用既有
-item 的 title、provenance 或 SHA-256（若 API 有公開）避免重複上傳。
+SHA-256 provenance headers，供向量化內容辨識來源。重跑只有在既有 item
+title 與 provenance 相符，或 API 有公開且 SHA-256 相符時，才會跳過重複上傳。
 
 匯入完成後，使用 API 列出該 Pack 的 items，確認每個預期項目 analysis
 status 為 Ready。Pending 或 Processing 必須等待後重新檢查；Failed 項目

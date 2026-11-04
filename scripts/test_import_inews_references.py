@@ -61,6 +61,7 @@ def test_scan_recurses_docx_deduplicates_sha_and_derives_title(tmp_path):
 def test_import_sends_required_metadata_and_reports_ready_item(tmp_path):
     source = tmp_path / "brief.docx"
     write_docx(source, ["First paragraph", "Second paragraph"])
+    original = source.read_bytes()
     transport = FakeTransport(
         responses=[
             FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
@@ -84,6 +85,8 @@ def test_import_sends_required_metadata_and_reports_ready_item(tmp_path):
     assert result[0]["item_id"] == "item-1"
     assert result[0]["ready_status"] == "ready"
     assert json.loads(report.read_text(encoding="utf-8"))[0]["filename"] == "brief.docx"
+    assert source.read_bytes() == original
+    assert list(tmp_path.rglob("*.txt")) == []
 
 
 def test_docx_open_xml_paragraph_extraction_is_utf8_text(tmp_path):
@@ -141,3 +144,26 @@ def test_http_failure_is_per_file_and_sanitized(tmp_path):
     assert "secret-token" not in result[0]["error"]
     assert str(tmp_path) not in result[0]["error"]
     assert result[0]["filename"] == "private.docx"
+
+
+def test_malformed_docx_isolated_from_other_file_conversion(tmp_path):
+    malformed = tmp_path / "bad.docx"
+    valid = tmp_path / "good.docx"
+    malformed.write_bytes(b"not a zip document")
+    write_docx(valid, ["valid article"])
+    transport = FakeTransport(
+        responses=[
+            FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
+            FakeResponse(200, {"items": []}),
+            FakeResponse(200, {"item_id": "good-item", "title": "good"}),
+            FakeResponse(200, {"items": [{"item_id": "good-item", "title": "good", "analysis": {"analysis_status": "ready"}}]}),
+        ]
+    )
+
+    result = Importer("http://example.test", transport).run(tmp_path, tmp_path / "report.json")
+
+    by_filename = {row["filename"]: row for row in result}
+    assert by_filename["bad.docx"]["upload_status"] == "failed"
+    assert by_filename["good.docx"]["upload_status"] == "uploaded"
+    assert by_filename["good.docx"]["item_id"] == "good-item"
+    assert len([request for request in transport.requests if "/items/upload" in request[1]]) == 1
