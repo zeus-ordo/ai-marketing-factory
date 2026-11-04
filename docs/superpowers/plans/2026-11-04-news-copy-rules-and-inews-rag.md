@@ -4,7 +4,7 @@
 
 **Goal:** 將新聞稿規則統一為 1000–1400 字的可驗證契約，並把 `inews_word` 的 `.docx` 去重後匯入全域 iNews 參考資料 Pack 與向量資料庫。
 
-**Architecture:** 文案規則文件與 worker／campaign-service 的 copy-length contract 使用同一組 1000–1400 字界線。iNews 匯入沿用既有 knowledge/reference upload API 與 embedding pipeline；批次工具只負責掃描、去重、上傳、輪詢狀態與輸出報告，不直接寫 PostgreSQL 或向量欄位。
+**Architecture:** 文案規則文件與 worker／campaign-service 的 copy-length contract 使用同一組 1000–1400 字界線。iNews 匯入沿用既有文字 Reference Pack upload API 與 embedding pipeline；批次工具將 DOCX 在記憶體中轉成 TXT，再負責掃描、去重、上傳、輪詢狀態與輸出報告，不直接寫 PostgreSQL 或向量欄位。
 
 **Tech Stack:** RTF、Python、FastAPI、PostgreSQL persistence、既有 knowledge-items/reference-packs API、pgvector／現有 embedding provider、pytest。
 
@@ -13,7 +13,7 @@
 - 新聞稿字數固定為 **1000–1400 字**，至少三段。
 - iNews 參考資料只用於寫作風格、結構與表達方式，不作為新活動事實來源。
 - Pack 名稱固定為 `iNews 新聞稿參考資料`，scope 為 global。
-- 所有 `.docx` 先以 SHA-256 去重；不修改原始檔案。
+- 所有 `.docx` 先以 SHA-256 去重，再在記憶體中轉成 `.txt`；不修改原始檔案，也不留下轉換檔。
 - 只使用既有 upload／embedding pipeline，不直接寫入資料庫。
 - 不把密碼、Token、API key、本機絕對路徑寫入日誌或 metadata。
 - 不將文字參考資料送入圖片生成或圖片配額流程。
@@ -102,7 +102,7 @@ Run a local read/decode check and verify the file contains `1000–1400`、`Who`
 ### Task 3: 建立可重跑的 iNews 批次匯入工具
 
 **Files:**
-- Create: `scripts/import_inews_references.py`
+- Create: `scripts/import_inews_references.py`（DOCX Open XML 轉 UTF-8 TXT、去重、上傳與輪詢）
 - Create: `scripts/test_import_inews_references.py`
 - Modify: `docs/admin-reference-packs-manual.txt`（加入批次匯入與 Ready 驗證說明）
 
@@ -110,7 +110,7 @@ Run a local read/decode check and verify the file contains `1000–1400`、`Who`
 - CLI input：`--source-dir`、`--api-base-url`、`--pack-name`、`--report`、`--dry-run`。
 - 預設 pack name：`iNews 新聞稿參考資料`。
 - `POST /api/v1/reference-packs` 建立或重用同名 global pack。
-- `POST /api/v1/reference-packs/{pack_id}/items/upload` 逐檔上傳 multipart `title` 與 `file`。
+- `POST /api/v1/reference-packs/{pack_id}/items/upload` 逐篇上傳記憶體中的 UTF-8 TXT multipart `title` 與 `file`；TXT 內嵌安全 provenance headers。
 - `GET /api/v1/reference-packs/{pack_id}/items` 輪詢 item readiness；不直接寫 DB。
 - 報告輸出檔名、SHA-256、item id、上傳狀態、Ready 狀態與安全錯誤訊息，不輸出本機完整路徑。
 
@@ -170,7 +170,7 @@ Expected: 顯示 `.docx` 總數、SHA-256 去重數與預計上傳數；不建�
 
 - [ ] **Step 4: 執行 RAG smoke test**
 
-以新聞稿開頭、事件背景、媒體聯絡資訊三種查詢確認結果可檢索；確認 Context Viewer 只顯示 pack／檔名／來源 metadata，不顯示本機路徑、Token 或內部 secrets。
+以新聞稿開頭、事件背景、媒體聯絡資訊三種查詢確認結果可檢索；確認 Context Viewer 只顯示 pack／檔名／TXT provenance，不顯示本機路徑、Token 或內部 secrets。
 
 - [ ] **Step 5: Commit safe report only**
 
