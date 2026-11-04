@@ -152,6 +152,30 @@ Ready 後請檢查：
 - 產業標籤
 
 ======================================================================
+四之一、iNews 批次匯入
+======================================================================
+
+使用批次工具匯入 iNews Word 參考資料。工具只會遞迴讀取 .docx，會以
+SHA-256 去除重複檔案，並重用同名的 global pack：
+
+先用 dry-run 檢查檔案數量與報告，不會發出任何 API request：
+
+python scripts/import_inews_references.py --source-dir <資料夾> --api-base-url <API_BASE_URL> --report <報告檔> --dry-run
+
+確認清單後再執行匯入：
+
+python scripts/import_inews_references.py --source-dir <資料夾> --api-base-url <API_BASE_URL> --report <報告檔>
+
+預設 Pack 名稱為「iNews 新聞稿參考資料」。需要指定其他名稱時使用
+--pack-name。每個檔案會獨立記錄成功、已存在或失敗狀態；失敗項目可在修正
+網路或檔案問題後重跑。報告只保留檔名、SHA-256、item id、上傳狀態及
+Ready 狀態，不要把 token、API key 或本機完整路徑放入報告。
+
+匯入完成後，使用 API 列出該 Pack 的 items，確認每個預期項目 analysis
+status 為 Ready。Pending 或 Processing 必須等待後重新檢查；Failed 項目
+應記錄錯誤並重試，不可把尚未 Ready 的內容視為可用 RAG 資料。
+
+======================================================================
 五、推薦的 Pack 組織方式
 ======================================================================
 
