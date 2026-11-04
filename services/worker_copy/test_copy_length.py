@@ -111,6 +111,38 @@ def test_normal_generation_uses_dynamic_range_and_accepts_unicode_character_coun
     assert len(result.variants[0].body) == 300
 
 
+@pytest.mark.parametrize("body_length", [1000, 1400])
+def test_news_release_boundaries_are_accepted(body_length):
+    parsed = main._parse_copy_variant(
+        json.dumps({"title": "Launch", "body": "A" * body_length, "cta": "Read more"}),
+        1000,
+        1400,
+    )
+
+    assert len(parsed["body"]) == body_length
+
+
+@pytest.mark.parametrize("body_length", [999, 1401])
+def test_news_release_values_outside_boundaries_are_rejected(body_length):
+    with pytest.raises(ValueError, match="body length"):
+        main._parse_copy_variant(
+            json.dumps({"title": "Launch", "body": "A" * body_length, "cta": "Read more"}),
+            1000,
+            1400,
+        )
+
+
+def test_news_release_prompt_contains_required_range(monkeypatch):
+    FakeClient.responses = [response({"title": "Launch", "body": "A" * 1000, "cta": "Read"})]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert '"body" 1000-1400 chars' in FakeClient.requests[0]["messages"][0]["content"]
+
+
 def test_invalid_normal_output_gets_exactly_one_bounded_repair(monkeypatch):
     FakeClient.responses = [
         response({"title": "Launch", "body": "too short", "cta": "Read"}),
@@ -162,7 +194,7 @@ def test_invalid_repair_returns_502_after_two_repairs(monkeypatch):
     monkeypatch.setattr(main.httpx, "Client", FakeClient)
 
     with pytest.raises(HTTPException) as exc_info:
-        main.run_copy_worker(run_payload(body_min_length=300, body_max_length=500))
+        main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
 
     assert exc_info.value.status_code == 502
     assert "body length" in exc_info.value.detail.lower()

@@ -3070,7 +3070,7 @@ def build_copy_generation_prompt(campaign: CampaignRecord) -> str:
             REFERENCE_PRIORITY_POLICY,
             """
 Copy type policy:
-1. Infer the requested copy type from the campaign brief and choose exactly one primary format: 宣傳文宣（100 字內）、社群文章（100-200 字）、 or 公關稿（300-500 字）。
+1. Infer the requested copy type from the campaign brief and choose exactly one primary format: 宣傳文宣（80 字內）、社群文章（300-500 字）、 or 公關稿（1000-1400 字）。
 2. Match the selected copy type's structure, tone, pacing, headline style, and CTA format to the corresponding reference folder.
 3. Use similar keywords from external context to learn tone and format, not to invent unsupported facts or copy wording.
 4. Generate a complete draft, then proofread it before returning: check the selected length range, grammar, tone, campaign objective, mandatory elements, forbidden elements, factual grounding, and CTA.
@@ -3087,11 +3087,11 @@ def get_copy_body_length_contract(campaign: CampaignRecord) -> dict[str, int]:
         or getattr(campaign.brief, "description", "")
     ).casefold()
     if any(term in description for term in ("公關稿", "新聞稿", "press release", "public relations")):
-        return {"body_min_length": 300, "body_max_length": 500}
+        return {"body_min_length": 1000, "body_max_length": 1400}
     if any(term in description for term in ("社群", "social", "social media", "post", "caption")):
-        return {"body_min_length": 100, "body_max_length": 200}
+        return {"body_min_length": 300, "body_max_length": 500}
     if any(term in description for term in ("宣傳", "文宣", "promotional", "promotion", "advertising", "advertisement")):
-        return {"body_min_length": 0, "body_max_length": 100}
+        return {"body_min_length": 0, "body_max_length": 80}
     return {"body_min_length": 80, "body_max_length": 200}
 
 
