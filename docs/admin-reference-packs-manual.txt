@@ -156,7 +156,9 @@ Ready 後請檢查：
 ======================================================================
 
 使用批次工具匯入 iNews Word 參考資料。工具只會遞迴讀取 .docx，會以
-SHA-256 去除重複檔案，並重用同名的 global pack：
+SHA-256 去除重複檔案，從 DOCX Open XML 段落轉換成記憶體中的 UTF-8 TXT，
+再重用同名的 global pack。原始 DOCX 不會被修改，來源資料夾也不會留下
+轉換檔案：
 
 先用 dry-run 檢查檔案數量與報告，不會發出任何 API request：
 
@@ -170,6 +172,10 @@ python scripts/import_inews_references.py --source-dir <資料夾> --api-base-ur
 --pack-name。每個檔案會獨立記錄成功、已存在或失敗狀態；失敗項目可在修正
 網路或檔案問題後重跑。報告只保留檔名、SHA-256、item id、上傳狀態及
 Ready 狀態，不要把 token、API key 或本機完整路徑放入報告。
+
+每個 TXT 內容開頭會保留 source、reference_type、usage、原始檔名與
+SHA-256 provenance headers，供向量化內容辨識來源。重跑時會利用既有
+item 的 title、provenance 或 SHA-256（若 API 有公開）避免重複上傳。
 
 匯入完成後，使用 API 列出該 Pack 的 items，確認每個預期項目 analysis
 status 為 Ready。Pending 或 Processing 必須等待後重新檢查；Failed 項目

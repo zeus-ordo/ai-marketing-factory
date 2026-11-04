@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import mimetypes
-import sys
 import re
+import sys
 import uuid
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,37 @@ def scan_unique_docx(source_dir: Path) -> list[SourceFile]:
     return files
 
 
+def extract_docx_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as archive:
+        document = archive.read("word/document.xml")
+    root = ET.fromstring(document)
+    paragraphs: list[str] = []
+    paragraph_tag = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"
+    text_tag = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
+    tab_tag = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}tab"
+    for paragraph in root.iter(paragraph_tag):
+        parts: list[str] = []
+        for node in paragraph.iter():
+            if node.tag == text_tag:
+                parts.append(node.text or "")
+            elif node.tag == tab_tag:
+                parts.append("\t")
+        if parts:
+            paragraphs.append("".join(parts))
+    return "\n".join(paragraphs)
+
+
+def build_txt_payload(source: SourceFile) -> bytes:
+    headers = [
+        f"source: {METADATA['source']}",
+        f"reference_type: {METADATA['reference_type']}",
+        f"usage: {METADATA['usage']}",
+        f"original_filename: {source.path.name}",
+        f"sha256: {source.sha256}",
+    ]
+    return ("\n".join(headers) + "\n\n" + extract_docx_text(source.path) + "\n").encode("utf-8")
+
+
 class UrllibTransport:
     def request(self, method: str, url: str, headers: dict[str, str] | None = None, body: bytes = b"") -> FakeResponse:
         request = Request(url, data=body or None, headers=headers or {}, method=method)
@@ -62,7 +94,7 @@ class UrllibTransport:
             return FakeResponse(response.status, json.loads(payload or b"{}"))
 
 
-def _multipart(fields: dict[str, str], file_path: Path) -> tuple[dict[str, str], bytes]:
+def _multipart(fields: dict[str, str], filename: str, content: bytes) -> tuple[dict[str, str], bytes]:
     boundary = f"----inews-{uuid.uuid4().hex}"
     chunks: list[bytes] = []
     for name, value in fields.items():
@@ -72,13 +104,11 @@ def _multipart(fields: dict[str, str], file_path: Path) -> tuple[dict[str, str],
             value.encode("utf-8"),
             b"\r\n",
         ])
-    filename = file_path.name
-    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     chunks.extend([
         f"--{boundary}\r\n".encode(),
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode(),
-        f"Content-Type: {content_type}\r\n\r\n".encode(),
-        file_path.read_bytes(),
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n",
+        content,
         b"\r\n",
         f"--{boundary}--\r\n".encode(),
     ])
@@ -135,7 +165,11 @@ class Importer:
                 row.update(item_id=by_hash[source.sha256].get("item_id"), upload_status="skipped-existing")
                 continue
             try:
-                headers, body = _multipart({"title": source.title, **METADATA}, source.path)
+                match = next((item for item in existing if _matches_existing(item, source)), None)
+                if match is not None:
+                    row.update(item_id=match.get("item_id"), upload_status="skipped-existing")
+                    continue
+                headers, body = _multipart({"title": source.title}, f"{source.title}.txt", build_txt_payload(source))
                 item = self._request("POST", f"/api/v1/reference-packs/{pack_id}/items/upload", body, headers)
                 row.update(item_id=item.get("item_id"), upload_status="uploaded")
             except Exception as exc:
@@ -154,6 +188,20 @@ class Importer:
                     row["error"] = _safe_error(exc)
         _write_report(report_path, report)
         return report
+
+
+def _matches_existing(item: dict[str, Any], source: SourceFile) -> bool:
+    if str(item.get("title") or "") != source.title:
+        return False
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if metadata.get("sha256"):
+        return metadata["sha256"] == source.sha256
+    content = "\n".join(str(item.get(key) or "") for key in ("content", "description", "provenance"))
+    if "source: " in content and "source: inews_word" not in content:
+        return False
+    if "sha256: " in content:
+        return f"sha256: {source.sha256}" in content
+    return True
 
 
 def _write_report(path: Path, report: list[dict[str, Any]]) -> None:

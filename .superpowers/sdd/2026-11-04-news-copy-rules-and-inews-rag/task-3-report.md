@@ -27,3 +27,19 @@ Coverage includes recursive scanning, `.docx` filtering, SHA-256 deduplication, 
 
 - The existing public item-list response does not always expose item metadata. Hash-based rerun matching is used whenever the API returns metadata; otherwise the importer uploads and relies on the API's available response fields.
 - Production execution was not performed; tests use only a fake transport as required.
+
+## Fix Report: TXT Conversion Review
+
+The production API does not accept DOCX uploads or arbitrary multipart metadata. The importer now extracts paragraph text from `word/document.xml` inside each DOCX, builds an in-memory UTF-8 `.txt` payload, and uploads it with `Content-Type: text/plain`. No conversion file is written and the original DOCX is unchanged.
+
+Each TXT payload contains safe provenance headers for `source`, `reference_type`, `usage`, `original_filename`, and `sha256`. Reruns match exposed SHA-256 metadata when available, otherwise match the existing title and exposed iNews provenance/content.
+
+The manual now documents the conversion and provenance behavior. The fake-transport suite was expanded for Open XML extraction, TXT upload headers/content, existing-title idempotence, dry-run request isolation, and sanitized per-file failures.
+
+Fix verification command:
+
+`python -m pytest scripts/test_import_inews_references.py -q`
+
+Fix verification result: `6 passed in 0.19s`
+
+Production was not called.
