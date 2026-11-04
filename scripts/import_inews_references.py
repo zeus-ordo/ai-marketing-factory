@@ -1,12 +1,21 @@
-"""Idempotently import iNews Word references through the reference-pack API."""
+"""Idempotently import iNews Word references through the reference-pack API.
+
+Authenticated runs use ``INEWS_IMPORT_BEARER_TOKEN`` or ``PLATFORM_ADMIN_KEY``
+from the process environment. The CLI accepts alternate environment variable
+names with ``--bearer-token-env`` and ``--admin-key-env``; it never accepts
+credential values as arguments or prints them. ``--dry-run`` makes no request
+and does not require credentials.
+"""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
+import time
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
@@ -94,6 +103,22 @@ class UrllibTransport:
             return FakeResponse(response.status, json.loads(payload or b"{}"))
 
 
+def auth_headers_from_environment(
+    environ: dict[str, str] | None = None,
+    bearer_env: str = "INEWS_IMPORT_BEARER_TOKEN",
+    admin_key_env: str = "PLATFORM_ADMIN_KEY",
+    redact: bool = False,
+) -> dict[str, str]:
+    values = environ if environ is not None else os.environ
+    bearer = values.get(bearer_env, "")
+    admin_key = values.get(admin_key_env, "")
+    if bearer:
+        return {"Authorization": "Bearer [REDACTED]" if redact else f"Bearer {bearer}"}
+    if admin_key:
+        return {"x-platform-key": "[REDACTED]" if redact else admin_key}
+    return {}
+
+
 def _multipart(fields: dict[str, str], filename: str, content: bytes) -> tuple[dict[str, str], bytes]:
     boundary = f"----inews-{uuid.uuid4().hex}"
     chunks: list[bytes] = []
@@ -124,12 +149,27 @@ def _safe_error(exc: Exception) -> str:
 
 
 class Importer:
-    def __init__(self, api_base_url: str, transport: Any):
+    def __init__(
+        self,
+        api_base_url: str,
+        transport: Any,
+        headers: dict[str, str] | None = None,
+        poll_interval_seconds: float = 5,
+        readiness_timeout_seconds: float = 300,
+        sleep_fn: Any = time.sleep,
+        monotonic_fn: Any = time.monotonic,
+    ):
         self.base_url = api_base_url.rstrip("/")
         self.transport = transport
+        self.headers = headers or {}
+        self.poll_interval_seconds = max(0, poll_interval_seconds)
+        self.readiness_timeout_seconds = max(0, readiness_timeout_seconds)
+        self.sleep_fn = sleep_fn
+        self.monotonic_fn = monotonic_fn
 
     def _request(self, method: str, path: str, body: bytes = b"", headers: dict[str, str] | None = None) -> dict[str, Any]:
-        response = self.transport.request(method, self.base_url + path, headers, body)
+        request_headers = {**self.headers, **(headers or {})}
+        response = self.transport.request(method, self.base_url + path, request_headers, body)
         if response.status < 200 or response.status >= 300:
             raise RuntimeError(f"HTTP {response.status}")
         return response.json()
@@ -152,11 +192,9 @@ class Importer:
         try:
             existing = self._request("GET", f"/api/v1/reference-packs/{pack_id}/items").get("items", [])
         except Exception as exc:
+            existing = []
             for row in report:
-                row["upload_status"] = "failed"
-                row["error"] = _safe_error(exc)
-            _write_report(report_path, report)
-            return report
+                row["metadata_warning"] = _safe_error(exc)
 
         by_hash = {str(item.get("metadata", {}).get("sha256")): item for item in existing if isinstance(item.get("metadata"), dict) and item.get("metadata", {}).get("sha256")}
         for index, source in enumerate(files):
@@ -175,19 +213,41 @@ class Importer:
             except Exception as exc:
                 row.update(upload_status="failed", error=_safe_error(exc))
 
-        try:
-            current = self._request("GET", f"/api/v1/reference-packs/{pack_id}/items").get("items", [])
-            for row in report:
-                item = next((candidate for candidate in current if candidate.get("item_id") == row["item_id"]), None)
-                analysis = (item or {}).get("analysis") or (item or {}).get("metadata", {})
-                row["ready_status"] = analysis.get("analysis_status") if isinstance(analysis, dict) else None
-        except Exception as exc:
-            for row in report:
-                if row["upload_status"] != "failed":
-                    row["ready_status"] = "poll-failed"
-                    row["error"] = _safe_error(exc)
+        self._poll_readiness(pack_id, report)
         _write_report(report_path, report)
         return report
+
+    def _poll_readiness(self, pack_id: str, report: list[dict[str, Any]]) -> None:
+        pending_ids = {row["item_id"] for row in report if row["upload_status"] == "uploaded" and row["item_id"]}
+        if not pending_ids:
+            return
+        deadline = self.monotonic_fn() + self.readiness_timeout_seconds
+        while pending_ids:
+            try:
+                current = self._request("GET", f"/api/v1/reference-packs/{pack_id}/items").get("items", [])
+            except Exception as exc:
+                for row in report:
+                    if row.get("item_id") in pending_ids:
+                        row["ready_status"] = "poll-failed"
+                        row["error"] = _safe_error(exc)
+                return
+            for row in report:
+                if row.get("item_id") not in pending_ids:
+                    continue
+                item = next((candidate for candidate in current if candidate.get("item_id") == row["item_id"]), None)
+                analysis = (item or {}).get("analysis") or (item or {}).get("metadata", {})
+                status = analysis.get("analysis_status") if isinstance(analysis, dict) else None
+                if status in {"ready", "failed"}:
+                    row["ready_status"] = status
+                    pending_ids.remove(row["item_id"])
+            if not pending_ids:
+                return
+            if self.monotonic_fn() >= deadline:
+                for row in report:
+                    if row.get("item_id") in pending_ids:
+                        row["ready_status"] = "timeout"
+                return
+            self.sleep_fn(self.poll_interval_seconds)
 
 
 def _matches_existing(item: dict[str, Any], source: SourceFile) -> bool:
@@ -199,9 +259,7 @@ def _matches_existing(item: dict[str, Any], source: SourceFile) -> bool:
     content = "\n".join(str(item.get(key) or "") for key in ("content", "description", "provenance"))
     if "source: " in content and "source: inews_word" not in content:
         return False
-    if "sha256: " in content:
-        return f"sha256: {source.sha256}" in content
-    return True
+    return f"sha256: {source.sha256}" in content
 
 
 def _write_report(path: Path, report: list[dict[str, Any]]) -> None:
@@ -216,8 +274,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pack-name", default=DEFAULT_PACK_NAME)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--bearer-token-env", default="INEWS_IMPORT_BEARER_TOKEN", help="Environment variable containing the bearer token")
+    parser.add_argument("--admin-key-env", default="PLATFORM_ADMIN_KEY", help="Environment variable containing the platform admin key")
+    parser.add_argument("--poll-interval-seconds", type=float, default=5)
+    parser.add_argument("--readiness-timeout-seconds", type=float, default=300)
     args = parser.parse_args(argv)
-    Importer(args.api_base_url, UrllibTransport()).run(args.source_dir, args.report, args.pack_name, args.dry_run)
+    headers = {} if args.dry_run else auth_headers_from_environment(bearer_env=args.bearer_token_env, admin_key_env=args.admin_key_env)
+    if not args.dry_run and not headers:
+        parser.error("set a bearer token or platform admin key environment variable")
+    Importer(
+        args.api_base_url,
+        UrllibTransport(),
+        headers=headers,
+        poll_interval_seconds=args.poll_interval_seconds,
+        readiness_timeout_seconds=args.readiness_timeout_seconds,
+    ).run(args.source_dir, args.report, args.pack_name, args.dry_run)
     return 0
 
 

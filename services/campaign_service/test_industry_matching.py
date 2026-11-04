@@ -155,7 +155,7 @@ def test_copy_prompt_contains_type_length_priority_and_proofreading_policy():
     assert "公關稿" in prompt
     assert "100 字內" in prompt
     assert "100-200 字" in prompt
-    assert "300-500 字" in prompt
+    assert "1000-1400 字" in prompt
     assert "使用者上傳或選擇的參考資料" in prompt
     assert "生成後校稿" in prompt
 

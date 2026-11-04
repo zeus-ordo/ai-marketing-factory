@@ -6,6 +6,7 @@ from pathlib import Path
 from import_inews_references import (
     FakeResponse,
     Importer,
+    auth_headers_from_environment,
     extract_docx_text,
     scan_unique_docx,
 )
@@ -67,7 +68,7 @@ def test_import_sends_required_metadata_and_reports_ready_item(tmp_path):
             FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
             FakeResponse(200, {"items": []}),
             FakeResponse(200, {"item_id": "item-1", "title": "brief", "metadata": {"sha256": "not-used"}}),
-            FakeResponse(200, {"items": [{"item_id": "item-1", "title": "brief", "metadata": {"sha256": "", "analysis_status": "ready"}, "analysis": {"analysis_status": "ready"}}]}),
+            FakeResponse(200, {"items": [{"item_id": "item-1", "title": "brief", "analysis": {"analysis_status": "ready"}}]}),
         ]
     )
     report = tmp_path / "report.json"
@@ -102,16 +103,112 @@ def test_existing_title_and_provenance_skip_upload(tmp_path):
     transport = FakeTransport(
         responses=[
             FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
-            FakeResponse(200, {"items": [{"item_id": "existing", "title": "brief", "content": "source: inews_word\noriginal_filename: brief.docx"}]}),
-            FakeResponse(200, {"items": [{"item_id": "existing", "title": "brief", "content": "source: inews_word"}]}),
+            FakeResponse(200, {"items": [{"item_id": "existing", "title": "brief", "metadata": {"sha256": "different"}}]}),
+            FakeResponse(200, {"item_id": "new-item", "title": "brief"}),
+            FakeResponse(200, {"items": [{"item_id": "new-item", "title": "brief", "analysis": {"analysis_status": "ready"}}]}),
         ]
     )
 
     result = Importer("http://example.test", transport).run(tmp_path, tmp_path / "report.json")
 
-    assert result[0]["item_id"] == "existing"
+    assert result[0]["item_id"] == "new-item"
+    assert result[0]["upload_status"] == "uploaded"
+    assert any("/items/upload" in request[1] for request in transport.requests)
+
+
+def test_matching_hash_skips_same_title_item(tmp_path):
+    source = tmp_path / "brief.docx"
+    write_docx(source, ["Article"])
+    from import_inews_references import scan_unique_docx
+    digest = scan_unique_docx(tmp_path)[0].sha256
+    transport = FakeTransport(responses=[
+        FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
+        FakeResponse(200, {"items": [{"item_id": "existing", "title": "brief", "metadata": {"sha256": digest}}]}),
+    ])
+
+    result = Importer("http://example.test", transport).run(tmp_path, tmp_path / "report.json")
+
     assert result[0]["upload_status"] == "skipped-existing"
+    assert result[0]["item_id"] == "existing"
     assert not any("/items/upload" in request[1] for request in transport.requests)
+
+
+def test_auth_headers_use_environment_without_exposing_credentials(monkeypatch):
+    monkeypatch.setenv("INEWS_IMPORT_BEARER_TOKEN", "fake-bearer")
+    monkeypatch.delenv("PLATFORM_ADMIN_KEY", raising=False)
+
+    headers = auth_headers_from_environment()
+
+    assert headers == {"Authorization": "Bearer fake-bearer"}
+    assert "fake-bearer" not in repr(auth_headers_from_environment(redact=True))
+
+
+def test_authenticated_transport_receives_bearer_header(tmp_path):
+    source = tmp_path / "brief.docx"
+    write_docx(source, ["Article"])
+    transport = FakeTransport(responses=[
+        FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
+        FakeResponse(200, {"items": []}),
+        FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "ready"}}]}),
+    ])
+
+    Importer("http://example.test", transport, headers={"Authorization": "Bearer fake-bearer"}).run(
+        tmp_path, tmp_path / "report.json"
+    )
+
+    assert all(request[2]["Authorization"] == "Bearer fake-bearer" for request in transport.requests)
+
+
+def test_readiness_polls_pending_until_ready(tmp_path):
+    source = tmp_path / "brief.docx"
+    write_docx(source, ["Article"])
+    transport = FakeTransport(responses=[
+        FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
+        FakeResponse(200, {"items": []}),
+        FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "pending"}}]}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "ready"}}]}),
+    ])
+
+    result = Importer("http://example.test", transport, poll_interval_seconds=0, readiness_timeout_seconds=1).run(
+        tmp_path, tmp_path / "report.json"
+    )
+
+    assert result[0]["ready_status"] == "ready"
+    assert len([request for request in transport.requests if request[1].endswith("/items")]) == 3
+
+
+def test_readiness_records_failed_status(tmp_path):
+    source = tmp_path / "brief.docx"
+    write_docx(source, ["Article"])
+    transport = FakeTransport(responses=[
+        FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
+        FakeResponse(200, {"items": []}),
+        FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "failed"}}]}),
+    ])
+
+    result = Importer("http://example.test", transport, poll_interval_seconds=0).run(tmp_path, tmp_path / "report.json")
+
+    assert result[0]["ready_status"] == "failed"
+
+
+def test_readiness_records_bounded_timeout(tmp_path):
+    source = tmp_path / "brief.docx"
+    write_docx(source, ["Article"])
+    transport = FakeTransport(responses=[
+        FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
+        FakeResponse(200, {"items": []}),
+        FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "pending"}}]}),
+    ])
+
+    result = Importer("http://example.test", transport, poll_interval_seconds=0, readiness_timeout_seconds=0).run(
+        tmp_path, tmp_path / "report.json"
+    )
+
+    assert result[0]["ready_status"] == "timeout"
 
 
 def test_dry_run_makes_no_requests_and_writes_safe_report(tmp_path):

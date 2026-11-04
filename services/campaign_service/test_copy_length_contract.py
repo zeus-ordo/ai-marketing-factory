@@ -40,8 +40,8 @@ def campaign(project_description: str) -> CampaignRecord:
         ("Write a 新聞稿", {"body_min_length": 1000, "body_max_length": 1400}),
         ("Create a press release", {"body_min_length": 1000, "body_max_length": 1400}),
         ("public relations announcement", {"body_min_length": 1000, "body_max_length": 1400}),
-        ("社群貼文 for launch", {"body_min_length": 300, "body_max_length": 500}),
-        ("promotional copy", {"body_min_length": 0, "body_max_length": 80}),
+        ("社群貼文 for launch", {"body_min_length": 100, "body_max_length": 200}),
+        ("promotional copy", {"body_min_length": 0, "body_max_length": 100}),
         ("general campaign copy", {"body_min_length": 80, "body_max_length": 200}),
     ],
 )
@@ -93,8 +93,8 @@ def test_initial_copy_dispatch_contains_body_length_contract(monkeypatch):
         )],
     )
 
-    assert captured["body_min_length"] == 300
-    assert captured["body_max_length"] == 500
+    assert captured["body_min_length"] == 100
+    assert captured["body_max_length"] == 200
 
 
 def test_copy_asset_regeneration_payload_contains_body_length_contract(monkeypatch):
@@ -134,7 +134,7 @@ def test_copy_asset_regeneration_payload_contains_body_length_contract(monkeypat
     main._perform_asset_regeneration(object(), "asset-1")
 
     assert captured["body_min_length"] == 0
-    assert captured["body_max_length"] == 80
+    assert captured["body_max_length"] == 100
 
 
 def test_review_revision_copy_dispatch_contains_body_length_contract(monkeypatch):
