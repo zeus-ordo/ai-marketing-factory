@@ -22,6 +22,7 @@ except ImportError:
 
 logger = logging.getLogger("worker_enrichment")
 ANALYSIS_VERSION = os.getenv("IMAGE_ANALYSIS_VERSION", "image-rag-v1")
+TEXT_EMBEDDING_VERSION = "text-rag-v1"
 
 
 class PersistenceBoundary(Protocol):
@@ -30,6 +31,12 @@ class PersistenceBoundary(Protocol):
     def claim_image_analysis(self, item_id: str, analysis_version: str) -> bool: ...
     def complete_image_analysis(self, item_id: str, analysis_version: str, attributes: dict[str, Any], embedding: list[float], embedding_model: str) -> dict[str, Any]: ...
     def fail_image_analysis(self, item_id: str, analysis_version: str, error_code: str, error_detail: str) -> dict[str, Any]: ...
+    def get_text_embedding(self, item_id: str, embedding_version: str) -> dict[str, Any] | None: ...
+    def get_text_item(self, item_id: str) -> dict[str, Any] | None: ...
+    def claim_text_embedding(self, item_id: str, embedding_version: str) -> bool: ...
+    def complete_text_embedding_chunk(self, item_id: str, embedding_version: str, chunk_index: int, chunk_count: int, embedding: list[float], embedding_model: str) -> None: ...
+    def complete_text_embedding(self, item_id: str, embedding_version: str, chunk_count: int) -> dict[str, Any]: ...
+    def fail_text_embedding(self, item_id: str, embedding_version: str, error_code: str, error_detail: str) -> dict[str, Any]: ...
 
 
 class PostgresPersistenceBoundary:
@@ -230,6 +237,43 @@ def process_image_enrichment_job(payload: dict[str, Any]) -> dict[str, str]:
         return _result(item_id, "failed")
 
 
+def _text_chunks(text: str, limit: int = 1200) -> list[str]:
+    paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
+    chunks = [paragraph[i:i + limit] for paragraph in paragraphs for i in range(0, len(paragraph), limit)]
+    return chunks or [""]
+
+
+def process_text_embedding_job(payload: dict[str, Any]) -> dict[str, str]:
+    item_id = payload.get("item_id")
+    version = payload.get("embedding_version", TEXT_EMBEDDING_VERSION)
+    if not isinstance(item_id, str) or not item_id.strip() or not isinstance(version, str) or not version.strip():
+        raise ValueError("item_id and embedding_version are required")
+    if persistence is None:
+        raise RuntimeError("persistence boundary is not configured")
+    record = persistence.get_text_embedding(item_id, version)
+    if record is None:
+        raise ValueError("text embedding record not found")
+    if record.get("embedding_status") == "ready":
+        return _result(item_id, "already_complete")
+    if not persistence.claim_text_embedding(item_id, version):
+        return _result(item_id, "already_processing")
+    try:
+        item = persistence.get_text_item(item_id)
+        if not item or not item.get("stored_path"):
+            raise ValueError("text source unavailable")
+        with open(str(item["stored_path"]), encoding="utf-8") as source:
+            chunks = _text_chunks(source.read())
+        model = getattr(providers.embedding_provider, "model", os.getenv("EMBEDDING_MODEL", "embedding-model"))
+        for index, chunk in enumerate(chunks):
+            embedding = providers.validate_embedding(providers.embedding_provider.embed(chunk))
+            persistence.complete_text_embedding_chunk(item_id, version, index, len(chunks), embedding, model)
+        persistence.complete_text_embedding(item_id, version, len(chunks))
+        return _result(item_id, "ready")
+    except Exception as exc:
+        persistence.fail_text_embedding(item_id, version, _safe_error_code(exc), redact_provider_error(exc))
+        return _result(item_id, "failed")
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -241,5 +285,15 @@ def enrich_image(payload: EnrichmentRequest, x_internal_api_key: str | None = He
         raise HTTPException(status_code=401, detail="invalid internal API key")
     try:
         return process_image_enrichment_job(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/internal/v1/text-embedding")
+def embed_text(payload: dict[str, Any], x_internal_api_key: str | None = Header(default=None)) -> dict[str, str]:
+    if not INTERNAL_API_KEY or x_internal_api_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=401, detail="invalid internal API key")
+    try:
+        return process_text_embedding_job(payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

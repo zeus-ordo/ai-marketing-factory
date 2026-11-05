@@ -235,8 +235,9 @@ class Importer:
                 if row.get("item_id") not in pending_ids:
                     continue
                 item = next((candidate for candidate in current if candidate.get("item_id") == row["item_id"]), None)
-                analysis = (item or {}).get("analysis") or (item or {}).get("metadata", {})
-                status = analysis.get("analysis_status") if isinstance(analysis, dict) else None
+                embedding = (item or {}).get("text_embedding") or (item or {}).get("metadata", {})
+                status = embedding.get("embedding_status") if isinstance(embedding, dict) else None
+                status = status or (item or {}).get("embedding_status")
                 if status in {"ready", "failed"}:
                     row["ready_status"] = status
                     pending_ids.remove(row["item_id"])

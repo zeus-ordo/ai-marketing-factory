@@ -428,8 +428,9 @@ TASK_TOPIC_MAP: dict[str, str] = {
     "ads_strategy": "task.ads",
 }
 ENRICHMENT_TOPIC = "task.image_enrichment"
+TEXT_EMBEDDING_TOPIC = "task.text_embedding"
 
-TOPICS = [*TASK_TOPIC_MAP.values(), ENRICHMENT_TOPIC]
+TOPICS = [*TASK_TOPIC_MAP.values(), ENRICHMENT_TOPIC, TEXT_EMBEDDING_TOPIC]
 DLQ_TOPIC = "task.dlq"
 
 
@@ -728,6 +729,8 @@ def run_worker(task: OrchestratorTask, campaign_id: str) -> dict[str, Any]:
             worker_payload,
             internal_auth=True,
         )
+    if task.task_type == "text_embedding":
+        return post_json(f"{WORKER_ENRICHMENT_URL}/internal/v1/text-embedding", worker_payload, internal_auth=True)
 
     company_id = task.company_id or ""
     run_id = task.run_id or ""
@@ -1042,8 +1045,11 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
 
             campaign_id = fields.get("campaign_id")
             task_id = fields.get("task_id")
-            if stream_name == ENRICHMENT_TOPIC and fields.get("item_id") and fields.get("analysis_version"):
-                task_key = f"orchestrator:task-claim:image-enrichment:{fields['item_id']}:{fields['analysis_version']}"
+            if stream_name in {ENRICHMENT_TOPIC, TEXT_EMBEDDING_TOPIC} and fields.get("item_id"):
+                version = fields.get("analysis_version") or fields.get("embedding_version")
+                if not version:
+                    return False
+                task_key = f"orchestrator:task-claim:{stream_name}:{fields['item_id']}:{version}"
                 task_token = uuid.uuid4().hex
                 if not redis_set(task_key, task_token, nx=True, ex=MESSAGE_CLAIM_TTL_SECONDS):
                     _release_lease(message_key, message_token)
@@ -1130,6 +1136,20 @@ def process_queue_message(stream_name: str, message_id: str, fields: dict[str, s
                 else:
                     logger.error("image enrichment worker failed (%s); publishing DLQ: %s", error_class, reason)
                     publish_enrichment_dlq(fields, reason)
+            return finalize_ack()
+        if stream_name == TEXT_EMBEDDING_TOPIC:
+            item_id = fields.get("item_id")
+            embedding_version = fields.get("embedding_version")
+            if item_id and embedding_version:
+                text_task = SimpleNamespace(task_id=f"{item_id}:{embedding_version}", task_type="text_embedding", status="planned", priority=0, worker_payload={"item_id": item_id, "embedding_version": embedding_version})
+                try:
+                    run_worker(text_task, "")
+                except Exception as exc:
+                    retry_count = int(fields.get("retry_count", "0")) + 1
+                    if classify_worker_error(exc) in {"quota", "rate_limit", "timeout", "provider_error"} and retry_count <= MAX_RETRY:
+                        redis_client.xadd(TEXT_EMBEDDING_TOPIC, {**fields, "retry_count": str(retry_count)})
+                    else:
+                        redis_client.xadd(DLQ_TOPIC, {**fields, "reason": sanitize_error_detail(str(exc))})
             return finalize_ack()
         campaign_id = fields.get("campaign_id")
         task_id = fields.get("task_id")

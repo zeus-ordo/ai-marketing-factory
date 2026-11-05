@@ -68,7 +68,7 @@ def test_import_sends_required_metadata_and_reports_ready_item(tmp_path):
             FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
             FakeResponse(200, {"items": []}),
             FakeResponse(200, {"item_id": "item-1", "title": "brief", "metadata": {"sha256": "not-used"}}),
-            FakeResponse(200, {"items": [{"item_id": "item-1", "title": "brief", "analysis": {"analysis_status": "ready"}}]}),
+            FakeResponse(200, {"items": [{"item_id": "item-1", "title": "brief", "text_embedding": {"embedding_status": "ready"}}]}),
         ]
     )
     report = tmp_path / "report.json"
@@ -105,7 +105,7 @@ def test_existing_title_and_provenance_skip_upload(tmp_path):
             FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
             FakeResponse(200, {"items": [{"item_id": "existing", "title": "brief", "metadata": {"sha256": "different"}}]}),
             FakeResponse(200, {"item_id": "new-item", "title": "brief"}),
-            FakeResponse(200, {"items": [{"item_id": "new-item", "title": "brief", "analysis": {"analysis_status": "ready"}}]}),
+            FakeResponse(200, {"items": [{"item_id": "new-item", "title": "brief", "text_embedding": {"embedding_status": "ready"}}]}),
         ]
     )
 
@@ -150,7 +150,7 @@ def test_authenticated_transport_receives_bearer_header(tmp_path):
         FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
         FakeResponse(200, {"items": []}),
         FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
-        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "ready"}}]}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "text_embedding": {"embedding_status": "ready"}}]}),
     ])
 
     Importer("http://example.test", transport, headers={"Authorization": "Bearer fake-bearer"}).run(
@@ -167,8 +167,8 @@ def test_readiness_polls_pending_until_ready(tmp_path):
         FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
         FakeResponse(200, {"items": []}),
         FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
-        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "pending"}}]}),
-        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "ready"}}]}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "text_embedding": {"embedding_status": "pending"}}]}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "text_embedding": {"embedding_status": "ready"}}]}),
     ])
 
     result = Importer("http://example.test", transport, poll_interval_seconds=0, readiness_timeout_seconds=1).run(
@@ -186,12 +186,30 @@ def test_readiness_records_failed_status(tmp_path):
         FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
         FakeResponse(200, {"items": []}),
         FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
-        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "failed"}}]}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "text_embedding": {"embedding_status": "failed"}}]}),
     ])
 
     result = Importer("http://example.test", transport, poll_interval_seconds=0).run(tmp_path, tmp_path / "report.json")
 
     assert result[0]["ready_status"] == "failed"
+
+
+def test_readiness_uses_text_embedding_status(tmp_path):
+    source = tmp_path / "brief.docx"
+    write_docx(source, ["Article"])
+    transport = FakeTransport(responses=[
+        FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
+        FakeResponse(200, {"items": []}),
+        FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "embedding_status": "pending", "chunk_count": 2, "ready_chunk_count": 0}]}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "embedding_status": "ready", "chunk_count": 2, "ready_chunk_count": 2}]}),
+    ])
+
+    result = Importer("http://example.test", transport, poll_interval_seconds=0, readiness_timeout_seconds=1).run(
+        tmp_path, tmp_path / "report.json"
+    )
+
+    assert result[0]["ready_status"] == "ready"
 
 
 def test_readiness_records_bounded_timeout(tmp_path):
@@ -201,7 +219,7 @@ def test_readiness_records_bounded_timeout(tmp_path):
         FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
         FakeResponse(200, {"items": []}),
         FakeResponse(200, {"item_id": "item-1", "title": "brief"}),
-        FakeResponse(200, {"items": [{"item_id": "item-1", "analysis": {"analysis_status": "pending"}}]}),
+        FakeResponse(200, {"items": [{"item_id": "item-1", "text_embedding": {"embedding_status": "pending"}}]}),
     ])
 
     result = Importer("http://example.test", transport, poll_interval_seconds=0, readiness_timeout_seconds=0).run(
@@ -253,7 +271,7 @@ def test_malformed_docx_isolated_from_other_file_conversion(tmp_path):
             FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
             FakeResponse(200, {"items": []}),
             FakeResponse(200, {"item_id": "good-item", "title": "good"}),
-            FakeResponse(200, {"items": [{"item_id": "good-item", "title": "good", "analysis": {"analysis_status": "ready"}}]}),
+            FakeResponse(200, {"items": [{"item_id": "good-item", "title": "good", "text_embedding": {"embedding_status": "ready"}}]}),
         ]
     )
 

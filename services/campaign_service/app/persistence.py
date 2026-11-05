@@ -37,6 +37,7 @@ class PostgresPersistence:
         if psycopg is None:
             raise RuntimeError("psycopg is required for PostgresPersistence")
         self._dsn = dsn
+        self.vector_storage_available = False
 
     def _connect(self):
         if psycopg is None:
@@ -344,6 +345,36 @@ class PostgresPersistence:
                     ON knowledge_item_image_analysis (company_id, analysis_status, industry);
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS knowledge_item_text_embeddings (
+                        item_id TEXT NOT NULL REFERENCES knowledge_items(item_id) ON DELETE CASCADE,
+                        embedding_version TEXT NOT NULL,
+                        content_sha256 TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL DEFAULT 0,
+                        chunk_count INTEGER NOT NULL DEFAULT 0,
+                        embedding_status TEXT NOT NULL DEFAULT 'pending' CHECK (embedding_status IN ('pending','processing','ready','failed')),
+                        embedding_json JSONB,
+                        embedding_model TEXT,
+                        embedding_dimension INTEGER,
+                        error_code TEXT,
+                        error_detail TEXT,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        retryable BOOLEAN NOT NULL DEFAULT TRUE,
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (item_id, embedding_version, chunk_index)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_text_embeddings_ready ON knowledge_item_text_embeddings (item_id, embedding_version, embedding_status);
+                    """
+                )
+                cur.execute("SAVEPOINT text_embedding_vector_migration;")
+                try:
+                    cur.execute("ALTER TABLE knowledge_item_text_embeddings ADD COLUMN IF NOT EXISTS embedding vector;")
+                    self.vector_storage_available = True
+                    cur.execute("RELEASE SAVEPOINT text_embedding_vector_migration;")
+                except Exception:
+                    cur.execute("ROLLBACK TO SAVEPOINT text_embedding_vector_migration;")
+                    cur.execute("RELEASE SAVEPOINT text_embedding_vector_migration;")
                 # pgvector is optional. JSONB remains the durable fallback when it is unavailable.
                 cur.execute("SAVEPOINT image_analysis_vector_migration;")
                 try:
@@ -3071,6 +3102,68 @@ class PostgresPersistence:
             conn.commit()
         return item
 
+    def create_text_embedding(self, item_id: str, embedding_version: str, content_sha256: str) -> dict[str, Any]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("""INSERT INTO knowledge_item_text_embeddings (item_id, embedding_version, content_sha256)
+                VALUES (%s, %s, %s) ON CONFLICT (item_id, embedding_version, chunk_index) DO UPDATE SET content_sha256 = EXCLUDED.content_sha256""", (item_id, embedding_version, content_sha256))
+            conn.commit()
+        return {"item_id": item_id, "embedding_version": embedding_version, "embedding_status": "pending", "ready_chunk_count": 0, "chunk_count": 0}
+
+    def get_text_embedding(self, item_id: str, embedding_version: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT item_id, embedding_version, embedding_status, COUNT(*) FILTER (WHERE embedding_status = 'ready'), MAX(chunk_count)
+                FROM knowledge_item_text_embeddings WHERE item_id = %s AND embedding_version = %s GROUP BY item_id, embedding_version, embedding_status""", (item_id, embedding_version))
+            row = cur.fetchone()
+        if row is None: return None
+        return {"item_id": row[0], "embedding_version": row[1], "embedding_status": row[2], "ready_chunk_count": int(row[3] or 0), "chunk_count": int(row[4] or 0)}
+
+    def get_text_item(self, item_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT item_id, title, description, metadata_json FROM knowledge_items WHERE item_id = %s AND deleted_at IS NULL", (item_id,))
+            row = cur.fetchone()
+        if row is None: return None
+        metadata = dict(row[3] or {})
+        return {"item_id": row[0], "title": row[1], "description": row[2], "stored_path": metadata.get("stored_path")}
+
+    def claim_text_embedding(self, item_id: str, embedding_version: str) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'processing', attempt_count = attempt_count + 1, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0 AND (embedding_status = 'pending' OR (embedding_status = 'failed' AND retryable = TRUE)) RETURNING item_id", (item_id, embedding_version))
+            claimed = cur.fetchone() is not None
+            conn.commit()
+        return claimed
+
+    def complete_text_embedding_chunk(self, item_id: str, embedding_version: str, chunk_index: int, chunk_count: int, embedding: list[float], embedding_model: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("""INSERT INTO knowledge_item_text_embeddings (item_id, embedding_version, content_sha256, chunk_index, chunk_count, embedding_status, embedding_json, embedding_model, embedding_dimension)
+                SELECT item_id, embedding_version, content_sha256, %s, %s, 'ready', %s::jsonb, %s, %s FROM knowledge_item_text_embeddings WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0
+                ON CONFLICT (item_id, embedding_version, chunk_index) DO UPDATE SET embedding_status = 'ready', embedding_json = EXCLUDED.embedding_json, embedding_model = EXCLUDED.embedding_model, embedding_dimension = EXCLUDED.embedding_dimension, chunk_count = EXCLUDED.chunk_count, updated_at = NOW()""", (chunk_index, chunk_count, json.dumps(embedding), embedding_model, len(embedding), item_id, embedding_version))
+            conn.commit()
+
+    def complete_text_embedding(self, item_id: str, embedding_version: str, chunk_count: int) -> dict[str, Any]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_item_text_embeddings SET chunk_count = %s, embedding_status = 'ready', retryable = FALSE, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s", (chunk_count, item_id, embedding_version))
+            conn.commit()
+        return {"item_id": item_id, "embedding_version": embedding_version, "embedding_status": "ready", "chunk_count": chunk_count, "ready_chunk_count": chunk_count}
+
+    def search_ready_text_embeddings(self, query_embedding: list[float], limit: int = 8) -> list[dict[str, Any]]:
+        if not query_embedding or limit < 1:
+            return []
+        vector = "[" + ",".join(str(float(value)) for value in query_embedding) + "]"
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT e.item_id, e.embedding_version, e.chunk_index, e.embedding_json, k.title, k.description, k.metadata_json,
+                1 - (e.embedding <=> %s::vector) AS score
+                FROM knowledge_item_text_embeddings e JOIN knowledge_items k ON k.item_id = e.item_id
+                WHERE e.embedding_status = 'ready' AND e.embedding IS NOT NULL AND k.company_id = 'platform' AND k.deleted_at IS NULL
+                ORDER BY e.embedding <=> %s::vector, e.item_id, e.chunk_index LIMIT %s""", (vector, vector, limit))
+            rows = cur.fetchall()
+        return [{"item_id": row[0], "embedding_version": row[1], "chunk_index": row[2], "embedding": row[3], "title": row[4], "description": row[5], "metadata": dict(row[6] or {}), "score": float(row[7])} for row in rows]
+
+    def fail_text_embedding(self, item_id: str, embedding_version: str, error_code: str, error_detail: str) -> dict[str, Any]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'failed', error_code = %s, error_detail = %s, retryable = TRUE, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s", (error_code, error_detail, item_id, embedding_version))
+            conn.commit()
+        return {"item_id": item_id, "embedding_version": embedding_version, "embedding_status": "failed"}
+
     @staticmethod
     def _image_analysis_dict(row: tuple[Any, ...]) -> dict[str, Any]:
         return {
@@ -3497,7 +3590,12 @@ class PostgresPersistence:
         return deleted
 
     def list_reference_pack_items(self, pack_id: str) -> list[dict[str, Any]]:
-        return [item for item in self.list_knowledge_items("platform") if item.get("reference_pack_id") == pack_id]
+        items = [item for item in self.list_knowledge_items("platform") if item.get("reference_pack_id") == pack_id]
+        for item in items:
+            state = self.get_text_embedding(item["item_id"], "text-rag-v1")
+            if state is not None:
+                item["text_embedding"] = state
+        return items
 
     def delete_reference_pack_item(self, pack_id: str, item_id: str) -> bool:
         with self._connect() as conn:

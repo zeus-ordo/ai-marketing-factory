@@ -384,6 +384,10 @@ class ReferencePackItemRecord(BaseModel):
     content_url: str
     created_at: datetime
     analysis: KnowledgeItemAnalysisSummary | None = None
+    embedding_status: Literal["pending", "processing", "ready", "failed"] | None = None
+    embedding_version: str | None = None
+    ready_chunk_count: int = 0
+    chunk_count: int = 0
 
 
 class ReferencePackItemListResponse(BaseModel):
@@ -2697,6 +2701,7 @@ def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]
         source_type = "industry_default" if pack_industry else "platform_default"
         for row in rows_by_pack.get(str(pack.get("pack_id")), []):
             metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            file_type = str(metadata.get("file_type") or metadata.get("mime_type") or "image/png").lower()
             context.append({
                 "item_id": row.get("item_id"),
                 "title": row.get("title") or metadata.get("file_name") or "reference pack item",
@@ -2704,7 +2709,7 @@ def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]
                 "source_type": source_type,
                 "stored_path": metadata.get("stored_path"),
                 "file_name": metadata.get("file_name") or row.get("title") or "reference",
-                "file_type": metadata.get("file_type") or metadata.get("mime_type") or "image/png",
+                "file_type": file_type,
                 "folder": metadata.get("folder") or metadata.get("folder_name") or "",
                 "pack_id": pack.get("pack_id"),
                 "pack_name": pack.get("name"),
@@ -6641,6 +6646,7 @@ def _require_platform_admin(req: Request) -> None:
 
 def _pack_item_response(item: dict[str, Any], pack_id: str) -> ReferencePackItemRecord:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    text_embedding = item.get("text_embedding") if isinstance(item.get("text_embedding"), dict) else {}
     created_at = item.get("created_at")
     if isinstance(created_at, str):
         created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
@@ -6651,6 +6657,10 @@ def _pack_item_response(item: dict[str, Any], pack_id: str) -> ReferencePackItem
         file_size=int(metadata.get("file_size") or 0),
         content_url=str(item.get("content_url") or ""), created_at=created_at or now_utc(),
         analysis=_analysis_summary(item.get("analysis")),
+        embedding_status=text_embedding.get("embedding_status"),
+        embedding_version=text_embedding.get("embedding_version"),
+        ready_chunk_count=int(text_embedding.get("ready_chunk_count") or 0),
+        chunk_count=int(text_embedding.get("chunk_count") or 0),
     )
 
 
@@ -6682,6 +6692,7 @@ def _public_knowledge_item(row: dict[str, Any]) -> dict[str, Any]:
 
 
 IMAGE_ANALYSIS_VERSION = "image-rag-v1"
+TEXT_EMBEDDING_VERSION = "text-rag-v1"
 
 
 def _analysis_summary(value: dict[str, Any] | None) -> KnowledgeItemAnalysisSummary | None:
@@ -6726,6 +6737,22 @@ def _create_pending_analysis(item: dict[str, Any]) -> dict[str, Any] | None:
     return pending
 
 
+def _create_pending_text_embedding(item: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if str(metadata.get("file_type") or "").lower() not in {"text/plain", "text/markdown"}:
+        return None
+    if persistence is not None and callable(getattr(persistence, "create_text_embedding", None)):
+        state = persistence.create_text_embedding(item["item_id"], TEXT_EMBEDDING_VERSION, str(metadata.get("sha256") or ""))
+    else:
+        state = {"item_id": item["item_id"], "embedding_version": TEXT_EMBEDDING_VERSION, "embedding_status": "pending", "ready_chunk_count": 0, "chunk_count": 0}
+    item["text_embedding"] = state
+    try:
+        enqueue_text_embedding(item["item_id"], TEXT_EMBEDDING_VERSION)
+    except Exception:
+        logger.exception("Failed to enqueue text embedding for %s", item["item_id"])
+    return state
+
+
 def _enqueue_best_effort(item_id: str, analysis_version: str) -> None:
     try:
         enqueue_image_enrichment(item_id, analysis_version)
@@ -6748,6 +6775,25 @@ def enqueue_image_enrichment(item_id: str, analysis_version: str) -> None:
         if callable(delete_method):
             delete_method(dedupe_key)
         raise
+
+
+def enqueue_text_embedding(item_id: str, embedding_version: str) -> None:
+    client = _get_redis_client()
+    if client is None:
+        raise RuntimeError("Redis is unavailable")
+    dedupe_key = f"text-embedding:enqueue:{item_id}:{embedding_version}"
+    if callable(getattr(client, "set", None)) and client.set(dedupe_key, "1", nx=True, ex=300) is False:
+        return
+    try:
+        client.xadd("task.text_embedding", {"task_type": "text_embedding", "item_id": item_id, "embedding_version": embedding_version})
+    except Exception:
+        if callable(getattr(client, "delete", None)):
+            client.delete(dedupe_key)
+        raise
+
+
+def ready_text_embedding_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get("embedding_status") == "ready" and row.get("embedding")]
 
 
 @app.get("/api/v1/reference-packs", response_model=ReferencePackListResponse)
@@ -6905,6 +6951,7 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
             cached = knowledge_items["platform"][0]
             knowledge_items["platform"][0] = cached.model_copy(update={"analysis": _analysis_summary(analysis)})
         _enqueue_best_effort(item_id, IMAGE_ANALYSIS_VERSION)
+    text_embedding = _create_pending_text_embedding(item)
     return _pack_item_response(item, pack_id)
 
 
