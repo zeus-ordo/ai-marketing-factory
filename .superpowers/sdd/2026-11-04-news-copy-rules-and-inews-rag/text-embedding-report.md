@@ -12,7 +12,7 @@ Implemented the approved TXT Reference Pack text-embedding vertical slice in the
 - Added orchestrator topic dispatch, worker endpoint, retry, and DLQ handling for text embedding.
 - Added API fields `embedding_status`, `embedding_version`, `ready_chunk_count`, and `chunk_count` without exposing private paths.
 - Updated iNews importer readiness polling to use text embedding status rather than image analysis status.
-- Added ready-only text embedding search and filtered pending/failed text items from Reference Pack context assembly.
+- Added ready-only text embedding search; deterministic bounded text excerpt assembly remains available as the fallback path.
 - Switched local Postgres deployment to `pgvector/pgvector:pg16`; persistence records vector availability instead of assuming it.
 
 ## Tests
