@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import pytest
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 os.environ.setdefault("POSTGRES_DSN", "")
@@ -31,6 +32,33 @@ def test_classifies_quota_timeout_and_provider_failures():
 
 def test_copy_length_failure_is_non_retryable():
     assert classify_worker_error(RuntimeError("invalid copy body length after two repairs")) == "invalid_copy_length"
+
+
+def test_text_embedding_queue_failure_retries_then_dlqs(monkeypatch):
+    published = []
+    class Redis:
+        def set(self, *args, **kwargs): return True
+        def eval(self, *args): return 1
+        def xadd(self, topic, fields): published.append((topic, fields))
+        def xack(self, *args): return 1
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "run_worker", lambda *_args: (_ for _ in ()).throw(RuntimeError("provider unavailable")))
+    orchestrator.process_queue_message(orchestrator.TEXT_EMBEDDING_TOPIC, "1-0", {"item_id": "item-1", "embedding_version": "text-rag-v1", "retry_count": "2"})
+    assert published[-1][0] == orchestrator.DLQ_TOPIC
+
+
+def test_text_embedding_queue_failure_publishes_retry(monkeypatch):
+    published = []
+    class Redis:
+        def set(self, *args, **kwargs): return True
+        def eval(self, *args): return 1
+        def xadd(self, topic, fields): published.append((topic, fields))
+        def xack(self, *args): return 1
+    monkeypatch.setattr(orchestrator, "redis_client", Redis())
+    monkeypatch.setattr(orchestrator, "run_worker", lambda *_args: (_ for _ in ()).throw(RuntimeError("provider unavailable")))
+    orchestrator.process_queue_message(orchestrator.TEXT_EMBEDDING_TOPIC, "2-0", {"item_id": "item-1", "embedding_version": "text-rag-v1", "retry_count": "0"})
+    assert published[-1][0] == orchestrator.TEXT_EMBEDDING_TOPIC
+    assert published[-1][1]["retry_count"] == "1"
 
 
 def test_terminal_copy_length_failure_reports_failed_worker_result(monkeypatch):

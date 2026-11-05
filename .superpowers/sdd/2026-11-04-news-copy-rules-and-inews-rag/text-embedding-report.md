@@ -32,3 +32,26 @@ The service test suites were run separately because their `app` module names col
 - Existing FastAPI startup deprecation warnings remain unchanged.
 - pgvector remains optional at runtime; JSON embeddings remain durable when the extension is unavailable, and vector availability is exposed on persistence rather than silently claimed.
 - The current semantic search method is persistence-facing; broader query-embedding orchestration can build on it without changing image analysis state.
+
+## Review Fixes
+
+The follow-up review findings are addressed as follows:
+
+1. Text context now attempts ready-only semantic retrieval through `TEXT_RAG_QUERY_EMBEDDING`, merges provenance from active platform Reference Pack rows, and deterministically sorts bounded text excerpts when vector retrieval is unavailable.
+2. Both campaign persistence and the worker persistence adapter write JSON and attempt the pgvector column under savepoints. `pgvector_available` is exposed by campaign health and remains false when the extension/write path is unavailable.
+3. Text worker failures still persist sanitized retryable failure state, then re-raise so the worker endpoint returns a transport failure and the orchestrator retry/DLQ path handles it.
+4. Local deployment mounts an idempotent `CREATE EXTENSION vector` init script and requires the extension in the Postgres healthcheck.
+5. Added tests for partial chunk failure, ready-job idempotence, orchestrator retry and DLQ, vector writes, context semantic retrieval/fallback, mixed status aggregation, and reset/list persistence contracts.
+6. Mixed chunk status is deterministic: failed wins, complete ready chunks produce ready, processing wins over pending, and incomplete rows remain pending.
+7. Added `reset_text_embedding_for_retry` and `list_text_embeddings` persistence methods.
+
+## Review-Fix Verification
+
+- `python -m pytest services/worker_enrichment/test_text_embedding_job.py services/worker_enrichment/test_enrichment_job.py -q`: 11 passed.
+- `python -m pytest services/campaign_service/test_text_embedding_contract.py services/campaign_service/test_reference_pack_text.py services/campaign_service/test_persistence_migrations.py -q`: 21 passed.
+- `python -m pytest services/orchestrator/test_task_failure_isolation.py -q`: 35 passed.
+- `python -m pytest scripts/test_import_inews_references.py -q`: 14 passed.
+- `python -m pytest services/worker_enrichment/test_provider_contract.py -q`: 17 passed.
+- `python -m compileall -q services/campaign_service/app services/worker_enrichment/app services/orchestrator/app`: passed.
+
+One unrelated pre-existing context-suite test remains failing because its synthetic request supplies only `x-internal-api-key` while the regeneration path requires JWT authorization: `test_asset_regeneration_sends_complete_v2_image_payload_and_sanitizes_audit`.

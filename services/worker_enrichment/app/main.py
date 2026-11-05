@@ -159,6 +159,51 @@ class PostgresPersistenceBoundary:
             raise ValueError("image analysis is not pending or processing")
         return {"item_id": item_id, "analysis_status": "failed"}
 
+    def get_text_embedding(self, item_id: str, embedding_version: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT item_id, embedding_version, embedding_status, chunk_count FROM knowledge_item_text_embeddings WHERE item_id = %s AND embedding_version = %s ORDER BY chunk_index", (item_id, embedding_version))
+            rows = cur.fetchall()
+        if not rows:
+            return None
+        statuses = [row[2] for row in rows]
+        chunk_count = max(int(row[3] or 0) for row in rows)
+        status = "failed" if "failed" in statuses else "ready" if chunk_count and len(statuses) >= chunk_count and all(value == "ready" for value in statuses) else "processing" if "processing" in statuses else "pending"
+        return {"item_id": rows[0][0], "embedding_version": rows[0][1], "embedding_status": status}
+
+    def get_text_item(self, item_id: str) -> dict[str, Any] | None:
+        return self.get_image_item(item_id)
+
+    def claim_text_embedding(self, item_id: str, embedding_version: str) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'processing', attempt_count = attempt_count + 1, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0 AND (embedding_status = 'pending' OR (embedding_status = 'failed' AND retryable = TRUE)) RETURNING item_id", (item_id, embedding_version))
+            claimed = cur.fetchone() is not None
+            conn.commit()
+        return claimed
+
+    def complete_text_embedding_chunk(self, item_id: str, embedding_version: str, chunk_index: int, chunk_count: int, embedding: list[float], embedding_model: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_item_text_embeddings SET chunk_count = %s, embedding_status = 'ready', embedding_json = %s::jsonb, embedding_model = %s, embedding_dimension = %s, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND chunk_index = %s", (chunk_count, json.dumps(embedding), embedding_model, len(embedding), item_id, embedding_version, chunk_index))
+            cur.execute("SAVEPOINT text_embedding_vector_write;")
+            try:
+                cur.execute("UPDATE knowledge_item_text_embeddings SET embedding = %s::vector WHERE item_id = %s AND embedding_version = %s AND chunk_index = %s", ("[" + ",".join(str(float(value)) for value in embedding) + "]", item_id, embedding_version, chunk_index))
+                cur.execute("RELEASE SAVEPOINT text_embedding_vector_write;")
+            except Exception:
+                cur.execute("ROLLBACK TO SAVEPOINT text_embedding_vector_write;")
+                cur.execute("RELEASE SAVEPOINT text_embedding_vector_write;")
+            conn.commit()
+
+    def complete_text_embedding(self, item_id: str, embedding_version: str, chunk_count: int) -> dict[str, Any]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_item_text_embeddings SET chunk_count = %s, embedding_status = 'ready', retryable = FALSE, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s", (chunk_count, item_id, embedding_version))
+            conn.commit()
+        return {"item_id": item_id, "embedding_version": embedding_version, "embedding_status": "ready"}
+
+    def fail_text_embedding(self, item_id: str, embedding_version: str, error_code: str, error_detail: str) -> dict[str, Any]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'failed', error_code = %s, error_detail = %s, retryable = TRUE, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s", (error_code, error_detail, item_id, embedding_version))
+            conn.commit()
+        return {"item_id": item_id, "embedding_version": embedding_version, "embedding_status": "failed"}
+
 
 persistence: PersistenceBoundary | None = PostgresPersistenceBoundary()
 INTERNAL_API_KEY = os.getenv("CHATBOT_INTERNAL_API_KEY", "").strip() or os.getenv("INTERNAL_API_KEY", "").strip()
@@ -271,7 +316,7 @@ def process_text_embedding_job(payload: dict[str, Any]) -> dict[str, str]:
         return _result(item_id, "ready")
     except Exception as exc:
         persistence.fail_text_embedding(item_id, version, _safe_error_code(exc), redact_provider_error(exc))
-        return _result(item_id, "failed")
+        raise
 
 
 @app.get("/health")

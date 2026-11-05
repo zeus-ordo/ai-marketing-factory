@@ -8,6 +8,16 @@ from .schemas import AssetOutput, CampaignBrief, CampaignRecord, TaskRecord, Val
 from .context_assembler import GenerationContextSnapshot, sanitize_context_metadata
 
 
+def aggregate_text_embedding_status(statuses: list[str], chunk_count: int) -> str:
+    if any(status == "failed" for status in statuses):
+        return "failed"
+    if chunk_count > 0 and len(statuses) >= chunk_count and all(status == "ready" for status in statuses):
+        return "ready"
+    if any(status == "processing" for status in statuses):
+        return "processing"
+    return "pending"
+
+
 def legacy_folder_id(label: str | None, folders: list[dict[str, Any]]) -> str | None:
     """Infer a legacy text folder only when exactly one ID is unambiguous."""
     normalized = (label or "").strip().casefold()
@@ -3111,11 +3121,12 @@ class PostgresPersistence:
 
     def get_text_embedding(self, item_id: str, embedding_version: str) -> dict[str, Any] | None:
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("""SELECT item_id, embedding_version, embedding_status, COUNT(*) FILTER (WHERE embedding_status = 'ready'), MAX(chunk_count)
-                FROM knowledge_item_text_embeddings WHERE item_id = %s AND embedding_version = %s GROUP BY item_id, embedding_version, embedding_status""", (item_id, embedding_version))
-            row = cur.fetchone()
-        if row is None: return None
-        return {"item_id": row[0], "embedding_version": row[1], "embedding_status": row[2], "ready_chunk_count": int(row[3] or 0), "chunk_count": int(row[4] or 0)}
+            cur.execute("SELECT item_id, embedding_version, embedding_status, chunk_count FROM knowledge_item_text_embeddings WHERE item_id = %s AND embedding_version = %s ORDER BY chunk_index", (item_id, embedding_version))
+            rows = cur.fetchall()
+        if not rows: return None
+        chunk_count = max(int(row[3] or 0) for row in rows)
+        statuses = [str(row[2]) for row in rows]
+        return {"item_id": rows[0][0], "embedding_version": rows[0][1], "embedding_status": aggregate_text_embedding_status(statuses, chunk_count), "ready_chunk_count": sum(status == "ready" for status in statuses), "chunk_count": chunk_count}
 
     def get_text_item(self, item_id: str) -> dict[str, Any] | None:
         with self._connect() as conn, conn.cursor() as cur:
@@ -3137,6 +3148,15 @@ class PostgresPersistence:
             cur.execute("""INSERT INTO knowledge_item_text_embeddings (item_id, embedding_version, content_sha256, chunk_index, chunk_count, embedding_status, embedding_json, embedding_model, embedding_dimension)
                 SELECT item_id, embedding_version, content_sha256, %s, %s, 'ready', %s::jsonb, %s, %s FROM knowledge_item_text_embeddings WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0
                 ON CONFLICT (item_id, embedding_version, chunk_index) DO UPDATE SET embedding_status = 'ready', embedding_json = EXCLUDED.embedding_json, embedding_model = EXCLUDED.embedding_model, embedding_dimension = EXCLUDED.embedding_dimension, chunk_count = EXCLUDED.chunk_count, updated_at = NOW()""", (chunk_index, chunk_count, json.dumps(embedding), embedding_model, len(embedding), item_id, embedding_version))
+            cur.execute("SAVEPOINT text_embedding_vector_write;")
+            try:
+                cur.execute("UPDATE knowledge_item_text_embeddings SET embedding = %s::vector WHERE item_id = %s AND embedding_version = %s AND chunk_index = %s", ("[" + ",".join(str(float(value)) for value in embedding) + "]", item_id, embedding_version, chunk_index))
+                self.vector_storage_available = True
+                cur.execute("RELEASE SAVEPOINT text_embedding_vector_write;")
+            except Exception:
+                self.vector_storage_available = False
+                cur.execute("ROLLBACK TO SAVEPOINT text_embedding_vector_write;")
+                cur.execute("RELEASE SAVEPOINT text_embedding_vector_write;")
             conn.commit()
 
     def complete_text_embedding(self, item_id: str, embedding_version: str, chunk_count: int) -> dict[str, Any]:
@@ -3163,6 +3183,26 @@ class PostgresPersistence:
             cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'failed', error_code = %s, error_detail = %s, retryable = TRUE, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s", (error_code, error_detail, item_id, embedding_version))
             conn.commit()
         return {"item_id": item_id, "embedding_version": embedding_version, "embedding_status": "failed"}
+
+    def reset_text_embedding_for_retry(self, item_id: str, embedding_version: str) -> dict[str, Any] | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'pending', embedding_json = NULL, embedding_model = NULL, embedding_dimension = NULL, error_code = NULL, error_detail = NULL, retryable = TRUE, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND embedding_status = 'failed' AND retryable = TRUE RETURNING item_id, embedding_version", (item_id, embedding_version))
+            row = cur.fetchone()
+            conn.commit()
+        return {"item_id": row[0], "embedding_version": row[1], "embedding_status": "pending"} if row else None
+
+    def list_text_embeddings(self, item_id: str | None = None, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        conditions = ["1 = 1"]
+        params: list[Any] = []
+        if item_id:
+            conditions.append("item_id = %s"); params.append(item_id)
+        if status:
+            conditions.append("embedding_status = %s"); params.append(status)
+        params.append(limit)
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(f"SELECT item_id, embedding_version, chunk_index, chunk_count, embedding_status, embedding_model, embedding_dimension, error_code, error_detail, retryable, updated_at FROM knowledge_item_text_embeddings WHERE {' AND '.join(conditions)} ORDER BY item_id, embedding_version, chunk_index LIMIT %s", tuple(params))
+            rows = cur.fetchall()
+        return [{"item_id": row[0], "embedding_version": row[1], "chunk_index": row[2], "chunk_count": row[3], "embedding_status": row[4], "embedding_model": row[5], "embedding_dimension": row[6], "error_code": row[7], "error_detail": row[8], "retryable": bool(row[9]), "updated_at": row[10]} for row in rows]
 
     @staticmethod
     def _image_analysis_dict(row: tuple[Any, ...]) -> dict[str, Any]:

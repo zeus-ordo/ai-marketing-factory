@@ -2723,6 +2723,36 @@ def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]
     return context
 
 
+def retrieve_text_reference_context(
+    query: str,
+    fallback_rows: list[dict[str, Any]],
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Prefer ready semantic text rows; retain deterministic excerpt fallback."""
+    text_rows = [
+        row for row in fallback_rows
+        if str((row.get("metadata") or {}).get("file_type") or row.get("file_type") or "").lower()
+        in {"text/plain", "text/markdown"}
+    ]
+    raw_embedding = os.getenv("TEXT_RAG_QUERY_EMBEDDING", "")
+    try:
+        query_embedding = json.loads(raw_embedding) if raw_embedding else None
+        if query_embedding and persistence is not None and callable(getattr(persistence, "search_ready_text_embeddings", None)):
+            semantic = persistence.search_ready_text_embeddings([float(value) for value in query_embedding], limit)
+            by_id = {str(row.get("item_id")): row for row in text_rows}
+            results = []
+            for row in semantic:
+                if row.get("embedding_status") not in {None, "ready"}:
+                    continue
+                source = by_id.get(str(row.get("item_id")), {})
+                results.append({**source, **row, "source_type": source.get("source_type", "platform_default")})
+            if results:
+                return results[:limit]
+    except (TypeError, ValueError, json.JSONDecodeError, RuntimeError):
+        logger.info("Text vector retrieval unavailable; using deterministic excerpts", exc_info=True)
+    return sorted(text_rows, key=lambda row: (str(row.get("item_id") or ""), str(row.get("title") or "")))[:limit]
+
+
 def build_external_search_query(campaign: CampaignRecord) -> str:
     return build_campaign_search_query(
         campaign.brief.product_name,
@@ -2748,6 +2778,11 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
             safe_reference_excerpt(str(row.get("stored_path") or ""), str(row.get("file_type") or "")),
             {**row, "folder": str(row.get("folder") or "")},
         ))
+    pack_context = list_reference_pack_context(campaign)
+    text_pack_items = retrieve_text_reference_context(
+        f"{campaign.brief.product_name} {campaign.brief.objective} {campaign.brief.description}",
+        pack_context,
+    )
     pack_items = [
         ContextSourceItem(
             str(row.get("source_type") or "platform_default"),
@@ -2758,7 +2793,7 @@ def create_generation_context(campaign: CampaignRecord, run_id: str) -> Generati
             ),
             row,
         )
-        for row in list_reference_pack_context(campaign)
+        for row in [row for row in pack_context if str(row.get("file_type") or "").lower() not in {"text/plain", "text/markdown"}] + text_pack_items
     ]
     industry: list[ContextSourceItem] = []
     for row in list_industry_knowledge_context(campaign):
@@ -5429,8 +5464,11 @@ def build_trace_health_snapshot() -> SystemTraceHealthResponse:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "pgvector_available": bool(getattr(persistence, "vector_storage_available", False)),
+    }
 
 
 @app.get("/metrics")

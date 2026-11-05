@@ -1,4 +1,5 @@
 from pathlib import Path
+import pytest
 
 from app import main
 
@@ -38,6 +39,35 @@ def test_text_embedding_job_provider_failure_is_retryable(monkeypatch, tmp_path:
     persistence = FakePersistence(str(source))
     monkeypatch.setattr(main, "persistence", persistence)
     monkeypatch.setattr(main.providers, "embedding_provider", type("Provider", (), {"embed": lambda self, text: (_ for _ in ()).throw(RuntimeError("secret/private/path"))})())
-    result = main.process_text_embedding_job({"item_id": "item-1", "embedding_version": "text-rag-v1"})
-    assert result["status"] == "failed"
+    with pytest.raises(RuntimeError):
+        main.process_text_embedding_job({"item_id": "item-1", "embedding_version": "text-rag-v1"})
     assert persistence.failed == ("PROVIDER_ERROR", "provider request failed")
+
+
+def test_partial_chunk_failure_marks_failed_and_raises(monkeypatch, tmp_path: Path):
+    source = tmp_path / "news.txt"
+    source.write_text("alpha\n\nbeta", encoding="utf-8")
+    persistence = FakePersistence(str(source))
+    monkeypatch.setattr(main, "persistence", persistence)
+    calls = {"count": 0}
+    def embed(self, text):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("provider down")
+        return [1.0]
+    monkeypatch.setattr(main.providers, "embedding_provider", type("Provider", (), {"embed": embed})())
+    with pytest.raises(RuntimeError):
+        main.process_text_embedding_job({"item_id": "item-1", "embedding_version": "text-rag-v1"})
+    assert len(persistence.chunks) == 1
+    assert persistence.record["embedding_status"] == "failed"
+
+
+def test_ready_text_embedding_job_is_idempotent(monkeypatch, tmp_path: Path):
+    source = tmp_path / "news.txt"
+    source.write_text("alpha", encoding="utf-8")
+    persistence = FakePersistence(str(source))
+    persistence.record["embedding_status"] = "ready"
+    monkeypatch.setattr(main, "persistence", persistence)
+    result = main.process_text_embedding_job({"item_id": "item-1", "embedding_version": "text-rag-v1"})
+    assert result == {"item_id": "item-1", "status": "already_complete"}
+    assert persistence.chunks == []
