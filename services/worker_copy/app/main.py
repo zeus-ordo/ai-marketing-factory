@@ -73,21 +73,11 @@ def _news_repair_section_ranges(minimum: int, maximum: int) -> tuple[int, int, l
     interior_padding = min(100, (maximum - minimum) // 2)
     target_minimum = minimum + interior_padding
     target_maximum = maximum - interior_padding
-    section_midpoints = (240, 290, 260, 280, 130)
-    section_half_ranges = (20, 30, 20, 20, 10)
-    target_midpoint = (target_minimum + target_maximum) / 2
-    target_half_range = (target_maximum - target_minimum) / 2
-    section_ranges = [
-        (
-            round(midpoint * target_midpoint / 1200 - half_range * target_half_range / 100),
-            round(midpoint * target_midpoint / 1200 + half_range * target_half_range / 100),
-        )
-        for midpoint, half_range in zip(section_midpoints, section_half_ranges)
-    ]
-    section_ranges[-1] = (
-        target_minimum - sum(section_minimum for section_minimum, _ in section_ranges[:-1]),
-        target_maximum - sum(section_maximum for _, section_maximum in section_ranges[:-1]),
-    )
+    def split_target(total: int) -> list[int]:
+        quotient, remainder = divmod(total, 5)
+        return [quotient + (index < remainder) for index in range(5)]
+
+    section_ranges = list(zip(split_target(target_minimum), split_target(target_maximum)))
     return target_minimum, target_maximum, section_ranges
 
 

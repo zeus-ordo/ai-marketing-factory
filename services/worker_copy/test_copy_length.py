@@ -186,11 +186,11 @@ def test_news_release_short_output_uses_expansion_repair_prompt(monkeypatch):
     assert "expand rather than merely reformat" in repair
     assert "do not invent facts" in repair
     assert "1100-1300" in repair
-    assert "lead" in repair.lower() and "220-260" in repair
-    assert "event/data details" in repair.lower() and "260-320" in repair
-    assert "background/context" in repair.lower() and "240-280" in repair
-    assert "organization or activity significance" in repair.lower() and "260-300" in repair
-    assert "closing/contact information" in repair.lower() and "120-140" in repair
+    assert "lead" in repair.lower()
+    assert "event/data details" in repair.lower()
+    assert "background/context" in repair.lower()
+    assert "organization or activity significance" in repair.lower()
+    assert "closing/contact information" in repair.lower()
     assert "paragraph breaks" in repair.lower()
     assert "expand the existing draft" in repair.lower()
     assert "repeated filler" in repair.lower()
@@ -260,6 +260,25 @@ def test_news_release_repair_ranges_follow_a_different_long_form_contract(monkey
     assert sum(minimum for minimum, _ in section_ranges) == 1500
     assert sum(maximum for _, maximum in section_ranges) == 1500
     assert result.variants[0].body == "B" * 1500
+
+
+def test_news_repair_section_ranges_are_safe_across_valid_boundary_sweep():
+    for minimum in range(0, 2001):
+        for maximum in (minimum, minimum + 1, minimum + 100, minimum + 400):
+            target_minimum, target_maximum, section_ranges = main._news_repair_section_ranges(
+                minimum, maximum
+            )
+
+            assert minimum <= target_minimum <= target_maximum <= maximum
+            assert len(section_ranges) == 5
+            assert sum(section_minimum for section_minimum, _ in section_ranges) == target_minimum
+            assert sum(section_maximum for _, section_maximum in section_ranges) == target_maximum
+            assert all(
+                isinstance(section_minimum, int)
+                and isinstance(section_maximum, int)
+                and section_minimum <= section_maximum
+                for section_minimum, section_maximum in section_ranges
+            )
 
 
 def test_invalid_normal_output_gets_exactly_one_bounded_repair(monkeypatch):

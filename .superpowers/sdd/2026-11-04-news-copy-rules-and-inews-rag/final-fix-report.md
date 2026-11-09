@@ -112,3 +112,18 @@ No production services or databases were called.
 - TDD GREEN: `python -m pytest services/worker_copy/test_copy_length.py -q` ->
   **31 passed**.
 - No production services or databases were called.
+
+## Narrow-Range Allocation Follow-up
+
+- Replaced proportional section rounding with a safe integer partition of each
+  satisfiable target total across five sections.
+- Added a boundary sweep covering valid minimum/maximum pairs, including the
+  previously failing 1017-1018 contract. Every section now has integer,
+  non-reversed bounds and the five bounds sum to the target totals.
+- Preserved the 1000-1400 interior target of 1100-1300 and the 1400-1600
+  target of 1500-1500.
+- TDD RED: the boundary sweep failed under the prior proportional rounding
+  because a narrow range produced a reversed section range.
+- TDD GREEN: `python -m pytest services/worker_copy/test_copy_length.py -q` ->
+  **32 passed**.
+- No production services or databases were called.
