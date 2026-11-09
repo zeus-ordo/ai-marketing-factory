@@ -70,6 +70,18 @@ Verification:
 - `python -m pytest services/campaign_service/test_image_rag_retrieval.py services/campaign_service/test_image_enrichment_routes.py -q`: 24 passed.
 - `git diff --check`: passed.
 
+## Final Idempotence Fix
+
+- The importer SHA fast path now requires both `provenance_sha256 == source.sha256` and `provenance_source == METADATA["source"]`.
+- Same-hash items from another provenance source fall through to the full provenance match and upload path instead of being skipped.
+- Added a failing-first regression test covering same hash with a different source.
+
+Verification:
+
+- `python -m pytest scripts/test_import_inews_references.py -q`: 15 passed.
+- `python -m compileall -q scripts/import_inews_references.py`: passed.
+- `git diff --check`: passed.
+
 ## Provenance Contract Fix
 
 - TXT/MD upload handling now parses only the non-sensitive `source` and valid 64-character `sha256` headers into `provenance_source` and `provenance_sha256` metadata.

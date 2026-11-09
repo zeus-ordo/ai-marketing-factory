@@ -196,7 +196,12 @@ class Importer:
             for row in report:
                 row["metadata_warning"] = _safe_error(exc)
 
-        by_hash = {str(item.get("provenance_sha256")): item for item in existing if item.get("provenance_sha256")}
+        by_hash = {
+            str(item.get("provenance_sha256")): item
+            for item in existing
+            if item.get("provenance_sha256")
+            and item.get("provenance_source") == METADATA["source"]
+        }
         for index, source in enumerate(files):
             row = report[index]
             if source.sha256 in by_hash:

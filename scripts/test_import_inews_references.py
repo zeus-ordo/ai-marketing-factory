@@ -133,6 +133,25 @@ def test_matching_hash_skips_same_title_item(tmp_path):
     assert not any("/items/upload" in request[1] for request in transport.requests)
 
 
+def test_matching_hash_with_different_provenance_source_uploads(tmp_path):
+    source = tmp_path / "brief.docx"
+    write_docx(source, ["Article"])
+    from import_inews_references import scan_unique_docx
+    digest = scan_unique_docx(tmp_path)[0].sha256
+    transport = FakeTransport(responses=[
+        FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
+        FakeResponse(200, {"items": [{"item_id": "existing", "title": "brief", "provenance_sha256": digest, "provenance_source": "other_source"}]}),
+        FakeResponse(200, {"item_id": "new-item", "title": "brief"}),
+        FakeResponse(200, {"items": [{"item_id": "new-item", "embedding_status": "ready"}]}),
+    ])
+
+    result = Importer("http://example.test", transport, poll_interval_seconds=0).run(tmp_path, tmp_path / "report.json")
+
+    assert result[0]["upload_status"] == "uploaded"
+    assert result[0]["item_id"] == "new-item"
+    assert any("/items/upload" in request[1] for request in transport.requests)
+
+
 def test_auth_headers_use_environment_without_exposing_credentials(monkeypatch):
     monkeypatch.setenv("INEWS_IMPORT_BEARER_TOKEN", "fake-bearer")
     monkeypatch.delenv("PLATFORM_ADMIN_KEY", raising=False)
