@@ -21,17 +21,18 @@ def test_ready_text_retrieval_excludes_pending_rows():
 def test_text_context_uses_ready_semantic_results_and_fallback(monkeypatch):
     class Persistence:
         def search_ready_text_embeddings(self, query_embedding, limit=8):
-            return [{"item_id": "ready", "title": "Ready", "description": "semantic", "metadata": {"file_type": "text/plain"}, "score": 0.9}]
+            return [{"item_id": "unrelated", "title": "Unrelated", "description": "outside active pack", "metadata": {"file_type": "text/plain"}, "score": 1.0}]
     monkeypatch.setattr(main, "persistence", Persistence())
     monkeypatch.setenv("TEXT_RAG_QUERY_EMBEDDING", "[1.0]")
     result = main.retrieve_text_reference_context("query", fallback_rows=[{"item_id": "pending", "title": "Pending", "description": "excerpt", "metadata": {"file_type": "text/plain"}}])
-    assert [row["item_id"] for row in result] == ["ready"]
+    assert [row["item_id"] for row in result] == ["pending"]
 
 
 def test_text_context_falls_back_deterministically_when_semantic_unavailable(monkeypatch):
     class Persistence:
-        def search_ready_text_embeddings(self, query_embedding, limit=8): raise RuntimeError("pgvector unavailable")
+        def search_ready_text_embeddings(self, query_embedding, limit=8): raise Exception("database connection failed")
     monkeypatch.setattr(main, "persistence", Persistence())
+    monkeypatch.setenv("TEXT_RAG_QUERY_EMBEDDING", "[1.0]")
     rows = [{"item_id": "b", "title": "B", "description": "b", "metadata": {"file_type": "text/plain"}}, {"item_id": "a", "title": "A", "description": "a", "metadata": {"file_type": "text/plain"}}]
     result = main.retrieve_text_reference_context("query", fallback_rows=rows)
     assert [row["item_id"] for row in result] == ["a", "b"]

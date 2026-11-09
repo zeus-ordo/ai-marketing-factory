@@ -2744,12 +2744,17 @@ def retrieve_text_reference_context(
             for row in semantic:
                 if row.get("embedding_status") not in {None, "ready"}:
                     continue
-                source = by_id.get(str(row.get("item_id")), {})
+                source = by_id.get(str(row.get("item_id")))
+                if source is None:
+                    continue
                 results.append({**source, **row, "source_type": source.get("source_type", "platform_default")})
             if results:
                 return results[:limit]
-    except (TypeError, ValueError, json.JSONDecodeError, RuntimeError):
-        logger.info("Text vector retrieval unavailable; using deterministic excerpts", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "Text vector retrieval unavailable (%s); using deterministic excerpts",
+            type(exc).__name__,
+        )
     return sorted(text_rows, key=lambda row: (str(row.get("item_id") or ""), str(row.get("title") or "")))[:limit]
 
 

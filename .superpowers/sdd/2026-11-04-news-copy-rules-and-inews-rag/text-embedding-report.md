@@ -55,3 +55,17 @@ The follow-up review findings are addressed as follows:
 - `python -m compileall -q services/campaign_service/app services/worker_enrichment/app services/orchestrator/app`: passed.
 
 One unrelated pre-existing context-suite test remains failing because its synthetic request supplies only `x-internal-api-key` while the regeneration path requires JWT authorization: `test_asset_regeneration_sends_complete_v2_image_payload_and_sanitizes_audit`.
+
+## Scoped Context Review Fixes
+
+- Semantic text results are now admitted only when their item ID exists in the already-filtered active `pack_context`, preserving platform/industry pack scope and provenance.
+- Unrelated semantic rows cause deterministic fallback rather than entering campaign context.
+- All vector/DB retrieval exceptions are caught, logged using only the exception type, and routed to the bounded deterministic excerpt path so generation continues.
+- Added failing-first regression coverage for unrelated semantic result exclusion and generic database retrieval failure fallback.
+
+Verification:
+
+- `python -m pytest services/campaign_service/test_text_embedding_contract.py::test_text_context_uses_ready_semantic_results_and_fallback services/campaign_service/test_text_embedding_contract.py::test_text_context_falls_back_deterministically_when_semantic_unavailable -q`: 2 passed.
+- `python -m pytest services/campaign_service/test_text_embedding_contract.py services/campaign_service/test_reference_pack_text.py services/campaign_service/test_context_assembler.py -q`: 52 passed, 1 unrelated pre-existing JWT fixture failure.
+- `python -m pytest services/campaign_service/test_image_rag_retrieval.py services/campaign_service/test_image_enrichment_routes.py -q`: 24 passed.
+- `git diff --check`: passed.
