@@ -2977,11 +2977,18 @@ def enrich_campaign_diagnostics(campaign: CampaignRecord) -> CampaignRecord:
     return campaign.model_copy(update={"generation_context_id": context_id, "source_summary": diagnostics, "tasks": tasks or None})
 
 
-def snapshot_prompt_context(snapshot: GenerationContextSnapshot | None) -> str:
+def snapshot_prompt_context(snapshot: GenerationContextSnapshot | None, task_type: str | None = None) -> str:
     if snapshot is None:
         return ""
+    items = snapshot.items
+    if task_type in {"image_generation", "video_generation"}:
+        items = tuple(
+            item for item in items
+            if str(dict(item.metadata).get("mime_type") or dict(item.metadata).get("file_type") or "").lower()
+            not in {"text/plain", "text/markdown"}
+        )
     return "\n\nPersisted generation snapshot sources:\n" + "\n".join(
-        f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
+        f"[{item.source_type}] {item.label}: {item.text}" for item in items
     )
 
 
@@ -3449,8 +3456,8 @@ def build_worker_payload_for_task(
     if task_type == "image_generation":
         context_payload["reference_audit"] = reference_audit
     context_payload.update({key: value for key, value in {"provider": task_provider, "model": task_model, "run_id": task_run_id}.items() if value})
-    context_text = "\n\nSnapshot source context:\n" + "\n".join(
-        f"[{item.source_type}] {item.label}: {item.text}" for item in snapshot.items
+    context_text = snapshot_prompt_context(snapshot, str(task_type)).replace(
+        "\n\nPersisted generation snapshot sources:", "\n\nSnapshot source context:"
     ) if snapshot else ""
     if task_type == "copywriting":
         return {
@@ -3594,14 +3601,13 @@ def generate_outputs_via_workers(
     if task_context:
         worker_context.update({key: value for key, value in task_context.items() if value is not None})
     snapshot = next((item for item in reversed(list(generation_context_cache.values())) if item.generation_context_id == generation_context_id), None) if generation_context_id else snapshot_for_campaign(campaign, run_id)
-    prompt_context = snapshot_prompt_context(snapshot)
-
     for task in tasks:
         if task.task_type not in {"copywriting", "image_generation", "video_generation", "ads_strategy"}:
             continue
 
         asset_count_before = len(assets)
         try:
+            prompt_context = snapshot_prompt_context(snapshot, task.task_type)
             if not task_enabled_by_deliverables(task.task_type, campaign.brief):
                 continue
 
@@ -6111,7 +6117,10 @@ def _perform_asset_regeneration(req: Request, asset_id: str, payload: AssetRegen
     reviewed_run_id = asset.run_id or (review_item.get("run_id") if review_item else None)
     run_id = reviewed_run_id or latest_campaign_run_id(asset.campaign_id) or ""
     snapshot = snapshot_for_campaign(campaign, reviewed_run_id)
-    snapshot_context = snapshot_prompt_context(snapshot)
+    snapshot_context = snapshot_prompt_context(
+        snapshot,
+        {"copy": "copywriting", "image": "image_generation", "video": "video_generation", "ads": "ads_strategy"}.get(asset.asset_type),
+    )
     context_payload = {"generation_context_id": snapshot.generation_context_id} if snapshot else {}
     context_payload["run_id"] = run_id
     if persistence is not None:

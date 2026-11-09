@@ -95,6 +95,26 @@ def test_video_payload_excludes_text_reference_context(tmp_path):
     assert payload["text_references"] == []
 
 
+def test_video_prompt_excludes_text_but_keeps_visual_snapshot_context(tmp_path):
+    campaign, _ = pack_snapshot(tmp_path, "optional")
+    text_reference = ContextSourceItem(
+        "platform_default", "text-pack-item", "brand-notes.md", "KEEP THIS OUT OF VIDEO PROMPT",
+        {"file_type": "text/markdown", "pack_id": "pack-text"},
+    )
+    visual_reference = ContextSourceItem(
+        "platform_default", "visual-pack-item", "brand.png", "KEEP THIS VISUAL CONTEXT",
+        {"file_type": "image/png", "pack_id": "pack-visual"},
+    )
+    snapshot = assemble_generation_context(campaign, [text_reference, visual_reference], [], [], 100)
+
+    payload = main.build_worker_payload_for_task(
+        campaign, {"task_id": "video-task", "task_type": "video_generation", "run_id": "run-1"}, snapshot,
+    )
+
+    assert "KEEP THIS OUT OF VIDEO PROMPT" not in payload["prompt"]
+    assert "KEEP THIS VISUAL CONTEXT" in payload["prompt"]
+
+
 def test_image_payload_caps_enriched_anchors_and_keeps_pack_precedence(tmp_path):
     campaign, _ = pack_snapshot(tmp_path, "optional")
     pack_path = tmp_path / "pack.png"

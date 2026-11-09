@@ -84,3 +84,17 @@ Verification:
 - `python -m pytest services/campaign_service/test_context_assembler.py::test_platform_text_reference_enters_rag_context_without_image_quota_usage -q`: 1 passed.
 - `python -m pytest services/campaign_service/test_text_embedding_contract.py services/campaign_service/test_image_generation_contract.py -q`: 36 passed.
 - Existing context suite still has the unrelated JWT fixture failure in `test_asset_regeneration_sends_complete_v2_image_payload_and_sanitizes_audit`.
+
+## Final Video Prompt Fix
+
+- `snapshot_prompt_context` now accepts the task type and excludes TXT/MD snapshot entries for image and video generation while preserving image/visual entries.
+- Direct video worker payloads, queued generation, and video regeneration all use the task-aware snapshot filter, preventing unfiltered `context_text` from reintroducing text references.
+- Added a failing-first regression proving video prompts omit TXT/MD content while retaining visual snapshot context.
+
+Verification:
+
+- `python -m pytest services/campaign_service/test_image_generation_contract.py -q`: 29 passed.
+- `python -m pytest services/campaign_service/test_text_embedding_contract.py services/campaign_service/test_context_assembler.py -q`: 42 passed, 1 unrelated pre-existing JWT fixture failure.
+- `python -m pytest services/campaign_service/test_industry_matching.py services/campaign_service/test_image_rag_retrieval.py -q`: 26 passed.
+- `python -m compileall -q services/campaign_service/app`: passed.
+- `git diff --check`: passed.
