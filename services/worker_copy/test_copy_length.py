@@ -244,6 +244,23 @@ def test_news_sectioned_repair_combines_sections_and_validates_total_length(monk
     assert "style-only" in repair
 
 
+def test_news_sectioned_repair_supports_exact_body_length_contract():
+    section_names = ("lead", "details", "background", "significance", "closing")
+    _, _, section_ranges = main._news_repair_section_ranges(1000, 1000)
+    sections = {
+        name: name[0].upper() * section_minimum
+        for name, (section_minimum, _) in zip(section_names, section_ranges)
+    }
+
+    parsed = main._parse_news_sectioned_variant(
+        json.dumps({"title": "Launch", "cta": "Read", **sections}),
+        1000,
+        1000,
+    )
+
+    assert len(parsed["body"]) == 1000
+
+
 def test_malformed_or_short_sectioned_repairs_fail_without_padding(monkeypatch):
     FakeClient.responses = [
         response({"title": "Launch", "body": "short", "cta": "Read"}),
@@ -290,9 +307,18 @@ def test_news_release_repair_accepts_expanded_response_with_supplied_facts(monke
 
 
 def test_news_release_repair_ranges_follow_a_different_long_form_contract(monkeypatch):
+    _, _, section_ranges = main._news_repair_section_ranges(1400, 1600)
+    section_names = ("lead", "details", "background", "significance", "closing")
     FakeClient.responses = [
         response({"title": "Forum", "body": "short", "cta": "Read"}),
-        response(sectioned_news_content(section_length=300, title="Forum")),
+        response({
+            "title": "Forum",
+            "cta": "Read",
+            **{
+                name: name[0].upper() * section_minimum
+                for name, (section_minimum, _) in zip(section_names, section_ranges)
+            },
+        }),
     ]
     FakeClient.requests = []
     monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
@@ -313,9 +339,9 @@ def test_news_release_repair_ranges_follow_a_different_long_form_contract(monkey
         )
     ]
     assert len(section_ranges) == 5
-    assert sum(minimum for minimum, _ in section_ranges) == 1500
-    assert sum(maximum for _, maximum in section_ranges) == 1500
-    assert len(result.variants[0].body) == 1508
+    assert sum(minimum for minimum, _ in section_ranges) == 1492
+    assert sum(maximum for _, maximum in section_ranges) == 1492
+    assert len(result.variants[0].body) == 1500
 
 
 def test_news_repair_section_ranges_are_safe_across_valid_boundary_sweep():
@@ -327,8 +353,8 @@ def test_news_repair_section_ranges_are_safe_across_valid_boundary_sweep():
 
             assert minimum <= target_minimum <= target_maximum <= maximum
             assert len(section_ranges) == 5
-            assert sum(section_minimum for section_minimum, _ in section_ranges) == target_minimum
-            assert sum(section_maximum for _, section_maximum in section_ranges) == target_maximum
+            assert sum(section_minimum for section_minimum, _ in section_ranges) == max(0, target_minimum - 8)
+            assert sum(section_maximum for _, section_maximum in section_ranges) == max(0, target_maximum - 8)
             assert all(
                 isinstance(section_minimum, int)
                 and isinstance(section_maximum, int)

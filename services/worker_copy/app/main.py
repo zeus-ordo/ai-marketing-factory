@@ -73,11 +73,15 @@ def _news_repair_section_ranges(minimum: int, maximum: int) -> tuple[int, int, l
     interior_padding = min(100, (maximum - minimum) // 2)
     target_minimum = minimum + interior_padding
     target_maximum = maximum - interior_padding
+    separator_length = 4 * len("\n\n")
+    section_minimum_total = max(0, target_minimum - separator_length)
+    section_maximum_total = max(0, target_maximum - separator_length)
+
     def split_target(total: int) -> list[int]:
         quotient, remainder = divmod(total, 5)
         return [quotient + (index < remainder) for index in range(5)]
 
-    section_ranges = list(zip(split_target(target_minimum), split_target(target_maximum)))
+    section_ranges = list(zip(split_target(section_minimum_total), split_target(section_maximum_total)))
     return target_minimum, target_maximum, section_ranges
 
 
@@ -136,6 +140,7 @@ def _parse_copy_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
 def _parse_news_sectioned_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
     parsed = json.loads(raw)
     target_minimum, target_maximum, section_ranges = _news_repair_section_ranges(minimum, maximum)
+    separator_length = 4 * len("\n\n")
     section_names = ("lead", "details", "background", "significance", "closing")
     sections: list[str] = []
     for name, (section_minimum, section_maximum) in zip(section_names, section_ranges):
@@ -148,7 +153,9 @@ def _parse_news_sectioned_variant(raw: str, minimum: int, maximum: int) -> dict[
             )
         sections.append(section)
 
-    if not target_minimum <= sum(map(len, sections)) <= target_maximum:
+    section_minimum_total = max(0, target_minimum - separator_length)
+    section_maximum_total = max(0, target_maximum - separator_length)
+    if not section_minimum_total <= sum(map(len, sections)) <= section_maximum_total:
         raise ValueError("news section lengths are outside the requested interior range")
     combined = {
         "title": parsed.get("title"),
@@ -227,6 +234,8 @@ def _generate_copy_variant(
                     minimum, maximum
                 )
                 lead_range, event_range, background_range, significance_range, closing_range = section_ranges
+                section_minimum_total = sum(section_range[0] for section_range in section_ranges)
+                section_maximum_total = sum(section_range[1] for section_range in section_ranges)
                 repair_prompt = (
                     f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
                     f"Its current body length: {current_length}. Current body draft:\n{current_body}\n\n"
@@ -242,7 +251,9 @@ def _generate_copy_variant(
                     f"organization or activity significance ({significance_range[0]}-{significance_range[1]} chars); "
                     f"closing/contact information ({closing_range[0]}-{closing_range[1]} chars, "
                     f"and include contact information only if it is supplied). These ranges total "
-                    f"{target_minimum}-{target_maximum} characters. Use only supplied facts, do not invent facts, "
+                    f"{section_minimum_total}-{section_maximum_total} characters before the four paragraph separators; "
+                    f"the combined body including separators targets {target_minimum}-{target_maximum} characters. "
+                    "Use only supplied facts, do not invent facts, "
                     "including factual background and organization context; include a contact section "
                     "only when supplied in the campaign facts. Do not pad with repeated filler or "
                     "repeated phrases. Keep the title and CTA "

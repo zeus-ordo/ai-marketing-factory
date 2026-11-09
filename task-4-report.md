@@ -109,3 +109,14 @@ from B; it is explicitly skipped when `CAMPAIGN_TEST_DATABASE_URL` is absent.
 - Local folder storage was preserved. Backend persistence/read verification is
   covered offline, but production restart verification has not completed, so
   local-store deprecation/removal is not safe to recommend.
+
+## News Copy Separator Allocation Fix
+
+- Updated news section allocation to reserve the four `\n\n` separators (8
+  characters) before distributing the safe interior target across the five
+  sections.
+- Added an exact `1000-1000` regression test proving the combined sectioned
+  body remains exactly 1000 characters.
+- Updated boundary and long-form range assertions for the reserved separator
+  budget.
+- Verification: `python -m pytest services/worker_copy -q`: 35 passed.
