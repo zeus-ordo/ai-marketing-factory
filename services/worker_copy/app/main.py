@@ -66,7 +66,7 @@ def body_length_is_valid(body: str, minimum: int, maximum: int) -> bool:
 
 
 def _completion_token_budget(body_max_length: int) -> int:
-    return max(512, body_max_length + 256)
+    return min(4096, max(512, body_max_length + 256))
 
 
 def _stub_body(prefix: str, minimum: int, maximum: int) -> str:
