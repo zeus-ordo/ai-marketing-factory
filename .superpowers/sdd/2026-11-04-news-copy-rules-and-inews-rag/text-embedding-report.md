@@ -69,3 +69,18 @@ Verification:
 - `python -m pytest services/campaign_service/test_text_embedding_contract.py services/campaign_service/test_reference_pack_text.py services/campaign_service/test_context_assembler.py -q`: 52 passed, 1 unrelated pre-existing JWT fixture failure.
 - `python -m pytest services/campaign_service/test_image_rag_retrieval.py services/campaign_service/test_image_enrichment_routes.py -q`: 24 passed.
 - `git diff --check`: passed.
+
+## Final Review Fixes
+
+- Deterministic text fallback now admits only text rows with `embedding_status=ready`, a positive `chunk_count`, and `ready_chunk_count >= chunk_count`; pending, processing, and failed TXT/MD rows stay out of RAG while active pack and industry scope remains enforced.
+- Image and video worker payloads now omit text from serialized context sources and `text_references`; copy and ads payloads retain ready text RAG references.
+- Updated `docs/admin-reference-packs-manual.txt` to document TXT/MD `embedding_status` values and ready-chunk requirements, explicitly separating them from image `analysis_status`.
+- Added regression tests for ready-only fallback and text exclusion from image/video payloads, and updated the existing text-context fixture to declare its content ready.
+
+Verification:
+
+- `python -m pytest services/campaign_service/test_text_embedding_contract.py -q`: 8 passed.
+- `python -m pytest services/campaign_service/test_image_generation_contract.py -q`: 28 passed.
+- `python -m pytest services/campaign_service/test_context_assembler.py::test_platform_text_reference_enters_rag_context_without_image_quota_usage -q`: 1 passed.
+- `python -m pytest services/campaign_service/test_text_embedding_contract.py services/campaign_service/test_image_generation_contract.py -q`: 36 passed.
+- Existing context suite still has the unrelated JWT fixture failure in `test_asset_regeneration_sends_complete_v2_image_payload_and_sanitizes_audit`.

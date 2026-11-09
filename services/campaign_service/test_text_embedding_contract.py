@@ -24,8 +24,8 @@ def test_text_context_uses_ready_semantic_results_and_fallback(monkeypatch):
             return [{"item_id": "unrelated", "title": "Unrelated", "description": "outside active pack", "metadata": {"file_type": "text/plain"}, "score": 1.0}]
     monkeypatch.setattr(main, "persistence", Persistence())
     monkeypatch.setenv("TEXT_RAG_QUERY_EMBEDDING", "[1.0]")
-    result = main.retrieve_text_reference_context("query", fallback_rows=[{"item_id": "pending", "title": "Pending", "description": "excerpt", "metadata": {"file_type": "text/plain"}}])
-    assert [row["item_id"] for row in result] == ["pending"]
+    result = main.retrieve_text_reference_context("query", fallback_rows=[{"item_id": "pending", "title": "Pending", "description": "excerpt", "embedding_status": "pending", "metadata": {"file_type": "text/plain"}}])
+    assert result == []
 
 
 def test_text_context_falls_back_deterministically_when_semantic_unavailable(monkeypatch):
@@ -33,9 +33,18 @@ def test_text_context_falls_back_deterministically_when_semantic_unavailable(mon
         def search_ready_text_embeddings(self, query_embedding, limit=8): raise Exception("database connection failed")
     monkeypatch.setattr(main, "persistence", Persistence())
     monkeypatch.setenv("TEXT_RAG_QUERY_EMBEDDING", "[1.0]")
-    rows = [{"item_id": "b", "title": "B", "description": "b", "metadata": {"file_type": "text/plain"}}, {"item_id": "a", "title": "A", "description": "a", "metadata": {"file_type": "text/plain"}}]
+    rows = [{"item_id": "b", "title": "B", "description": "b", "embedding_status": "ready", "ready_chunk_count": 1, "chunk_count": 1, "metadata": {"file_type": "text/plain"}}, {"item_id": "a", "title": "A", "description": "a", "embedding_status": "ready", "ready_chunk_count": 1, "chunk_count": 1, "metadata": {"file_type": "text/plain"}}]
     result = main.retrieve_text_reference_context("query", fallback_rows=rows)
     assert [row["item_id"] for row in result] == ["a", "b"]
+
+
+def test_deterministic_text_fallback_only_uses_ready_chunks():
+    rows = [
+        {"item_id": "pending", "title": "Pending", "description": "pending", "embedding_status": "pending", "ready_chunk_count": 0, "chunk_count": 1, "metadata": {"file_type": "text/plain"}},
+        {"item_id": "failed", "title": "Failed", "description": "failed", "embedding_status": "failed", "ready_chunk_count": 1, "chunk_count": 2, "metadata": {"file_type": "text/plain"}},
+        {"item_id": "ready", "title": "Ready", "description": "ready", "embedding_status": "ready", "ready_chunk_count": 2, "chunk_count": 2, "metadata": {"file_type": "text/plain"}},
+    ]
+    assert [row["item_id"] for row in main.retrieve_text_reference_context("query", rows)] == ["ready"]
 
 
 def test_mixed_chunk_status_is_deterministic():

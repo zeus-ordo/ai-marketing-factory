@@ -287,6 +287,7 @@ def test_platform_text_reference_enters_rag_context_without_image_quota_usage(mo
             return [
                 {
                     "item_id": "text-1", "title": "guidelines.md", "description": "",
+                    "text_embedding": {"embedding_status": "ready", "ready_chunk_count": 1, "chunk_count": 1},
                     "metadata": {
                         "file_name": "guidelines.md", "file_type": "text/markdown",
                         "stored_path": str(text_path), "reference_pack_id": pack_id,

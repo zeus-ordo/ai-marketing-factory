@@ -2701,6 +2701,7 @@ def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]
         source_type = "industry_default" if pack_industry else "platform_default"
         for row in rows_by_pack.get(str(pack.get("pack_id")), []):
             metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            text_embedding = row.get("text_embedding") if isinstance(row.get("text_embedding"), dict) else {}
             file_type = str(metadata.get("file_type") or metadata.get("mime_type") or "image/png").lower()
             context.append({
                 "item_id": row.get("item_id"),
@@ -2719,6 +2720,9 @@ def list_reference_pack_context(campaign: CampaignRecord) -> list[dict[str, Any]
                 "priority": pack.get("priority") or 0,
                 "industry": pack.get("industry"),
                 "sha256": metadata.get("sha256"),
+                "embedding_status": text_embedding.get("embedding_status"),
+                "ready_chunk_count": int(text_embedding.get("ready_chunk_count") or 0),
+                "chunk_count": int(text_embedding.get("chunk_count") or 0),
             })
     return context
 
@@ -2733,6 +2737,9 @@ def retrieve_text_reference_context(
         row for row in fallback_rows
         if str((row.get("metadata") or {}).get("file_type") or row.get("file_type") or "").lower()
         in {"text/plain", "text/markdown"}
+        and row.get("embedding_status") == "ready"
+        and int(row.get("chunk_count") or 0) > 0
+        and int(row.get("ready_chunk_count") or 0) >= int(row.get("chunk_count") or 0)
     ]
     raw_embedding = os.getenv("TEXT_RAG_QUERY_EMBEDDING", "")
     try:
@@ -3410,6 +3417,9 @@ def build_worker_payload_for_task(
         "context_sources": [
             {"source_type": item.source_type, "source_id": item.source_id, "label": item.label, "text": item.text}
             for item in snapshot.items
+            if str(task_type) not in {"image_generation", "video_generation"}
+            or str(dict(item.metadata).get("mime_type") or dict(item.metadata).get("file_type") or "").lower()
+            not in {"text/plain", "text/markdown"}
         ],
     } if snapshot else {}
     context_payload.update(

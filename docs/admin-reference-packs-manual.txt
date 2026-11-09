@@ -178,9 +178,18 @@ Ready 狀態、metadata 及 sanitized error；error 只能保留安全的錯誤�
 SHA-256 provenance headers，供向量化內容辨識來源。重跑只有在既有 item
 title 與 provenance 相符，或 API 有公開且 SHA-256 相符時，才會跳過重複上傳。
 
-匯入完成後，使用 API 列出該 Pack 的 items，確認每個預期項目 analysis
-status 為 Ready。Pending 或 Processing 必須等待後重新檢查；Failed 項目
-應記錄錯誤並重試，不可把尚未 Ready 的內容視為可用 RAG 資料。
+匯入完成後，使用 API 列出該 Pack 的 items，確認 TXT/MD 項目的
+embedding_status 為 Ready，並確認 ready_chunk_count 等於 chunk_count。
+TXT/MD 不使用圖片的 analysis_status：
+
+- Pending：文字已上傳，等待背景向量化。
+- Processing：系統正在讀取文字、分塊並產生 embedding。
+- Ready：所有文字 chunks 都有有效且已持久化的 embedding，可以被文字 RAG 使用。
+- Failed：向量化失敗；內容不可被文字 RAG 使用，修正問題後重試。
+
+只有 `embedding_status=ready` 且所有 chunks ready 的 TXT/MD 會進入文字
+RAG。Pending、Processing 或 Failed 不可視為可用內容。圖片項目仍依圖片
+分析狀態管理；不要用圖片 analysis_status 判斷 TXT/MD 是否可用。
 
 ======================================================================
 五、推薦的 Pack 組織方式
