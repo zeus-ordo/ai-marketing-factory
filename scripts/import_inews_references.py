@@ -196,7 +196,7 @@ class Importer:
             for row in report:
                 row["metadata_warning"] = _safe_error(exc)
 
-        by_hash = {str(item.get("metadata", {}).get("sha256")): item for item in existing if isinstance(item.get("metadata"), dict) and item.get("metadata", {}).get("sha256")}
+        by_hash = {str(item.get("provenance_sha256")): item for item in existing if item.get("provenance_sha256")}
         for index, source in enumerate(files):
             row = report[index]
             if source.sha256 in by_hash:
@@ -254,13 +254,9 @@ class Importer:
 def _matches_existing(item: dict[str, Any], source: SourceFile) -> bool:
     if str(item.get("title") or "") != source.title:
         return False
-    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    if metadata.get("sha256"):
-        return metadata["sha256"] == source.sha256
-    content = "\n".join(str(item.get(key) or "") for key in ("content", "description", "provenance"))
-    if "source: " in content and "source: inews_word" not in content:
-        return False
-    return f"sha256: {source.sha256}" in content
+    provenance_source = str(item.get("provenance_source") or "")
+    provenance_sha256 = str(item.get("provenance_sha256") or "")
+    return provenance_source == METADATA["source"] and provenance_sha256 == source.sha256
 
 
 def _write_report(path: Path, report: list[dict[str, Any]]) -> None:

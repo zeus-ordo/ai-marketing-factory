@@ -49,6 +49,29 @@ def test_txt_reference_pack_upload_persists_without_image_analysis(monkeypatch, 
     assert persistence.items[-1]["metadata"]["reference_pack_id"] == "pack-1"
 
 
+def test_txt_upload_exposes_safe_provenance_fields_in_actual_pack_item_response(monkeypatch, tmp_path):
+    persistence = Persistence()
+    monkeypatch.setattr(main, "persistence", persistence)
+    monkeypatch.setattr(main, "KNOWLEDGE_UPLOADS_DIR", str(tmp_path))
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
+    monkeypatch.setattr(main, "_get_pack_or_404", lambda _pack_id: object())
+
+    content = b"source: inews_word\nsha256: " + (b"a" * 64) + b"\n\nArticle\n"
+    response = TestClient(main.app).post(
+        "/api/v1/reference-packs/pack-1/items/upload",
+        data={"title": "Brief"},
+        files={"file": ("brief.txt", content, "text/plain")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provenance_sha256"] == "a" * 64
+    assert body["provenance_source"] == "inews_word"
+    assert "metadata" not in body
+    assert "stored_path" not in body
+    assert "source: inews_word" not in str(body)
+
+
 def test_markdown_reference_pack_upload_persists_without_image_analysis(monkeypatch, tmp_path):
     persistence = Persistence()
     monkeypatch.setattr(main, "persistence", persistence)

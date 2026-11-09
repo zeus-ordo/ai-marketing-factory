@@ -388,6 +388,8 @@ class ReferencePackItemRecord(BaseModel):
     embedding_version: str | None = None
     ready_chunk_count: int = 0
     chunk_count: int = 0
+    provenance_sha256: str | None = None
+    provenance_source: str | None = None
 
 
 class ReferencePackItemListResponse(BaseModel):
@@ -6723,6 +6725,8 @@ def _pack_item_response(item: dict[str, Any], pack_id: str) -> ReferencePackItem
         embedding_version=text_embedding.get("embedding_version"),
         ready_chunk_count=int(text_embedding.get("ready_chunk_count") or 0),
         chunk_count=int(text_embedding.get("chunk_count") or 0),
+        provenance_sha256=metadata.get("provenance_sha256"),
+        provenance_source=metadata.get("provenance_source"),
     )
 
 
@@ -6782,6 +6786,26 @@ def _reference_pack_upload_kind(file_name: str, content_type: str) -> str | None
     if extension == ".md" and content_type in {"text/markdown", "application/octet-stream"}:
         return "text"
     return None
+
+
+def _extract_text_provenance(stored_path: str) -> dict[str, str]:
+    try:
+        with open(stored_path, encoding="utf-8") as source:
+            headers: dict[str, str] = {}
+            for line in source:
+                line = line.strip()
+                if not line:
+                    break
+                if ":" not in line:
+                    continue
+                key, value = (part.strip() for part in line.split(":", 1))
+                if key == "sha256" and re.fullmatch(r"[0-9a-fA-F]{64}", value):
+                    headers["provenance_sha256"] = value.lower()
+                elif key == "source" and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+                    headers["provenance_source"] = value
+            return headers
+    except (OSError, UnicodeDecodeError):
+        return {}
 
 
 def _create_pending_analysis(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -6998,7 +7022,10 @@ def upload_reference_pack_item(req: Request, pack_id: str, title: str = Form(...
     except Exception as exc:
         cleanup_reference_upload(stored_path)
         raise HTTPException(status_code=500, detail="PERSISTENCE_ERROR") from exc
-    item = {"item_id": item_id, "company_id": "platform", "title": title.strip(), "source": "manual", "description": "", "content_url": f"/api/v1/knowledge-items/{item_id}/download/{parse.quote(safe_name)}", "metadata": {"file_name": safe_name, "file_type": file_type, "file_size": size, "stored_path": stored_path, "sha256": sha256.hexdigest(), "reference_pack_id": pack_id}, "created_at": now_utc(), "folder_id": None, "reference_pack_id": pack_id}
+    metadata = {"file_name": safe_name, "file_type": file_type, "file_size": size, "stored_path": stored_path, "sha256": sha256.hexdigest(), "reference_pack_id": pack_id}
+    if upload_kind == "text":
+        metadata.update(_extract_text_provenance(stored_path))
+    item = {"item_id": item_id, "company_id": "platform", "title": title.strip(), "source": "manual", "description": "", "content_url": f"/api/v1/knowledge-items/{item_id}/download/{parse.quote(safe_name)}", "metadata": metadata, "created_at": now_utc(), "folder_id": None, "reference_pack_id": pack_id}
     if persistence is not None and callable(getattr(persistence, "create_knowledge_item", None)):
         try:
             persistence.create_knowledge_item(item)

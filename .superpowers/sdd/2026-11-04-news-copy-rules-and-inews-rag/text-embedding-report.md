@@ -70,6 +70,20 @@ Verification:
 - `python -m pytest services/campaign_service/test_image_rag_retrieval.py services/campaign_service/test_image_enrichment_routes.py -q`: 24 passed.
 - `git diff --check`: passed.
 
+## Provenance Contract Fix
+
+- TXT/MD upload handling now parses only the non-sensitive `source` and valid 64-character `sha256` headers into `provenance_source` and `provenance_sha256` metadata.
+- `ReferencePackItemRecord` exposes only those two safe provenance fields at the top level; private `stored_path`, raw metadata, tokens, and local paths remain excluded.
+- The iNews importer now matches the actual pack-item response fields (`provenance_sha256` and `provenance_source`) instead of hidden `metadata.sha256` or unavailable content/provenance fields.
+- Added failing-first tests for the actual API response shape and same-title/hash rerun idempotence.
+
+Verification:
+
+- `python -m pytest services/campaign_service/test_reference_pack_text.py services/campaign_service/test_reference_packs.py services/campaign_service/test_persistence_migrations.py -q`: 42 passed.
+- `python -m pytest scripts/test_import_inews_references.py -q`: 14 passed.
+- `python -m compileall -q services/campaign_service/app scripts/import_inews_references.py`: passed.
+- `git diff --check`: passed.
+
 ## Final Review Fixes
 
 - Deterministic text fallback now admits only text rows with `embedding_status=ready`, a positive `chunk_count`, and `ready_chunk_count >= chunk_count`; pending, processing, and failed TXT/MD rows stay out of RAG while active pack and industry scope remains enforced.

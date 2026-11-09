@@ -123,7 +123,7 @@ def test_matching_hash_skips_same_title_item(tmp_path):
     digest = scan_unique_docx(tmp_path)[0].sha256
     transport = FakeTransport(responses=[
         FakeResponse(200, {"items": [{"pack_id": "pack-1", "name": "iNews 新聞稿參考資料"}]}),
-        FakeResponse(200, {"items": [{"item_id": "existing", "title": "brief", "metadata": {"sha256": digest}}]}),
+        FakeResponse(200, {"items": [{"item_id": "existing", "title": "brief", "file_name": "brief.txt", "provenance_sha256": digest, "provenance_source": "inews_word"}]}),
     ])
 
     result = Importer("http://example.test", transport).run(tmp_path, tmp_path / "report.json")
