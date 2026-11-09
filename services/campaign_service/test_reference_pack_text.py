@@ -77,7 +77,11 @@ def test_txt_upload_exposes_safe_provenance_fields_in_actual_pack_item_response(
     assert "source: inews_word" not in str(body)
 
 
-def test_reference_pack_items_expose_ready_text_embedding_state(monkeypatch):
+@pytest.mark.parametrize(
+    ("embedding_status", "ready_chunk_count"),
+    [("ready", 1), ("pending", 0), ("failed", 0)],
+)
+def test_reference_pack_items_expose_text_embedding_state(monkeypatch, embedding_status, ready_chunk_count):
     persistence = ListedPersistence()
     persistence.items = [{
         "item_id": "item-1",
@@ -90,10 +94,12 @@ def test_reference_pack_items_expose_ready_text_embedding_state(monkeypatch):
             "file_size": 12,
             "stored_path": "C:/private/brief.txt",
         },
-        "embedding_status": "ready",
-        "embedding_version": "text-rag-v1",
-        "ready_chunk_count": 1,
-        "chunk_count": 1,
+        "text_embedding": {
+            "embedding_status": embedding_status,
+            "embedding_version": "text-rag-v1",
+            "ready_chunk_count": ready_chunk_count,
+            "chunk_count": 1,
+        },
     }]
     monkeypatch.setattr(main, "persistence", persistence)
     monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
@@ -103,9 +109,9 @@ def test_reference_pack_items_expose_ready_text_embedding_state(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()["items"][0]
-    assert body["embedding_status"] == "ready"
+    assert body["embedding_status"] == embedding_status
     assert body["embedding_version"] == "text-rag-v1"
-    assert body["ready_chunk_count"] == 1
+    assert body["ready_chunk_count"] == ready_chunk_count
     assert body["chunk_count"] == 1
     assert "stored_path" not in body
 
