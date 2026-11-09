@@ -154,9 +154,14 @@ def test_copy_request_sets_completion_budget_from_body_max_length(monkeypatch):
     assert FakeClient.requests[0]["max_tokens"] >= 1600
 
 
-def test_copy_request_caps_completion_budget_for_oversized_ranges():
-    assert main._completion_token_budget(1400) == 1656
-    assert main._completion_token_budget(100_000) == 4096
+@pytest.mark.parametrize(
+    ("body_max_length", "expected_budget"),
+    [(80, 512), (200, 600), (500, 1500), (1400, 4096), (100_000, 4096)],
+)
+def test_completion_budget_scales_for_long_form_without_exceeding_bounds(
+    body_max_length, expected_budget
+):
+    assert main._completion_token_budget(body_max_length) == expected_budget
 
 
 def test_news_release_short_output_uses_expansion_repair_prompt(monkeypatch):

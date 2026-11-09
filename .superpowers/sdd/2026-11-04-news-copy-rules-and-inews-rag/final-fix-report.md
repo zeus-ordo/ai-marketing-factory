@@ -79,3 +79,21 @@ Focused verification:
 - `python -m pytest services/campaign_service/test_text_embedding_contract.py -q`: 8 passed.
 
 No production services or databases were called.
+
+## Token Budget Follow-up
+
+- Updated `_completion_token_budget` to use a bounded `3x` multiplier with a
+  minimum of `512` and a safety cap of `4096`. A `1400`-character news release
+  now receives `4096` completion tokens instead of `1656`; ordinary ranges stay
+  bounded by the same minimum and cap.
+- Added parameterized regression coverage for minimum, ordinary, long-form,
+  and oversized body ranges. Existing prompt, repair, and request behavior was
+  otherwise unchanged.
+- TDD RED: the updated budget test failed 3 cases under the old additive
+  formula (`200`, `500`, and `1400` body lengths).
+- TDD GREEN: `python -m pytest services/worker_copy/test_copy_length.py -q` ->
+  **29 passed**.
+- Full worker-copy verification: `python -m pytest services/worker_copy -q` ->
+  **29 passed**.
+- `git diff --check` passed; Git emitted only its existing LF/CRLF conversion
+  warnings.
