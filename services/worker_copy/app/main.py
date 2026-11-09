@@ -139,24 +139,19 @@ def _parse_copy_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
 
 def _parse_news_sectioned_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
     parsed = json.loads(raw)
-    target_minimum, target_maximum, section_ranges = _news_repair_section_ranges(minimum, maximum)
-    separator_length = 4 * len("\n\n")
+    _, _, section_ranges = _news_repair_section_ranges(minimum, maximum)
     section_names = ("lead", "details", "background", "significance", "closing")
     sections: list[str] = []
-    for name, (section_minimum, section_maximum) in zip(section_names, section_ranges):
+    for name, (_, section_maximum) in zip(section_names, section_ranges):
         section = parsed.get(name)
         if not isinstance(section, str) or not section:
             raise ValueError(f"news section {name} must be a non-empty string")
-        if not section_minimum <= len(section) <= section_maximum:
+        if len(section) > section_maximum:
             raise ValueError(
-                f"news section {name} length must be between {section_minimum} and {section_maximum} chars"
+                f"news section {name} length must be at most {section_maximum} chars"
             )
         sections.append(section)
 
-    section_minimum_total = max(0, target_minimum - separator_length)
-    section_maximum_total = max(0, target_maximum - separator_length)
-    if not section_minimum_total <= sum(map(len, sections)) <= section_maximum_total:
-        raise ValueError("news section lengths are outside the requested interior range")
     combined = {
         "title": parsed.get("title"),
         "body": "\n\n".join(sections),

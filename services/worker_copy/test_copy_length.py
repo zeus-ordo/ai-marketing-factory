@@ -261,6 +261,39 @@ def test_news_sectioned_repair_supports_exact_body_length_contract():
     assert len(parsed["body"]) == 1000
 
 
+def test_news_sectioned_repair_accepts_short_section_when_combined_body_is_valid():
+    sections = {
+        "lead": "L" * 120,
+        "details": "D" * 230,
+        "background": "B" * 230,
+        "significance": "S" * 230,
+        "closing": "C" * 230,
+    }
+
+    parsed = main._parse_news_sectioned_variant(
+        json.dumps({"title": "Launch", "cta": "Read", **sections}),
+        1000,
+        1400,
+    )
+
+    assert parsed["body"] == "\n\n".join(sections.values())
+    assert 1000 <= len(parsed["body"]) <= 1400
+
+
+def test_news_sectioned_repair_rejects_nonempty_sections_when_combined_body_is_short():
+    sections = {
+        name: name[0].upper() * 190
+        for name in ("lead", "details", "background", "significance", "closing")
+    }
+
+    with pytest.raises(ValueError, match="body length must be between 1000 and 1400 chars"):
+        main._parse_news_sectioned_variant(
+            json.dumps({"title": "Launch", "cta": "Read", **sections}),
+            1000,
+            1400,
+        )
+
+
 def test_malformed_or_short_sectioned_repairs_fail_without_padding(monkeypatch):
     FakeClient.responses = [
         response({"title": "Launch", "body": "short", "cta": "Read"}),
