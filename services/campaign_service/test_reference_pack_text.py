@@ -21,6 +21,11 @@ class Persistence:
         return item
 
 
+class ListedPersistence(Persistence):
+    def list_reference_pack_items(self, pack_id):
+        return self.items
+
+
 def test_txt_reference_pack_upload_persists_without_image_analysis(monkeypatch, tmp_path):
     persistence = Persistence()
     monkeypatch.setattr(main, "persistence", persistence)
@@ -70,6 +75,39 @@ def test_txt_upload_exposes_safe_provenance_fields_in_actual_pack_item_response(
     assert "metadata" not in body
     assert "stored_path" not in body
     assert "source: inews_word" not in str(body)
+
+
+def test_reference_pack_items_expose_ready_text_embedding_state(monkeypatch):
+    persistence = ListedPersistence()
+    persistence.items = [{
+        "item_id": "item-1",
+        "title": "Brief",
+        "content_url": "/download",
+        "created_at": "2026-11-09T00:00:00+00:00",
+        "metadata": {
+            "file_name": "brief.txt",
+            "file_type": "text/plain",
+            "file_size": 12,
+            "stored_path": "C:/private/brief.txt",
+        },
+        "embedding_status": "ready",
+        "embedding_version": "text-rag-v1",
+        "ready_chunk_count": 1,
+        "chunk_count": 1,
+    }]
+    monkeypatch.setattr(main, "persistence", persistence)
+    monkeypatch.setattr(main, "is_platform_admin_request", lambda _req: True)
+    monkeypatch.setattr(main, "_get_pack_or_404", lambda _pack_id: object())
+
+    response = TestClient(main.app).get("/api/v1/reference-packs/pack-1/items")
+
+    assert response.status_code == 200
+    body = response.json()["items"][0]
+    assert body["embedding_status"] == "ready"
+    assert body["embedding_version"] == "text-rag-v1"
+    assert body["ready_chunk_count"] == 1
+    assert body["chunk_count"] == 1
+    assert "stored_path" not in body
 
 
 def test_markdown_reference_pack_upload_persists_without_image_analysis(monkeypatch, tmp_path):
