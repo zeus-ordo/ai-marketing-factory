@@ -154,10 +154,9 @@ def _parse_news_continuation(raw: str) -> dict[str, str]:
     if not isinstance(appendix, str) or not appendix.strip():
         raise ValueError("news continuation appendix must be a non-empty string")
     appendix = appendix.strip()
-    if not LONG_FORM_APPENDIX_MIN_LENGTH <= len(appendix) <= LONG_FORM_APPENDIX_MAX_LENGTH:
+    if len(appendix) > LONG_FORM_APPENDIX_MAX_LENGTH:
         raise ValueError(
-            f"news continuation appendix must be {LONG_FORM_APPENDIX_MIN_LENGTH}-"
-            f"{LONG_FORM_APPENDIX_MAX_LENGTH} chars"
+            f"news continuation appendix must be at most {LONG_FORM_APPENDIX_MAX_LENGTH} chars"
         )
     title = str(parsed.get("title") or "")
     cta = str(parsed.get("cta") or "")

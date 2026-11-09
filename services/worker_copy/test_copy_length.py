@@ -272,6 +272,47 @@ def test_short_news_release_reaches_range_through_bounded_appendix_requests(monk
     assert "do not invent facts" in FakeClient.requests[1]["messages"][0]["content"].lower()
 
 
+def test_short_news_appendices_combine_to_final_range(monkeypatch):
+    initial_body = "Taipei hosted the Green Mobility Forum."
+    appendices = [
+        f"Supplied event detail {index}. " + (chr(65 + index) * 220)
+        for index in range(4)
+    ]
+    FakeClient.responses = [
+        response({"title": "Forum", "body": initial_body, "cta": "Read"}),
+        *[response({"appendix": appendix}) for appendix in appendices],
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert len(FakeClient.requests) == 5
+    assert 1000 <= len(result.variants[0].body) <= 1400
+    assert result.variants[0].body.startswith(initial_body + "\n\n")
+    assert all(appendix in result.variants[0].body for appendix in appendices)
+
+
+def test_short_news_appendices_still_fail_when_final_body_is_too_short(monkeypatch):
+    initial_body = "Short supplied fact."
+    appendices = [f"Supplied detail {index}. " + (chr(65 + index) * 90) for index in range(4)]
+    FakeClient.responses = [
+        response({"title": "Launch", "body": initial_body, "cta": "Read"}),
+        *[response({"appendix": appendix}) for appendix in appendices],
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert exc_info.value.status_code == 502
+    assert "body length" in exc_info.value.detail.lower()
+    assert len(FakeClient.requests) == 5
+
+
 def test_duplicate_news_appendix_does_not_count_as_progress(monkeypatch):
     initial_body = "Initial supplied fact. " * 6
     appendix = "Additional supplied fact. " + ("Fact. " * 45)
