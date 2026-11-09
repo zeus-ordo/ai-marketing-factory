@@ -133,6 +133,31 @@ def _parse_copy_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
     return {"title": title, "body": body, "cta": cta}
 
 
+def _parse_news_sectioned_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
+    parsed = json.loads(raw)
+    target_minimum, target_maximum, section_ranges = _news_repair_section_ranges(minimum, maximum)
+    section_names = ("lead", "details", "background", "significance", "closing")
+    sections: list[str] = []
+    for name, (section_minimum, section_maximum) in zip(section_names, section_ranges):
+        section = parsed.get(name)
+        if not isinstance(section, str) or not section:
+            raise ValueError(f"news section {name} must be a non-empty string")
+        if not section_minimum <= len(section) <= section_maximum:
+            raise ValueError(
+                f"news section {name} length must be between {section_minimum} and {section_maximum} chars"
+            )
+        sections.append(section)
+
+    if not target_minimum <= sum(map(len, sections)) <= target_maximum:
+        raise ValueError("news section lengths are outside the requested interior range")
+    combined = {
+        "title": parsed.get("title"),
+        "body": "\n\n".join(sections),
+        "cta": parsed.get("cta"),
+    }
+    return _parse_copy_variant(json.dumps(combined), minimum, maximum)
+
+
 def _request_copy_raw(
     user_prompt: str,
     field_rules: str,
@@ -229,14 +254,26 @@ def _generate_copy_variant(
                     f"Its current body length: {current_length}; the required body length is {minimum}-{maximum}. "
                     f"Repair it so body is exactly within {minimum}-{maximum} characters. "
                 )
-            repair_prompt += (
-                'Return ONLY valid JSON with exactly these keys: {"title": "string", "body": "string", "cta": "string"}. '
-            )
+            if minimum >= 1000:
+                repair_prompt += (
+                    'Return ONLY valid JSON with exactly these keys: '
+                    '{"title": "string", "cta": "string", "lead": "string", "details": "string", '
+                    '"background": "string", "significance": "string", "closing": "string"}. '
+                    "Each section must contain only supplied campaign facts; if a fact is missing, say that it was not supplied "
+                    "instead of inventing it. iNews references are style-only and must not supply facts. Do not repeat filler. "
+                )
+            else:
+                repair_prompt += (
+                    'Return ONLY valid JSON with exactly these keys: {"title": "string", "body": "string", "cta": "string"}. '
+                )
             repair_raw = _request_copy_raw(
                 repair_prompt, rules, model, company_id, usage_model, maximum, max_attempts=1
             )
             try:
-                parsed = _parse_copy_variant(repair_raw, minimum, maximum)
+                if minimum >= 1000:
+                    parsed = _parse_news_sectioned_variant(repair_raw, minimum, maximum)
+                else:
+                    parsed = _parse_copy_variant(repair_raw, minimum, maximum)
                 break
             except Exception as repair_exc:
                 last_exc = repair_exc
