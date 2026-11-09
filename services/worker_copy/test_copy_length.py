@@ -294,6 +294,47 @@ def test_short_news_appendices_combine_to_final_range(monkeypatch):
     assert all(appendix in result.variants[0].body for appendix in appendices)
 
 
+def test_empty_news_appendix_does_not_abort_remaining_continuations(monkeypatch, caplog):
+    initial_body = "Taipei hosted the Green Mobility Forum."
+    appendices = [
+        "Supplied event detail one. " + ("A" * 300),
+        "Supplied event detail two. " + ("B" * 300),
+        "Supplied event detail three. " + ("C" * 300),
+    ]
+    FakeClient.responses = [
+        response({"title": "Forum", "body": initial_body, "cta": "Read"}),
+        response({"appendix": ""}),
+        *[response({"appendix": appendix}) for appendix in appendices],
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert len(FakeClient.requests) == 5
+    assert 1000 <= len(result.variants[0].body) <= 1400
+    assert all(appendix in result.variants[0].body for appendix in appendices)
+    assert "news continuation attempt 1 failed" in caplog.text
+
+
+def test_all_empty_news_appendices_fail_after_remaining_continuation_budget(monkeypatch):
+    FakeClient.responses = [
+        response({"title": "Launch", "body": "Short supplied fact.", "cta": "Read"}),
+        *[response({"appendix": ""}) for _ in range(4)],
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert exc_info.value.status_code == 502
+    assert "non-empty string" in exc_info.value.detail
+    assert len(FakeClient.requests) == 5
+
+
 def test_short_news_appendices_still_fail_when_final_body_is_too_short(monkeypatch):
     initial_body = "Short supplied fact."
     appendices = [f"Supplied detail {index}. " + (chr(65 + index) * 90) for index in range(4)]

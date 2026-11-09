@@ -392,6 +392,12 @@ def _generate_copy_variant(
                         break
                 except Exception as continuation_exc:
                     last_exc = continuation_exc
+                    logger.warning(
+                        "news continuation attempt %d failed: %s",
+                        _attempt + 1,
+                        continuation_exc,
+                    )
+                    continue
             else:
                 raise ValueError(
                     f"invalid copy body length after {MAX_LONG_FORM_CONTINUATION_REQUESTS} continuations: {last_exc}"
