@@ -259,6 +259,7 @@ def _generate_copy_variant(
                     'Return ONLY valid JSON with exactly these keys: '
                     '{"title": "string", "cta": "string", "lead": "string", "details": "string", '
                     '"background": "string", "significance": "string", "closing": "string"}. '
+                    "For this news repair, do not return a body key; the worker combines these sections into the body. "
                     "Each section must contain only supplied campaign facts; if a fact is missing, say that it was not supplied "
                     "instead of inventing it. iNews references are style-only and must not supply facts. Do not repeat filler. "
                 )
