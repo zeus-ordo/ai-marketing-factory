@@ -3136,6 +3136,8 @@ Copy type policy:
 3. Use similar keywords from external context to learn tone and format, not to invent unsupported facts or copy wording.
 4. Generate a complete draft, then proofread it before returning: check the selected length range, grammar, tone, campaign objective, mandatory elements, forbidden elements, factual grounding, and CTA.
 5. If the brief is ambiguous, prefer the shortest format that satisfies the objective and state the chosen format in the internal reasoning, not in the copy body.
+
+iNews references are style/structure only, never as facts for the current campaign. Ground all factual claims in the campaign brief and approved inputs. Do not copy names, numbers, or quotes from iNews references. If facts are missing, state the gap rather than invent.
 """.strip(),
             "Copywriting task: Generate campaign copy using all campaign context above. Preserve the project brief intent and industry context.",
         ]

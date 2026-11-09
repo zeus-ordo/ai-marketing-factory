@@ -160,6 +160,17 @@ def test_copy_prompt_contains_type_length_priority_and_proofreading_policy():
     assert "生成後校稿" in prompt
 
 
+def test_initial_copy_prompt_treats_inews_references_as_style_only():
+    prompt = build_copy_generation_prompt(campaign())
+
+    assert "iNews" in prompt
+    assert "style/structure only" in prompt
+    assert "never as facts for the current campaign" in prompt
+    assert "Ground all factual claims in the campaign brief and approved inputs" in prompt
+    assert "Do not copy names, numbers, or quotes" in prompt
+    assert "If facts are missing, state the gap rather than invent" in prompt
+
+
 def test_image_prompt_contains_type_reference_ratio_and_review_policy():
     prompt = build_image_generation_prompt(campaign())
 

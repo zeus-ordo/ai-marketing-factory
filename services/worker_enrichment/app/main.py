@@ -168,14 +168,14 @@ class PostgresPersistenceBoundary:
         statuses = [row[2] for row in rows]
         chunk_count = max(int(row[3] or 0) for row in rows)
         status = "failed" if "failed" in statuses else "ready" if chunk_count and len(statuses) >= chunk_count and all(value == "ready" for value in statuses) else "processing" if "processing" in statuses else "pending"
-        return {"item_id": rows[0][0], "embedding_version": rows[0][1], "embedding_status": status}
+        return {"item_id": rows[0][0], "embedding_version": rows[0][1], "embedding_status": status, "ready_chunk_count": sum(value == "ready" for value in statuses), "chunk_count": chunk_count}
 
     def get_text_item(self, item_id: str) -> dict[str, Any] | None:
         return self.get_image_item(item_id)
 
     def claim_text_embedding(self, item_id: str, embedding_version: str) -> bool:
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'processing', attempt_count = attempt_count + 1, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0 AND (embedding_status = 'pending' OR (embedding_status = 'failed' AND retryable = TRUE)) RETURNING item_id", (item_id, embedding_version))
+            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'processing', attempt_count = attempt_count + 1, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0 AND (embedding_status = 'pending' OR (embedding_status = 'failed' AND retryable = TRUE) OR (embedding_status = 'ready' AND chunk_count > (SELECT COUNT(*) FROM knowledge_item_text_embeddings WHERE item_id = %s AND embedding_version = %s AND embedding_status = 'ready'))) RETURNING item_id", (item_id, embedding_version, item_id, embedding_version))
             claimed = cur.fetchone() is not None
             conn.commit()
         return claimed
@@ -311,7 +311,9 @@ def process_text_embedding_job(payload: dict[str, Any]) -> dict[str, str]:
     record = persistence.get_text_embedding(item_id, version)
     if record is None:
         raise ValueError("text embedding record not found")
-    if record.get("embedding_status") == "ready":
+    expected_chunks = int(record.get("chunk_count") or 0)
+    ready_chunks = int(record.get("ready_chunk_count") or 0)
+    if record.get("embedding_status") == "ready" and (expected_chunks <= 0 or ready_chunks >= expected_chunks):
         return _result(item_id, "already_complete")
     if not persistence.claim_text_embedding(item_id, version):
         return _result(item_id, "already_processing")

@@ -289,4 +289,6 @@ def test_postgres_text_completion_persists_each_chunk_and_aggregates_ready():
         "item_id": "item-1",
         "embedding_version": "text-rag-v1",
         "embedding_status": "ready",
+        "ready_chunk_count": 3,
+        "chunk_count": 3,
     }

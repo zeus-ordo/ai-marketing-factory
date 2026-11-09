@@ -56,3 +56,26 @@ against production during local verification.
 - Readiness status depends on the reference-pack API's `analysis_status`
   field; request failures are reported as `poll-failed` rather than retried
   indefinitely.
+
+## P1 Follow-up
+
+Status: `FIXED_AND_VERIFIED` for both requested findings.
+
+- Initial copy generation now explicitly treats iNews references as style and
+  structure only, grounds factual claims in the campaign brief and approved
+  inputs, prohibits copying names, numbers, and quotes, and requires gaps to be
+  stated instead of invented.
+- Text embedding recovery now exposes chunk counts to the worker, reclaims a
+  ready chunk 0 when expected chunks are missing or non-ready, and rebuilds all
+  chunks through the existing upsert path. Fully ready embeddings remain
+  idempotent, while pending/failed retry and image processing paths are
+  unchanged.
+
+Focused verification:
+
+- `python -m pytest services/campaign_service/test_industry_matching.py services/campaign_service/test_context_assembler.py -q`: 46 passed, 1 unrelated pre-existing JWT fixture failure.
+- `python -m pytest services/worker_copy/test_copy_length.py -q`: 25 passed.
+- `python -m pytest services/worker_enrichment/test_text_embedding_job.py services/worker_enrichment/test_enrichment_job.py -q`: 13 passed.
+- `python -m pytest services/campaign_service/test_text_embedding_contract.py -q`: 8 passed.
+
+No production services or databases were called.

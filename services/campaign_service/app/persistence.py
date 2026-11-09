@@ -3138,7 +3138,7 @@ class PostgresPersistence:
 
     def claim_text_embedding(self, item_id: str, embedding_version: str) -> bool:
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'processing', attempt_count = attempt_count + 1, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0 AND (embedding_status = 'pending' OR (embedding_status = 'failed' AND retryable = TRUE)) RETURNING item_id", (item_id, embedding_version))
+            cur.execute("UPDATE knowledge_item_text_embeddings SET embedding_status = 'processing', attempt_count = attempt_count + 1, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0 AND (embedding_status = 'pending' OR (embedding_status = 'failed' AND retryable = TRUE) OR (embedding_status = 'ready' AND chunk_count > (SELECT COUNT(*) FROM knowledge_item_text_embeddings WHERE item_id = %s AND embedding_version = %s AND embedding_status = 'ready'))) RETURNING item_id", (item_id, embedding_version, item_id, embedding_version))
             claimed = cur.fetchone() is not None
             conn.commit()
         return claimed
