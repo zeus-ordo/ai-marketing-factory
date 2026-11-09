@@ -172,6 +172,16 @@ def _news_paragraphs(body: str) -> list[str]:
     return [paragraph.strip() for paragraph in body.split("\n\n") if paragraph.strip()]
 
 
+def _unique_news_paragraphs(paragraphs: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for paragraph in paragraphs:
+        if paragraph not in seen:
+            unique.append(paragraph)
+            seen.add(paragraph)
+    return unique
+
+
 def _news_body_within_maximum(paragraphs: list[str], maximum: int) -> str:
     selected: list[str] = []
     for paragraph in paragraphs:
@@ -294,7 +304,9 @@ def _generate_copy_variant(
     usage_model: str,
 ) -> CopyVariant:
     rules = copy_field_rules(minimum, maximum)
-    raw = _request_copy_raw(user_prompt, rules, model, company_id, usage_model, maximum)
+    raw = _request_copy_raw(
+        user_prompt, rules, model, company_id, usage_model, body_max_length=maximum
+    )
     try:
         parsed = _parse_copy_variant(raw, minimum, maximum)
     except Exception as exc:
@@ -331,10 +343,16 @@ def _generate_copy_variant(
                 current_cta = str(initial.get("cta") or "") if isinstance(initial, dict) else ""
             except Exception:
                 current_body, current_title, current_cta = "", "", ""
-            if len(current_body) > maximum:
-                raise ValueError(f"invalid copy body length after {MAX_LONG_FORM_CONTINUATION_REQUESTS} continuations: {exc}") from exc
-
-            paragraphs = _news_paragraphs(current_body)
+            paragraphs = _unique_news_paragraphs(_news_paragraphs(current_body))
+            current_body = _news_body_within_maximum(paragraphs, maximum)
+            if minimum <= len(current_body) <= maximum and current_title and current_cta:
+                return CopyVariant(
+                    **_parse_copy_variant(
+                        json.dumps({"title": current_title, "body": current_body, "cta": current_cta}),
+                        minimum,
+                        maximum,
+                    )
+                )
             seen = set(paragraphs)
             last_exc = exc
             for _attempt in range(MAX_LONG_FORM_CONTINUATION_REQUESTS):

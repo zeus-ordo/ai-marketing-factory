@@ -131,6 +131,19 @@ def test_normal_generation_uses_dynamic_range_and_accepts_unicode_character_coun
     assert len(result.variants[0].body) == 300
 
 
+def test_initial_provider_call_uses_bounded_default_retry_count(monkeypatch):
+    FakeClient.responses = [FailingResponse(), FailingResponse()]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.run_copy_worker(run_payload())
+
+    assert exc_info.value.status_code == 502
+    assert len(FakeClient.requests) == 2
+
+
 @pytest.mark.parametrize("body_length", [1000, 1400])
 def test_news_release_boundaries_are_accepted(body_length):
     parsed = main._parse_copy_variant(
@@ -300,6 +313,45 @@ def test_news_appendix_over_maximum_is_trimmed_at_paragraph_boundary(monkeypatch
     assert kept.strip() in body
     assert omitted.strip() not in body
     assert body == body.rstrip()
+
+
+def test_over_maximum_initial_news_body_is_trimmed_at_paragraph_boundary(monkeypatch):
+    kept = "Kept initial paragraph. " + ("A" * 976)
+    omitted = "Omitted initial paragraph. " + ("B" * 170)
+    FakeClient.responses = [
+        response({"title": "Launch", "body": kept + "\n\n" + omitted, "cta": "Read"}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1100))
+
+    assert result.variants[0].body == kept
+    assert len(FakeClient.requests) == 1
+    assert len(result.variants[0].body) == 1000
+
+
+def test_duplicate_initial_news_paragraphs_are_removed_in_order(monkeypatch):
+    duplicate = "Repeated supplied paragraph. " + ("R" * 270)
+    initial_body = duplicate + "\n\n" + duplicate + "\n\nInitial lead."
+    FakeClient.responses = [
+        response({"title": "Launch", "body": initial_body, "cta": "Read"}),
+        response({"appendix": "First supplied appendix. " + ("Fact. " * 45)}),
+        response({"appendix": "Second supplied appendix. " + ("Fact. " * 45)}),
+        response({"appendix": "Third supplied appendix. " + ("Fact. " * 45)}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    body = result.variants[0].body
+    assert body.count(duplicate) == 1
+    assert body.index(duplicate) < body.index("Initial lead.")
+    assert len(FakeClient.requests) == 4
+    assert 1000 <= len(body) <= 1400
 
 
 def test_news_continuations_fail_after_four_bounded_requests_without_padding(monkeypatch):

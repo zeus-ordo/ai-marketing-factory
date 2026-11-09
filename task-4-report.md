@@ -130,3 +130,12 @@ from B; it is explicitly skipped when `CAMPAIGN_TEST_DATABASE_URL` is absent.
 - TDD RED was observed with the new continuation tests failing against the previous sectioned implementation; GREEN followed after implementation.
 - `python -m pytest services/worker_copy -q`: PASS, 36 passed.
 - No production provider or deployment command was called; all provider interactions were fake-client tests.
+
+## Continuation Review Fixes
+
+- The initial provider request now passes `body_max_length` by keyword, preserving `_request_copy_raw`'s bounded default retry count.
+- Initial over-maximum news bodies are normalized by stable, paragraph-boundary trimming before continuation or failure decisions.
+- Exact duplicate paragraphs are removed from the initial body as well as continuation appendices, preserving first-seen order.
+- Added regressions for the initial provider call count, over-maximum initial trimming, and initial-body deduplication.
+- `python -m pytest services/worker_copy -q`: PASS, 39 passed.
+- No production provider or deployment command was called.
