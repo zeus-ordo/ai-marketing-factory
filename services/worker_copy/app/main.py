@@ -179,8 +179,11 @@ def _generate_copy_variant(
         last_exc = exc
         for _repair_attempt in range(2):
             try:
-                current_length = len(str(json.loads(repair_raw).get("body") or ""))
+                previous_json = json.loads(repair_raw)
+                current_body = str(previous_json.get("body") or "")
+                current_length = len(current_body)
             except Exception:
+                current_body = "[unavailable because the previous response was not valid JSON]"
                 current_length = "unknown"
             if minimum >= 1000:
                 interior_padding = min(100, (maximum - minimum) // 2)
@@ -188,13 +191,21 @@ def _generate_copy_variant(
                 target_maximum = maximum - interior_padding
                 repair_prompt = (
                     f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
-                    f"Its current body length: {current_length}. Create a complete {minimum}-{maximum} "
-                    "character news release, targeting the safe interior range "
-                    f"{target_minimum}-{target_maximum} characters. Include a clear lead covering "
-                    "Who/What/When/Where/Why/How, factual background/data, and organization context. "
-                    "Include a contact section only when supplied in the campaign facts. "
-                    "Use only supplied facts, do not invent facts, and expand rather than merely reformat "
-                    "the JSON. Keep the title and CTA within their existing limits. "
+                    f"Its current body length: {current_length}. Current body draft:\n{current_body}\n\n"
+                    f"Factual inputs and campaign facts:\n{user_prompt}\n\n"
+                    f"Create a complete {minimum}-{maximum} character news release, targeting the safe "
+                    f"interior range {target_minimum}-{target_maximum} characters. Expand the existing "
+                    "draft; expand rather than merely reformat it, and do not summarize. Use paragraph breaks and structure "
+                    "the body into these five parts with these character ranges: lead (220-260 chars, "
+                    "covering Who/What/When/Where/Why/How when supplied); "
+                    "event/data details (260-320 chars); background/context (240-280 chars); "
+                    "organization or activity significance (260-300 chars); closing/contact information "
+                    "(120-140 chars, and include contact information only if it is supplied). These "
+                    "ranges total 1100-1300 characters. Use only supplied facts, do not invent facts, "
+                    "including factual background and organization context; include a contact section "
+                    "only when supplied in the campaign facts. Do not pad with repeated filler or "
+                    "repeated phrases. Keep the title and CTA "
+                    "within their existing limits. "
                 )
             else:
                 repair_prompt = (

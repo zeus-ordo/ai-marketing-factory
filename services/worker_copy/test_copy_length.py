@@ -165,9 +165,10 @@ def test_completion_budget_scales_for_long_form_without_exceeding_bounds(
 
 
 def test_news_release_short_output_uses_expansion_repair_prompt(monkeypatch):
+    current_body = "Current draft: the launch event was announced."
     FakeClient.responses = [
-        response({"title": "Launch", "body": "too short", "cta": "Read"}),
-        response({"title": "Launch", "body": "A" * 1200, "cta": "Read"}),
+        response({"title": "Launch", "body": current_body, "cta": "Read"}),
+        response({"title": "Launch", "body": "Lead paragraph.\n\n" + "A" * 1182, "cta": "Read"}),
     ]
     FakeClient.requests = []
     monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
@@ -184,8 +185,51 @@ def test_news_release_short_output_uses_expansion_repair_prompt(monkeypatch):
     assert "expand rather than merely reformat" in repair
     assert "do not invent facts" in repair
     assert "1100-1300" in repair
+    assert "lead" in repair.lower() and "220-260" in repair
+    assert "event/data details" in repair.lower() and "260-320" in repair
+    assert "background/context" in repair.lower() and "240-280" in repair
+    assert "organization or activity significance" in repair.lower() and "260-300" in repair
+    assert "closing/contact information" in repair.lower() and "120-140" in repair
+    assert "paragraph breaks" in repair.lower()
+    assert "expand the existing draft" in repair.lower()
+    assert "repeated filler" in repair.lower()
+    assert current_body in repair
+    assert "factual inputs" in repair.lower()
     assert FakeClient.requests[1]["max_tokens"] == FakeClient.requests[0]["max_tokens"]
-    assert result.variants[0].body == "A" * 1200
+    assert 1100 <= len(result.variants[0].body) <= 1300
+    assert "\n\n" in result.variants[0].body
+
+
+def test_news_release_repair_accepts_expanded_response_with_supplied_facts(monkeypatch):
+    expanded_body = (
+        "The Green Mobility Forum will take place in Taipei on May 20.\n\n"
+        + "The forum will present charging data and demonstrations supplied by the organizer. "
+        + "It will also explain the event schedule and participating teams without adding unsupported claims.\n\n"
+        + "The activity is intended to connect public agencies, researchers, and operators around practical transport planning.\n\n"
+        + "The organizer said the program builds on its existing mobility work and invited interested media to attend.\n\n"
+        + "Further supplied details describe the schedule, demonstrations, and participating teams. " * 8
+    )
+    FakeClient.responses = [
+        response({"title": "Forum", "body": "short", "cta": "Read"}),
+        response({"title": "Forum", "body": expanded_body, "cta": "Read"}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(
+        run_payload(
+            prompt="Write a news release. Factual inputs: Taipei, May 20, Green Mobility Forum.",
+            body_min_length=1000,
+            body_max_length=1400,
+        )
+    )
+
+    assert result.variants[0].body == expanded_body
+    assert 1100 <= len(result.variants[0].body) <= 1300
+    repair = FakeClient.requests[1]["messages"][0]["content"]
+    assert "Taipei, May 20, Green Mobility Forum" in repair
+    assert "Current body draft:\nshort" in repair
 
 
 def test_invalid_normal_output_gets_exactly_one_bounded_repair(monkeypatch):
