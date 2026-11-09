@@ -184,127 +184,6 @@ def test_completion_budget_scales_for_long_form_without_exceeding_bounds(
     assert main._completion_token_budget(body_max_length) == expected_budget
 
 
-def test_news_release_short_output_uses_expansion_repair_prompt(monkeypatch):
-    current_body = "Current draft: the launch event was announced."
-    FakeClient.responses = [
-        response({"title": "Launch", "body": current_body, "cta": "Read"}),
-        response(sectioned_news_content()),
-    ]
-    FakeClient.requests = []
-    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
-    monkeypatch.setattr(main.httpx, "Client", FakeClient)
-
-    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
-
-    repair = FakeClient.requests[1]["messages"][0]["content"]
-    assert "complete 1000-1400 character news release" in repair
-    assert "Who/What/When/Where/Why/How" in repair
-    assert "factual background" in repair
-    assert "organization context" in repair
-    assert "contact section only when supplied" in repair
-    assert "expand rather than merely reformat" in repair
-    assert "do not invent facts" in repair
-    assert "1100-1300" in repair
-    assert "lead" in repair.lower()
-    assert "event/data details" in repair.lower()
-    assert "background/context" in repair.lower()
-    assert "organization or activity significance" in repair.lower()
-    assert "closing/contact information" in repair.lower()
-    assert "paragraph breaks" in repair.lower()
-    assert "expand the existing draft" in repair.lower()
-    assert "repeated filler" in repair.lower()
-    assert current_body in repair
-    assert "factual inputs" in repair.lower()
-    assert FakeClient.requests[1]["max_tokens"] == FakeClient.requests[0]["max_tokens"]
-    assert 1100 <= len(result.variants[0].body) <= 1300
-    assert "\n\n" in result.variants[0].body
-
-
-def test_news_sectioned_repair_combines_sections_and_validates_total_length(monkeypatch):
-    FakeClient.responses = [
-        response({"title": "Launch", "body": "short", "cta": "Read"}),
-        sectioned_news_response(),
-    ]
-    FakeClient.requests = []
-    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
-    monkeypatch.setattr(main.httpx, "Client", FakeClient)
-
-    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
-
-    expected_sections = [name[0].upper() * 220 for name in ("lead", "details", "background", "significance", "closing")]
-    assert result.variants[0].body == "\n\n".join(expected_sections)
-    assert 1000 <= len(result.variants[0].body) <= 1400
-    repair = FakeClient.requests[1]["messages"][0]["content"]
-    assert '"lead"' in repair
-    assert '"details"' in repair
-    assert '"background"' in repair
-    assert '"significance"' in repair
-    assert '"closing"' in repair
-    assert "iNews" in repair
-    assert "style-only" in repair
-
-
-def test_news_sectioned_repairs_combine_short_responses_and_use_latest_metadata(monkeypatch):
-    first_repair = {
-        "title": "Initial",
-        "cta": "Read",
-        "lead": "L" * 200,
-        "details": "D" * 200,
-        "background": "B" * 200,
-    }
-    second_repair = {
-        "title": "Latest",
-        "cta": "Learn",
-        "background": "B" * 200,
-        "significance": "S" * 200,
-        "closing": "C" * 200,
-    }
-    FakeClient.responses = [
-        response({"title": "Launch", "body": "short", "cta": "Read"}),
-        response(first_repair),
-        response(second_repair),
-    ]
-    FakeClient.requests = []
-    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
-    monkeypatch.setattr(main.httpx, "Client", FakeClient)
-
-    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
-
-    assert len(FakeClient.requests) == 3
-    assert result.variants[0].title == "Latest"
-    assert result.variants[0].cta == "Learn"
-    assert result.variants[0].body == "\n\n".join(
-        ["L" * 200, "D" * 200, "B" * 200, "S" * 200, "C" * 200]
-    )
-
-
-def test_news_sectioned_repairs_that_remain_short_fail_after_two_repairs(monkeypatch):
-    short_sections = {
-        "title": "Latest",
-        "cta": "Read",
-        "lead": "L" * 100,
-        "details": "D" * 100,
-        "background": "B" * 100,
-        "significance": "S" * 100,
-        "closing": "C" * 100,
-    }
-    FakeClient.responses = [
-        response({"title": "Launch", "body": "short", "cta": "Read"}),
-        response(short_sections),
-        response(short_sections),
-    ]
-    FakeClient.requests = []
-    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
-    monkeypatch.setattr(main.httpx, "Client", FakeClient)
-
-    with pytest.raises(HTTPException) as exc_info:
-        main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
-
-    assert exc_info.value.status_code == 502
-    assert "invalid copy body length" in exc_info.value.detail
-    assert len(FakeClient.requests) == 3
-
-
 def test_news_sectioned_repair_supports_exact_body_length_contract():
     section_names = ("lead", "details", "background", "significance", "closing")
     _, _, section_ranges = main._news_repair_section_ranges(1000, 1000)
@@ -355,11 +234,82 @@ def test_news_sectioned_repair_rejects_nonempty_sections_when_combined_body_is_s
         )
 
 
-def test_malformed_or_short_sectioned_repairs_fail_without_padding(monkeypatch):
+def test_short_news_release_reaches_range_through_bounded_appendix_requests(monkeypatch):
+    initial_body = "Taipei hosted the Green Mobility Forum."
+    appendix = "New supplied event details. " + ("Fact. " * 45)
     FakeClient.responses = [
-        response({"title": "Launch", "body": "short", "cta": "Read"}),
-        response({"title": "Launch", "cta": "Read", "lead": "too short"}),
-        response({"title": "Launch", "cta": "Read", "lead": "still short"}),
+        response({"title": "Forum", "body": initial_body, "cta": "Read"}),
+        response({"appendix": appendix, "title": "Forum", "cta": "Read"}),
+        response({"appendix": "Final supplied context. " + ("Fact. " * 45)}),
+        response({"appendix": "Additional supplied significance. " + ("Fact. " * 45)}),
+        response({"appendix": "Closing supplied detail. " + ("Fact. " * 45)}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert len(FakeClient.requests) == 5
+    assert 1000 <= len(result.variants[0].body) <= 1400
+    assert result.variants[0].body.startswith(initial_body + "\n\n")
+    assert '"appendix"' in FakeClient.requests[1]["messages"][0]["content"]
+    assert "250-350 new characters" in FakeClient.requests[1]["messages"][0]["content"]
+    assert "style-only" in FakeClient.requests[1]["messages"][0]["content"]
+    assert "do not invent facts" in FakeClient.requests[1]["messages"][0]["content"].lower()
+
+
+def test_duplicate_news_appendix_does_not_count_as_progress(monkeypatch):
+    initial_body = "Initial supplied fact. " * 6
+    appendix = "Additional supplied fact. " + ("Fact. " * 45)
+    FakeClient.responses = [
+        response({"title": "Launch", "body": initial_body, "cta": "Read"}),
+        response({"appendix": appendix}),
+        response({"appendix": appendix}),
+        response({"appendix": "More supplied context. " + ("Fact. " * 45)}),
+        response({"appendix": "Further supplied context. " + ("Fact. " * 45)}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert len(FakeClient.requests) == 5
+    assert result.variants[0].body.count(appendix.strip()) == 1
+    assert 1000 <= len(result.variants[0].body) <= 1400
+
+
+def test_news_appendix_over_maximum_is_trimmed_at_paragraph_boundary(monkeypatch):
+    initial_body = "Initial fact. " + ("Fact. " * 150)
+    kept = "Kept supplied paragraph. " + ("Fact. " * 12)
+    omitted = "Omitted supplied paragraph. " + ("Fact. " * 30)
+    FakeClient.responses = [
+        response({"title": "Launch", "body": initial_body, "cta": "Read"}),
+        response({"appendix": kept + "\n\n" + omitted}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1100))
+
+    body = result.variants[0].body
+    assert len(body) <= 1100
+    assert len(body) >= 1000
+    assert kept.strip() in body
+    assert omitted.strip() not in body
+    assert body == body.rstrip()
+
+
+def test_news_continuations_fail_after_four_bounded_requests_without_padding(monkeypatch):
+    repeated_appendix = "Repeated supplied fact. " + ("Fact. " * 45)
+    FakeClient.responses = [
+        response({"title": "Launch", "body": "Short supplied fact.", "cta": "Read"}),
+        response({"appendix": repeated_appendix}),
+        response({"appendix": repeated_appendix}),
+        response({"appendix": repeated_appendix}),
+        response({"appendix": repeated_appendix}),
     ]
     FakeClient.requests = []
     monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
@@ -369,73 +319,8 @@ def test_malformed_or_short_sectioned_repairs_fail_without_padding(monkeypatch):
         main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
 
     assert exc_info.value.status_code == 502
-    assert "invalid copy body length" in exc_info.value.detail
-    assert len(FakeClient.requests) == 3
-
-
-def test_news_release_repair_accepts_expanded_response_with_supplied_facts(monkeypatch):
-    FakeClient.responses = [
-        response({"title": "Forum", "body": "short", "cta": "Read"}),
-        response(sectioned_news_content(title="Forum")),
-    ]
-    FakeClient.requests = []
-    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
-    monkeypatch.setattr(main.httpx, "Client", FakeClient)
-
-    result = main.run_copy_worker(
-        run_payload(
-            prompt="Write a news release. Factual inputs: Taipei, May 20, Green Mobility Forum.",
-            body_min_length=1000,
-            body_max_length=1400,
-        )
-    )
-
-    assert result.variants[0].body == "\n\n".join(
-        sectioned_news_content(title="Forum")[name]
-        for name in ("lead", "details", "background", "significance", "closing")
-    )
-    assert 1100 <= len(result.variants[0].body) <= 1300
-    repair = FakeClient.requests[1]["messages"][0]["content"]
-    assert "Taipei, May 20, Green Mobility Forum" in repair
-    assert "Current body draft:\nshort" in repair
-
-
-def test_news_release_repair_ranges_follow_a_different_long_form_contract(monkeypatch):
-    _, _, section_ranges = main._news_repair_section_ranges(1400, 1600)
-    section_names = ("lead", "details", "background", "significance", "closing")
-    FakeClient.responses = [
-        response({"title": "Forum", "body": "short", "cta": "Read"}),
-        response({
-            "title": "Forum",
-            "cta": "Read",
-            **{
-                name: name[0].upper() * section_minimum
-                for name, (section_minimum, _) in zip(section_names, section_ranges)
-            },
-        }),
-    ]
-    FakeClient.requests = []
-    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
-    monkeypatch.setattr(main.httpx, "Client", FakeClient)
-
-    result = main.run_copy_worker(run_payload(body_min_length=1400, body_max_length=1600))
-
-    repair = FakeClient.requests[1]["messages"][0]["content"]
-    assert "complete 1400-1600 character news release" in repair
-    assert "interior range 1500-1500 characters" in repair
-    assert "1100-1300 characters" not in repair
-    section_ranges = [
-        (int(minimum), int(maximum))
-        for minimum, maximum in re.findall(
-            r"(?:lead|event/data details|background/context|organization or activity significance|closing/contact information) "
-            r"\((\d+)-(\d+) chars",
-            repair,
-        )
-    ]
-    assert len(section_ranges) == 5
-    assert sum(minimum for minimum, _ in section_ranges) == 1492
-    assert sum(maximum for _, maximum in section_ranges) == 1492
-    assert len(result.variants[0].body) == 1500
+    assert "body length" in exc_info.value.detail.lower()
+    assert len(FakeClient.requests) == 5
 
 
 def test_news_repair_section_ranges_are_safe_across_valid_boundary_sweep():
@@ -512,7 +397,7 @@ def test_invalid_repair_returns_502_after_two_repairs(monkeypatch):
 
     assert exc_info.value.status_code == 502
     assert "body length" in exc_info.value.detail.lower()
-    assert len(FakeClient.requests) == 3
+    assert len(FakeClient.requests) == 5
 
 
 def test_repair_transport_failure_makes_exactly_one_repair_request(monkeypatch):

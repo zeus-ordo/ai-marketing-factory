@@ -120,3 +120,13 @@ from B; it is explicitly skipped when `CAMPAIGN_TEST_DATABASE_URL` is absent.
 - Updated boundary and long-form range assertions for the reserved separator
   budget.
 - Verification: `python -m pytest services/worker_copy -q`: 35 passed.
+
+## Continuation-Based Long-Form Generation
+
+- Replaced short news-release section rewrites with up to four bounded continuation requests.
+- Each continuation requires a JSON `appendix` of 250-350 characters, uses supplied facts only, treats iNews material as style-only, and rejects invented facts/repeated filler in the prompt.
+- The worker combines the initial body and appendix paragraphs, removes exact duplicate paragraphs, stops as soon as the actual configured range is reached, and drops only whole paragraphs when an appendix would exceed the maximum.
+- Ordinary copy repair, title/CTA validation, completion-token budgeting, and safe failure behavior remain unchanged.
+- TDD RED was observed with the new continuation tests failing against the previous sectioned implementation; GREEN followed after implementation.
+- `python -m pytest services/worker_copy -q`: PASS, 36 passed.
+- No production provider or deployment command was called; all provider interactions were fake-client tests.

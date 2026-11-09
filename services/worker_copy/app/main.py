@@ -43,6 +43,9 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_V3_API_KEY", "").strip()
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").strip().rstrip("/")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash").strip()
 STRICT_REAL_MODE = os.getenv("WORKER_STRICT_REAL_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+MAX_LONG_FORM_CONTINUATION_REQUESTS = 4
+LONG_FORM_APPENDIX_MIN_LENGTH = 250
+LONG_FORM_APPENDIX_MAX_LENGTH = 350
 
 logger = logging.getLogger("worker_copy")
 
@@ -122,19 +125,61 @@ def build_copy_prompt(
 
 
 def _parse_copy_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
-    import json as _json
+    parsed = _parse_copy_metadata(raw)
+    body = parsed["body"]
+    if not body or not body_length_is_valid(body, minimum, maximum):
+        raise ValueError(f"body length must be between {minimum} and {maximum} chars")
+    return parsed
 
-    parsed = _json.loads(raw)
+
+def _parse_copy_metadata(raw: str) -> dict[str, str]:
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("copy response must be a JSON object")
     title = str(parsed.get("title") or "")
     body = str(parsed.get("body") or "")
     cta = str(parsed.get("cta") or "")
     if not title or len(title) > 30:
         raise ValueError("title must be non-empty and at most 30 chars")
-    if not body or not body_length_is_valid(body, minimum, maximum):
-        raise ValueError(f"body length must be between {minimum} and {maximum} chars")
     if not cta or len(cta) > 15:
         raise ValueError("cta must be non-empty and at most 15 chars")
     return {"title": title, "body": body, "cta": cta}
+
+
+def _parse_news_continuation(raw: str) -> dict[str, str]:
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("news continuation response must be a JSON object")
+    appendix = parsed.get("appendix")
+    if not isinstance(appendix, str) or not appendix.strip():
+        raise ValueError("news continuation appendix must be a non-empty string")
+    appendix = appendix.strip()
+    if not LONG_FORM_APPENDIX_MIN_LENGTH <= len(appendix) <= LONG_FORM_APPENDIX_MAX_LENGTH:
+        raise ValueError(
+            f"news continuation appendix must be {LONG_FORM_APPENDIX_MIN_LENGTH}-"
+            f"{LONG_FORM_APPENDIX_MAX_LENGTH} chars"
+        )
+    title = str(parsed.get("title") or "")
+    cta = str(parsed.get("cta") or "")
+    if title and len(title) > 30:
+        raise ValueError("title must be non-empty and at most 30 chars")
+    if cta and len(cta) > 15:
+        raise ValueError("cta must be non-empty and at most 15 chars")
+    return {"appendix": appendix, "title": title, "cta": cta}
+
+
+def _news_paragraphs(body: str) -> list[str]:
+    return [paragraph.strip() for paragraph in body.split("\n\n") if paragraph.strip()]
+
+
+def _news_body_within_maximum(paragraphs: list[str], maximum: int) -> str:
+    selected: list[str] = []
+    for paragraph in paragraphs:
+        candidate = "\n\n".join(selected + [paragraph])
+        if len(candidate) > maximum:
+            break
+        selected.append(paragraph)
+    return "\n\n".join(selected)
 
 
 def _parse_news_sectioned_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
@@ -253,105 +298,87 @@ def _generate_copy_variant(
     try:
         parsed = _parse_copy_variant(raw, minimum, maximum)
     except Exception as exc:
-        repair_raw = raw
-        last_exc = exc
-        news_section_values = {
-            name: []
-            for name in ("lead", "details", "background", "significance", "closing")
-        }
-        news_title = ""
-        news_cta = ""
-        for _repair_attempt in range(2):
-            try:
-                previous_json = json.loads(repair_raw)
-                current_body = str(previous_json.get("body") or "")
-                current_length = len(current_body)
-            except Exception:
-                current_body = "[unavailable because the previous response was not valid JSON]"
-                current_length = "unknown"
-            if minimum >= 1000:
-                target_minimum, target_maximum, section_ranges = _news_repair_section_ranges(
-                    minimum, maximum
-                )
-                lead_range, event_range, background_range, significance_range, closing_range = section_ranges
-                section_minimum_total = sum(section_range[0] for section_range in section_ranges)
-                section_maximum_total = sum(section_range[1] for section_range in section_ranges)
+        if minimum < 1000:
+            repair_raw = raw
+            last_exc = exc
+            for _repair_attempt in range(2):
+                try:
+                    previous_json = json.loads(repair_raw)
+                    current_body_length = len(str(previous_json.get("body") or ""))
+                except Exception:
+                    current_body_length = "unknown"
                 repair_prompt = (
-                    f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
-                    f"Its current body length: {current_length}. Current body draft:\n{current_body}\n\n"
-                    f"Factual inputs and campaign facts:\n{user_prompt}\n\n"
-                    f"Create a complete {minimum}-{maximum} character news release, targeting the safe "
-                    f"interior range {target_minimum}-{target_maximum} characters. Expand the existing "
-                    "draft; expand rather than merely reformat it, and do not summarize. Use paragraph breaks and structure "
-                    "the body into these five parts with these character ranges: "
-                    f"lead ({lead_range[0]}-{lead_range[1]} chars, "
-                    "covering Who/What/When/Where/Why/How when supplied); "
-                    f"event/data details ({event_range[0]}-{event_range[1]} chars); "
-                    f"background/context ({background_range[0]}-{background_range[1]} chars); "
-                    f"organization or activity significance ({significance_range[0]}-{significance_range[1]} chars); "
-                    f"closing/contact information ({closing_range[0]}-{closing_range[1]} chars, "
-                    f"and include contact information only if it is supplied). These ranges total "
-                    f"{section_minimum_total}-{section_maximum_total} characters before the four paragraph separators; "
-                    f"the combined body including separators targets {target_minimum}-{target_maximum} characters. "
-                    "Use only supplied facts, do not invent facts, "
-                    "including factual background and organization context; include a contact section "
-                    "only when supplied in the campaign facts. Do not pad with repeated filler or "
-                    "repeated phrases. Keep the title and CTA "
-                    "within their existing limits. "
+                    f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. Repair it so body is exactly "
+                    f"within {minimum}-{maximum} characters. Its current body length: {current_body_length}. "
+                    "Return ONLY valid JSON with exactly these keys: "
+                    '{"title": "string", "body": "string", "cta": "string"}. '
                 )
-            else:
-                repair_prompt = (
-                    f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
-                    f"Its current body length: {current_length}; the required body length is {minimum}-{maximum}. "
-                    f"Repair it so body is exactly within {minimum}-{maximum} characters. "
+                repair_raw = _request_copy_raw(
+                    repair_prompt, rules, model, company_id, usage_model, maximum, max_attempts=1
                 )
-            if minimum >= 1000:
-                repair_prompt += (
-                    'Return ONLY valid JSON with exactly these keys: '
-                    '{"title": "string", "cta": "string", "lead": "string", "details": "string", '
-                    '"background": "string", "significance": "string", "closing": "string"}. '
-                    "For this news repair, do not return a body key; the worker combines these sections into the body. "
-                    "Each section must contain only supplied campaign facts; if a fact is missing, say that it was not supplied "
-                    "instead of inventing it. iNews references are style-only and must not supply facts. Do not repeat filler. "
-                )
-            else:
-                repair_prompt += (
-                    'Return ONLY valid JSON with exactly these keys: {"title": "string", "body": "string", "cta": "string"}. '
-                )
-            repair_raw = _request_copy_raw(
-                repair_prompt, rules, model, company_id, usage_model, maximum, max_attempts=1
-            )
-            try:
-                if minimum >= 1000:
-                    repair_candidate = _parse_news_sectioned_response(
-                        repair_raw, minimum, maximum
-                    )
-                    for name, section in repair_candidate["sections"].items():
-                        news_section_values[name].append(section)
-                    candidate_title = repair_candidate["title"]
-                    candidate_cta = repair_candidate["cta"]
-                    if (
-                        candidate_title
-                        and len(candidate_title) <= 30
-                        and candidate_cta
-                        and len(candidate_cta) <= 15
-                    ):
-                        news_title = candidate_title
-                        news_cta = candidate_cta
-                    parsed = _combine_news_repair_sections(
-                        news_section_values,
-                        news_title,
-                        news_cta,
-                        minimum,
-                        maximum,
-                    )
-                else:
+                try:
                     parsed = _parse_copy_variant(repair_raw, minimum, maximum)
-                break
-            except Exception as repair_exc:
-                last_exc = repair_exc
+                    break
+                except Exception as repair_exc:
+                    last_exc = repair_exc
+            else:
+                raise ValueError(f"invalid copy body length after two repairs: {last_exc}") from last_exc
         else:
-            raise ValueError(f"invalid copy body length after two repairs: {last_exc}") from last_exc
+            try:
+                initial = json.loads(raw)
+                current_body = str(initial.get("body") or "") if isinstance(initial, dict) else ""
+                current_title = str(initial.get("title") or "") if isinstance(initial, dict) else ""
+                current_cta = str(initial.get("cta") or "") if isinstance(initial, dict) else ""
+            except Exception:
+                current_body, current_title, current_cta = "", "", ""
+            if len(current_body) > maximum:
+                raise ValueError(f"invalid copy body length after {MAX_LONG_FORM_CONTINUATION_REQUESTS} continuations: {exc}") from exc
+
+            paragraphs = _news_paragraphs(current_body)
+            seen = set(paragraphs)
+            last_exc = exc
+            for _attempt in range(MAX_LONG_FORM_CONTINUATION_REQUESTS):
+                continuation_prompt = (
+                    f"{user_prompt}\n\nCurrent news release body ({len(current_body)} chars):\n{current_body}\n\n"
+                    f"Continue this release until it reaches {minimum}-{maximum} characters. Return JSON with an "
+                    f'"appendix" string containing {LONG_FORM_APPENDIX_MIN_LENGTH}-'
+                    f'{LONG_FORM_APPENDIX_MAX_LENGTH} new characters, using paragraph breaks. '
+                    "Ground the appendix only in the supplied campaign facts above. iNews references are style-only "
+                    "and must not supply facts. Do not invent facts, repeat existing paragraphs, or pad with repeated filler. "
+                    'Include "title" or "cta" only if needed; return only valid JSON. '
+                )
+                try:
+                    continuation = _parse_news_continuation(
+                        _request_copy_raw(
+                            continuation_prompt,
+                            rules,
+                            model,
+                            company_id,
+                            usage_model,
+                            maximum,
+                            max_attempts=1,
+                        )
+                    )
+                    for paragraph in _news_paragraphs(continuation["appendix"]):
+                        if paragraph not in seen:
+                            paragraphs.append(paragraph)
+                            seen.add(paragraph)
+                    current_body = _news_body_within_maximum(paragraphs, maximum)
+                    current_title = continuation["title"] or current_title
+                    current_cta = continuation["cta"] or current_cta
+                    if minimum <= len(current_body) <= maximum:
+                        parsed = {"title": current_title, "body": current_body, "cta": current_cta}
+                        if not current_title or len(current_title) > 30:
+                            raise ValueError("title must be non-empty and at most 30 chars")
+                        if not current_cta or len(current_cta) > 15:
+                            raise ValueError("cta must be non-empty and at most 15 chars")
+                        break
+                except Exception as continuation_exc:
+                    last_exc = continuation_exc
+            else:
+                raise ValueError(
+                    f"invalid copy body length after {MAX_LONG_FORM_CONTINUATION_REQUESTS} continuations: {last_exc}"
+                ) from last_exc
     return CopyVariant(**parsed)
 
 
