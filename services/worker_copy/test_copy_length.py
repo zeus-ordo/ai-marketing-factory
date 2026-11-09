@@ -143,6 +143,41 @@ def test_news_release_prompt_contains_required_range(monkeypatch):
     assert '"body" 1000-1400 chars' in FakeClient.requests[0]["messages"][0]["content"]
 
 
+def test_copy_request_sets_completion_budget_from_body_max_length(monkeypatch):
+    FakeClient.responses = [response({"title": "Launch", "body": "A" * 1400, "cta": "Read"})]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert FakeClient.requests[0]["max_tokens"] >= 1600
+
+
+def test_news_release_short_output_uses_expansion_repair_prompt(monkeypatch):
+    FakeClient.responses = [
+        response({"title": "Launch", "body": "too short", "cta": "Read"}),
+        response({"title": "Launch", "body": "A" * 1200, "cta": "Read"}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    repair = FakeClient.requests[1]["messages"][0]["content"]
+    assert "complete 1000-1400 character news release" in repair
+    assert "Who/What/When/Where/Why/How" in repair
+    assert "factual background" in repair
+    assert "organization context" in repair
+    assert "contact section only when supplied" in repair
+    assert "expand rather than merely reformat" in repair
+    assert "do not invent facts" in repair
+    assert "1100-1300" in repair
+    assert FakeClient.requests[1]["max_tokens"] == FakeClient.requests[0]["max_tokens"]
+    assert result.variants[0].body == "A" * 1200
+
+
 def test_invalid_normal_output_gets_exactly_one_bounded_repair(monkeypatch):
     FakeClient.responses = [
         response({"title": "Launch", "body": "too short", "cta": "Read"}),

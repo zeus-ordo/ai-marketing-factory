@@ -65,6 +65,10 @@ def body_length_is_valid(body: str, minimum: int, maximum: int) -> bool:
     return minimum <= len(body) <= maximum
 
 
+def _completion_token_budget(body_max_length: int) -> int:
+    return max(512, body_max_length + 256)
+
+
 def _stub_body(prefix: str, minimum: int, maximum: int) -> str:
     if maximum < 1:
         raise ValueError("stub mode cannot produce a non-empty body for a 0..0 contract")
@@ -123,6 +127,7 @@ def _request_copy_raw(
     model: str,
     company_id: str,
     usage_model: str,
+    body_max_length: int,
     max_attempts: int = 2,
 ) -> str:
     raw = None
@@ -142,6 +147,7 @@ def _request_copy_raw(
                         "response_format": {"type": "json_object"},
                         "thinking": {"type": "disabled"},
                         "temperature": 0.8,
+                        "max_tokens": _completion_token_budget(body_max_length),
                     },
                 )
                 resp.raise_for_status()
@@ -165,7 +171,7 @@ def _generate_copy_variant(
     usage_model: str,
 ) -> CopyVariant:
     rules = copy_field_rules(minimum, maximum)
-    raw = _request_copy_raw(user_prompt, rules, model, company_id, usage_model)
+    raw = _request_copy_raw(user_prompt, rules, model, company_id, usage_model, maximum)
     try:
         parsed = _parse_copy_variant(raw, minimum, maximum)
     except Exception as exc:
@@ -176,13 +182,32 @@ def _generate_copy_variant(
                 current_length = len(str(json.loads(repair_raw).get("body") or ""))
             except Exception:
                 current_length = "unknown"
-            repair_prompt = (
-                f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
-                f"Its current body length: {current_length}; the required body length is {minimum}-{maximum}. "
-                f"Repair it so body is exactly within {minimum}-{maximum} characters. "
+            if minimum >= 1000:
+                interior_padding = min(100, (maximum - minimum) // 2)
+                target_minimum = minimum + interior_padding
+                target_maximum = maximum - interior_padding
+                repair_prompt = (
+                    f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
+                    f"Its current body length: {current_length}. Create a complete {minimum}-{maximum} "
+                    "character news release, targeting the safe interior range "
+                    f"{target_minimum}-{target_maximum} characters. Include a clear lead covering "
+                    "Who/What/When/Where/Why/How, factual background/data, and organization context. "
+                    "Include a contact section only when supplied in the campaign facts. "
+                    "Use only supplied facts, do not invent facts, and expand rather than merely reformat "
+                    "the JSON. Keep the title and CTA within their existing limits. "
+                )
+            else:
+                repair_prompt = (
+                    f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
+                    f"Its current body length: {current_length}; the required body length is {minimum}-{maximum}. "
+                    f"Repair it so body is exactly within {minimum}-{maximum} characters. "
+                )
+            repair_prompt += (
                 'Return ONLY valid JSON with exactly these keys: {"title": "string", "body": "string", "cta": "string"}. '
             )
-            repair_raw = _request_copy_raw(repair_prompt, rules, model, company_id, usage_model, max_attempts=1)
+            repair_raw = _request_copy_raw(
+                repair_prompt, rules, model, company_id, usage_model, maximum, max_attempts=1
+            )
             try:
                 parsed = _parse_copy_variant(repair_raw, minimum, maximum)
                 break
