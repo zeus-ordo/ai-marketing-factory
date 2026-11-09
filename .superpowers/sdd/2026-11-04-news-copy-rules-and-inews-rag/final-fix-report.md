@@ -97,3 +97,18 @@ No production services or databases were called.
   **29 passed**.
 - `git diff --check` passed; Git emitted only its existing LF/CRLF conversion
   warnings.
+
+## Dynamic Long-Form Repair Follow-up
+
+- Fixed the P1 range inconsistency in `services/worker_copy/app/main.py`.
+- Repair section ranges now derive from the requested long-form contract's safe
+  interior range. The approved 1000-1400 contract still targets 1100-1300;
+  a 1400-1600 contract now targets a satisfiable 1500-character allocation.
+- Added regression coverage for the 1400-1600 contract, including exact sum
+  checks across all five section ranges and successful expanded-response
+  acceptance.
+- TDD RED: the new 1400-1600 test failed because the repair prompt retained
+  the hard-coded 1100-1300 total.
+- TDD GREEN: `python -m pytest services/worker_copy/test_copy_length.py -q` ->
+  **31 passed**.
+- No production services or databases were called.

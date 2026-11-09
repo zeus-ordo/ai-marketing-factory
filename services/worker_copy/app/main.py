@@ -69,6 +69,28 @@ def _completion_token_budget(body_max_length: int) -> int:
     return min(4096, max(512, body_max_length * 3))
 
 
+def _news_repair_section_ranges(minimum: int, maximum: int) -> tuple[int, int, list[tuple[int, int]]]:
+    interior_padding = min(100, (maximum - minimum) // 2)
+    target_minimum = minimum + interior_padding
+    target_maximum = maximum - interior_padding
+    section_midpoints = (240, 290, 260, 280, 130)
+    section_half_ranges = (20, 30, 20, 20, 10)
+    target_midpoint = (target_minimum + target_maximum) / 2
+    target_half_range = (target_maximum - target_minimum) / 2
+    section_ranges = [
+        (
+            round(midpoint * target_midpoint / 1200 - half_range * target_half_range / 100),
+            round(midpoint * target_midpoint / 1200 + half_range * target_half_range / 100),
+        )
+        for midpoint, half_range in zip(section_midpoints, section_half_ranges)
+    ]
+    section_ranges[-1] = (
+        target_minimum - sum(section_minimum for section_minimum, _ in section_ranges[:-1]),
+        target_maximum - sum(section_maximum for _, section_maximum in section_ranges[:-1]),
+    )
+    return target_minimum, target_maximum, section_ranges
+
+
 def _stub_body(prefix: str, minimum: int, maximum: int) -> str:
     if maximum < 1:
         raise ValueError("stub mode cannot produce a non-empty body for a 0..0 contract")
@@ -186,9 +208,10 @@ def _generate_copy_variant(
                 current_body = "[unavailable because the previous response was not valid JSON]"
                 current_length = "unknown"
             if minimum >= 1000:
-                interior_padding = min(100, (maximum - minimum) // 2)
-                target_minimum = minimum + interior_padding
-                target_maximum = maximum - interior_padding
+                target_minimum, target_maximum, section_ranges = _news_repair_section_ranges(
+                    minimum, maximum
+                )
+                lead_range, event_range, background_range, significance_range, closing_range = section_ranges
                 repair_prompt = (
                     f"{user_prompt}\n\nThe previous JSON was invalid: {last_exc}. "
                     f"Its current body length: {current_length}. Current body draft:\n{current_body}\n\n"
@@ -196,12 +219,15 @@ def _generate_copy_variant(
                     f"Create a complete {minimum}-{maximum} character news release, targeting the safe "
                     f"interior range {target_minimum}-{target_maximum} characters. Expand the existing "
                     "draft; expand rather than merely reformat it, and do not summarize. Use paragraph breaks and structure "
-                    "the body into these five parts with these character ranges: lead (220-260 chars, "
+                    "the body into these five parts with these character ranges: "
+                    f"lead ({lead_range[0]}-{lead_range[1]} chars, "
                     "covering Who/What/When/Where/Why/How when supplied); "
-                    "event/data details (260-320 chars); background/context (240-280 chars); "
-                    "organization or activity significance (260-300 chars); closing/contact information "
-                    "(120-140 chars, and include contact information only if it is supplied). These "
-                    "ranges total 1100-1300 characters. Use only supplied facts, do not invent facts, "
+                    f"event/data details ({event_range[0]}-{event_range[1]} chars); "
+                    f"background/context ({background_range[0]}-{background_range[1]} chars); "
+                    f"organization or activity significance ({significance_range[0]}-{significance_range[1]} chars); "
+                    f"closing/contact information ({closing_range[0]}-{closing_range[1]} chars, "
+                    f"and include contact information only if it is supplied). These ranges total "
+                    f"{target_minimum}-{target_maximum} characters. Use only supplied facts, do not invent facts, "
                     "including factual background and organization context; include a contact section "
                     "only when supplied in the campaign facts. Do not pad with repeated filler or "
                     "repeated phrases. Keep the title and CTA "

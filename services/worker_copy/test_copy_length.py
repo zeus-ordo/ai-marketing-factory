@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -230,6 +231,35 @@ def test_news_release_repair_accepts_expanded_response_with_supplied_facts(monke
     repair = FakeClient.requests[1]["messages"][0]["content"]
     assert "Taipei, May 20, Green Mobility Forum" in repair
     assert "Current body draft:\nshort" in repair
+
+
+def test_news_release_repair_ranges_follow_a_different_long_form_contract(monkeypatch):
+    FakeClient.responses = [
+        response({"title": "Forum", "body": "short", "cta": "Read"}),
+        response({"title": "Forum", "body": "B" * 1500, "cta": "Read"}),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1400, body_max_length=1600))
+
+    repair = FakeClient.requests[1]["messages"][0]["content"]
+    assert "complete 1400-1600 character news release" in repair
+    assert "interior range 1500-1500 characters" in repair
+    assert "1100-1300 characters" not in repair
+    section_ranges = [
+        (int(minimum), int(maximum))
+        for minimum, maximum in re.findall(
+            r"(?:lead|event/data details|background/context|organization or activity significance|closing/contact information) "
+            r"\((\d+)-(\d+) chars",
+            repair,
+        )
+    ]
+    assert len(section_ranges) == 5
+    assert sum(minimum for minimum, _ in section_ranges) == 1500
+    assert sum(maximum for _, maximum in section_ranges) == 1500
+    assert result.variants[0].body == "B" * 1500
 
 
 def test_invalid_normal_output_gets_exactly_one_bounded_repair(monkeypatch):
