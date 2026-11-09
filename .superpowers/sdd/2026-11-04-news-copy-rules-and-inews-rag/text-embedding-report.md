@@ -123,4 +123,19 @@ Verification:
 - `python -m pytest services/campaign_service/test_text_embedding_contract.py services/campaign_service/test_context_assembler.py -q`: 42 passed, 1 unrelated pre-existing JWT fixture failure.
 - `python -m pytest services/campaign_service/test_industry_matching.py services/campaign_service/test_image_rag_retrieval.py -q`: 26 passed.
 - `python -m compileall -q services/campaign_service/app`: passed.
+
+## Worker Chunk Persistence Boundary Fix
+
+- Fixed the worker-side `complete_text_embedding_chunk` boundary to insert missing chunk rows by selecting the source item/version/content SHA from chunk 0.
+- Added composite-key `ON CONFLICT` updates so repeated chunk completion remains idempotent.
+- Preserved the optional pgvector savepoint fallback and existing image persistence behavior.
+- Added regression coverage for three chunk inserts, three vector writes, and an API-facing aggregate status of `ready` when all three rows are ready.
+
+Verification:
+
+- `python -m pytest services/worker_enrichment/test_text_embedding_job.py services/worker_enrichment/test_enrichment_job.py -q`: 12 passed.
+- `python -m pytest services/campaign_service/test_reference_pack_text.py services/campaign_service/test_text_embedding_contract.py -q`: 23 passed, 2 existing FastAPI deprecation warnings.
+- `git diff --check`: passed.
+
+No production database or production service was called.
 - `git diff --check`: passed.

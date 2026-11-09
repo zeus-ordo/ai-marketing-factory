@@ -217,3 +217,76 @@ def test_postgres_completion_writes_pgvector_embedding_when_available():
     vector_updates = [(query, params) for query, params in cursor.queries if "SET embedding =" in query]
     assert len(vector_updates) == 1
     assert vector_updates[0][1][0] == "[0.1,0.2]"
+
+
+def test_postgres_text_completion_persists_each_chunk_and_aggregates_ready():
+    from app.main import PostgresPersistenceBoundary
+
+    class Cursor:
+        def __init__(self):
+            self.queries = []
+            self.rows = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def execute(self, query, params=None):
+            self.queries.append((query, params))
+
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def __init__(self, cursor):
+            self.cursor_value = cursor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def cursor(self):
+            return self.cursor_value
+
+        def commit(self):
+            pass
+
+    cursor = Cursor()
+    boundary = object.__new__(PostgresPersistenceBoundary)
+    boundary._connect = lambda: Connection(cursor)
+
+    for chunk_index in range(3):
+        boundary.complete_text_embedding_chunk(
+            "item-1", "text-rag-v1", chunk_index, 3, [0.1, 0.2], "embed-v1"
+        )
+
+    chunk_inserts = [
+        (query, params)
+        for query, params in cursor.queries
+        if "INSERT INTO knowledge_item_text_embeddings" in query
+    ]
+    assert len(chunk_inserts) == 3
+    assert all("ON CONFLICT (item_id, embedding_version, chunk_index)" in query for query, _ in chunk_inserts)
+    assert [params[0] for _, params in chunk_inserts] == [0, 1, 2]
+    vector_updates = [
+        (query, params)
+        for query, params in cursor.queries
+        if "SET embedding = %s::vector" in query
+    ]
+    assert len(vector_updates) == 3
+    assert [params[3] for _, params in vector_updates] == [0, 1, 2]
+
+    cursor.rows = [
+        ("item-1", "text-rag-v1", "ready", 3),
+        ("item-1", "text-rag-v1", "ready", 3),
+        ("item-1", "text-rag-v1", "ready", 3),
+    ]
+    assert boundary.get_text_embedding("item-1", "text-rag-v1") == {
+        "item_id": "item-1",
+        "embedding_version": "text-rag-v1",
+        "embedding_status": "ready",
+    }

@@ -182,7 +182,20 @@ class PostgresPersistenceBoundary:
 
     def complete_text_embedding_chunk(self, item_id: str, embedding_version: str, chunk_index: int, chunk_count: int, embedding: list[float], embedding_model: str) -> None:
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("UPDATE knowledge_item_text_embeddings SET chunk_count = %s, embedding_status = 'ready', embedding_json = %s::jsonb, embedding_model = %s, embedding_dimension = %s, updated_at = NOW() WHERE item_id = %s AND embedding_version = %s AND chunk_index = %s", (chunk_count, json.dumps(embedding), embedding_model, len(embedding), item_id, embedding_version, chunk_index))
+            cur.execute(
+                """INSERT INTO knowledge_item_text_embeddings
+                   (item_id, embedding_version, content_sha256, chunk_index, chunk_count,
+                    embedding_status, embedding_json, embedding_model, embedding_dimension)
+                   SELECT item_id, embedding_version, content_sha256, %s, %s, 'ready', %s::jsonb, %s, %s
+                   FROM knowledge_item_text_embeddings
+                   WHERE item_id = %s AND embedding_version = %s AND chunk_index = 0
+                   ON CONFLICT (item_id, embedding_version, chunk_index) DO UPDATE
+                   SET embedding_status = 'ready', embedding_json = EXCLUDED.embedding_json,
+                       embedding_model = EXCLUDED.embedding_model,
+                       embedding_dimension = EXCLUDED.embedding_dimension,
+                       chunk_count = EXCLUDED.chunk_count, updated_at = NOW()""",
+                (chunk_index, chunk_count, json.dumps(embedding), embedding_model, len(embedding), item_id, embedding_version),
+            )
             cur.execute("SAVEPOINT text_embedding_vector_write;")
             try:
                 cur.execute("UPDATE knowledge_item_text_embeddings SET embedding = %s::vector WHERE item_id = %s AND embedding_version = %s AND chunk_index = %s", ("[" + ",".join(str(float(value)) for value in embedding) + "]", item_id, embedding_version, chunk_index))
