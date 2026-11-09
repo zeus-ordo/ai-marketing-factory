@@ -138,26 +138,65 @@ def _parse_copy_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
 
 
 def _parse_news_sectioned_variant(raw: str, minimum: int, maximum: int) -> dict[str, str]:
-    parsed = json.loads(raw)
-    _, _, section_ranges = _news_repair_section_ranges(minimum, maximum)
     section_names = ("lead", "details", "background", "significance", "closing")
-    sections: list[str] = []
-    for name, (_, section_maximum) in zip(section_names, section_ranges):
-        section = parsed.get(name)
-        if not isinstance(section, str) or not section:
-            raise ValueError(f"news section {name} must be a non-empty string")
-        if len(section) > section_maximum:
-            raise ValueError(
-                f"news section {name} length must be at most {section_maximum} chars"
-            )
-        sections.append(section)
+    parsed = _parse_news_sectioned_response(raw, minimum, maximum)
+    missing = [name for name in section_names if name not in parsed["sections"]]
+    if missing:
+        raise ValueError(f"news section {missing[0]} must be a non-empty string")
 
     combined = {
-        "title": parsed.get("title"),
-        "body": "\n\n".join(sections),
-        "cta": parsed.get("cta"),
+        "title": parsed["title"],
+        "body": "\n\n".join(parsed["sections"][name] for name in section_names),
+        "cta": parsed["cta"],
     }
     return _parse_copy_variant(json.dumps(combined), minimum, maximum)
+
+
+def _parse_news_sectioned_response(
+    raw: str, minimum: int, maximum: int
+) -> dict[str, object]:
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("news repair response must be a JSON object")
+
+    section_names = ("lead", "details", "background", "significance", "closing")
+    _, _, section_ranges = _news_repair_section_ranges(minimum, maximum)
+    sections: dict[str, str] = {}
+    for name, (_, section_maximum) in zip(section_names, section_ranges):
+        section = parsed.get(name)
+        if isinstance(section, str) and section and len(section) <= section_maximum:
+            sections[name] = section
+
+    if not sections:
+        raise ValueError("news repair response has no valid sections")
+
+    return {
+        "title": str(parsed.get("title") or ""),
+        "cta": str(parsed.get("cta") or ""),
+        "sections": sections,
+    }
+
+
+def _combine_news_repair_sections(
+    section_values: dict[str, list[str]],
+    title: str,
+    cta: str,
+    minimum: int,
+    maximum: int,
+) -> dict[str, str]:
+    section_names = ("lead", "details", "background", "significance", "closing")
+    seen: set[str] = set()
+    sections: list[str] = []
+    for name in section_names:
+        for section in section_values[name]:
+            if section not in seen:
+                sections.append(section)
+                seen.add(section)
+    return _parse_copy_variant(
+        json.dumps({"title": title, "body": "\n\n".join(sections), "cta": cta}),
+        minimum,
+        maximum,
+    )
 
 
 def _request_copy_raw(
@@ -216,6 +255,12 @@ def _generate_copy_variant(
     except Exception as exc:
         repair_raw = raw
         last_exc = exc
+        news_section_values = {
+            name: []
+            for name in ("lead", "details", "background", "significance", "closing")
+        }
+        news_title = ""
+        news_cta = ""
         for _repair_attempt in range(2):
             try:
                 previous_json = json.loads(repair_raw)
@@ -278,7 +323,28 @@ def _generate_copy_variant(
             )
             try:
                 if minimum >= 1000:
-                    parsed = _parse_news_sectioned_variant(repair_raw, minimum, maximum)
+                    repair_candidate = _parse_news_sectioned_response(
+                        repair_raw, minimum, maximum
+                    )
+                    for name, section in repair_candidate["sections"].items():
+                        news_section_values[name].append(section)
+                    candidate_title = repair_candidate["title"]
+                    candidate_cta = repair_candidate["cta"]
+                    if (
+                        candidate_title
+                        and len(candidate_title) <= 30
+                        and candidate_cta
+                        and len(candidate_cta) <= 15
+                    ):
+                        news_title = candidate_title
+                        news_cta = candidate_cta
+                    parsed = _combine_news_repair_sections(
+                        news_section_values,
+                        news_title,
+                        news_cta,
+                        minimum,
+                        maximum,
+                    )
                 else:
                     parsed = _parse_copy_variant(repair_raw, minimum, maximum)
                 break

@@ -244,6 +244,67 @@ def test_news_sectioned_repair_combines_sections_and_validates_total_length(monk
     assert "style-only" in repair
 
 
+def test_news_sectioned_repairs_combine_short_responses_and_use_latest_metadata(monkeypatch):
+    first_repair = {
+        "title": "Initial",
+        "cta": "Read",
+        "lead": "L" * 200,
+        "details": "D" * 200,
+        "background": "B" * 200,
+    }
+    second_repair = {
+        "title": "Latest",
+        "cta": "Learn",
+        "background": "B" * 200,
+        "significance": "S" * 200,
+        "closing": "C" * 200,
+    }
+    FakeClient.responses = [
+        response({"title": "Launch", "body": "short", "cta": "Read"}),
+        response(first_repair),
+        response(second_repair),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    result = main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert len(FakeClient.requests) == 3
+    assert result.variants[0].title == "Latest"
+    assert result.variants[0].cta == "Learn"
+    assert result.variants[0].body == "\n\n".join(
+        ["L" * 200, "D" * 200, "B" * 200, "S" * 200, "C" * 200]
+    )
+
+
+def test_news_sectioned_repairs_that_remain_short_fail_after_two_repairs(monkeypatch):
+    short_sections = {
+        "title": "Latest",
+        "cta": "Read",
+        "lead": "L" * 100,
+        "details": "D" * 100,
+        "background": "B" * 100,
+        "significance": "S" * 100,
+        "closing": "C" * 100,
+    }
+    FakeClient.responses = [
+        response({"title": "Launch", "body": "short", "cta": "Read"}),
+        response(short_sections),
+        response(short_sections),
+    ]
+    FakeClient.requests = []
+    monkeypatch.setattr(main, "DEEPSEEK_API_KEY", "real-key")
+    monkeypatch.setattr(main.httpx, "Client", FakeClient)
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.run_copy_worker(run_payload(body_min_length=1000, body_max_length=1400))
+
+    assert exc_info.value.status_code == 502
+    assert "invalid copy body length" in exc_info.value.detail
+    assert len(FakeClient.requests) == 3
+
+
 def test_news_sectioned_repair_supports_exact_body_length_contract():
     section_names = ("lead", "details", "background", "significance", "closing")
     _, _, section_ranges = main._news_repair_section_ranges(1000, 1000)
